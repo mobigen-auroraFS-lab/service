@@ -32,7 +32,17 @@ class TestBasenameOfCore(unittest.TestCase):
     def test_uri_fragment_stripped(self) -> None:
         from src.config.filename_util import basename_of
 
-        self.assertEqual(basename_of("/a/b/doc.txt#sec"), "doc.txt")
+        # 프래그먼트 제거는 **스킴(``://``)이 있는 URL 에 한정**된다.
+        self.assertEqual(basename_of("https://h/a/doc.txt#sec"), "doc.txt")
+
+    def test_local_path_keeps_hash(self) -> None:
+        from src.config.filename_util import basename_of
+
+        # 🔴 로컬 파일명의 ``#`` 는 **문자 그대로 살린다**(코어 ``basename_of`` docstring 의 근거).
+        # 유튜브 수집 파일명에 해시태그(``#식혜…``)가 들어오는데, 그것을 프래그먼트로 오인해
+        # 잘라내면 파일명이 바뀌어 원본을 못 찾는다. 이 계약이 바뀌면 그 수집분이 깨진다.
+        self.assertEqual(basename_of("/a/b/doc.txt#sec"), "doc.txt#sec")
+        self.assertEqual(basename_of("/a/b/(식혜) 영상 #전통음료.mp4"), "(식혜) 영상 #전통음료.mp4")
 
     def test_backslash_normalized(self) -> None:
         from src.config.filename_util import basename_of
