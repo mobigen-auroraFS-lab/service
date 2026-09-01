@@ -16,17 +16,23 @@ from service.portal._timeline_util import TIMELINE_INTERVALS, pivot_series
 from src.config.filename_util import (
     display_file_name,  # 화면용 파일명 — 저장 시 붙은 id 접두를 떼어 준다
 )
+from src.domain.status_vocab import AssetStatus
 
 # 도메인별 제외는 없다 — 통계·목록 모두 전 도메인을 균일하게 센다.
 # 파일 확장자(file_ext) = fs_path 마지막 .세그먼트(소문자·없으면 NULL). 단일 출처 ext_expr(비한정 fs_path).
 _EXT_EXPR = ext_expr()
 
+# 🔴 아래 둘은 **층이 다르다**(2026-09-02 정리):
+#   `_SNAPSHOT_BUCKETS` = **화면 묶음**(운영자가 보는 단위) — DB 값이 아니다.
+#   `_PROCESSING_STATUSES` 등 = **DB 값**(`asset.status` CHECK) — 코어 `AssetStatus` 정본에서 온다.
+#   이름이 겹치는 셋(deferred·registered·failed)은 우연히 1:1 이라 같은 글자일 뿐이다.
 # 운영 관점 5버킷 — 세분화된 처리 상태를 화면이 이해할 단위로 묶는다.
 # 버킷 순서 = 응답/집계 열거 순서(결정적). relation_proposed 는 registered 중 관계 제안이 있는 하위집합.
 _SNAPSHOT_BUCKETS = ("processing", "deferred", "registered", "failed", "relation_proposed")
 # '진행 중'에 해당하는 상태 4종. ⚠️ classified 는 여기 넣지 않는다 — 그것은 처리 단계가
 # 아니라 분류 결과 표식이라, 넣으면 이미 끝난 자산이 진행 중으로 잡힌다.
-_PROCESSING_STATUSES = ("received", "routing", "classifying", "extracting")
+_PROCESSING_STATUSES = (AssetStatus.RECEIVED, AssetStatus.ROUTING,
+                        AssetStatus.CLASSIFYING, AssetStatus.EXTRACTING)
 # relation_proposed 판별용 계보 activity(자산에 관계 제안이 붙은 lineage 기록).
 _RELATION_PROPOSED_ACTIVITY = "relations.proposed.v1"
 _RELATION_SCOPES = ("period", "alltime")  # 값 검증은 API 계층 몫 — 여기서는 쓰기만 한다
@@ -80,9 +86,9 @@ def _snapshot_bucket_predicate(bucket: str, pfx: str, *, relation_scope: str,
         lits = ", ".join(f"'{s}'" for s in _PROCESSING_STATUSES)
         return f"{pfx}status IN ({lits})", []
     if bucket == "deferred":
-        return f"{pfx}status = 'deferred'", []
+        return f"{pfx}status = '{AssetStatus.DEFERRED}'", []
     if bucket == "failed":
-        return f"{pfx}status = 'failed'", []
+        return f"{pfx}status = '{AssetStatus.FAILED}'", []
     if bucket in ("registered", "relation_proposed"):
         # 두 버킷 모두 등록완료(registered) 자산 중 관계 제안 유무로 갈린다(상호배타·합=전체 registered).
         scoped = relation_scope == "period" and since is not None and until is not None
@@ -91,7 +97,7 @@ def _snapshot_bucket_predicate(bucket: str, pfx: str, *, relation_scope: str,
         params: list[Any] = [_RELATION_PROPOSED_ACTIVITY]
         if scoped:
             params += [since, until]
-        return f"{pfx}status = 'registered' AND {neg}{exists}", params
+        return f"{pfx}status = '{AssetStatus.REGISTERED}' AND {neg}{exists}", params
     return "FALSE", []  # 모르는 버킷은 0행 — 조용히 전체를 반환하는 것보다 안전하다
 
 
@@ -192,8 +198,8 @@ def _snapshot_bucket_counts(cur: Any, where: str, period_params: list[Any]) -> l
     sql = (
         f"SELECT "
         f"count(*) FILTER (WHERE status IN ({proc})), "                 # processing
-        f"count(*) FILTER (WHERE status = 'deferred'), "               # deferred
-        f"count(*) FILTER (WHERE status = 'registered' AND NOT rp), "  # registered
+        f"count(*) FILTER (WHERE status = '{AssetStatus.DEFERRED}'), "   # deferred
+        f"count(*) FILTER (WHERE status = '{AssetStatus.REGISTERED}' AND NOT rp), "  # registered
         f"count(*) FILTER (WHERE status = 'failed'), "                 # failed
         f"count(*) FILTER (WHERE status = 'registered' AND rp) "       # relation_proposed
         f"FROM (SELECT status, "

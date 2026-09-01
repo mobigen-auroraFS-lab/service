@@ -22,10 +22,12 @@ from typing import Any
 from psycopg import Connection
 from psycopg.rows import dict_row
 
-# 묶음 이웃은 반드시 graph_query seam 경유(대칭 엣지 양방향·status 필터). 직접 graph_edge 쿼리 금지.
 from src.config.filename_util import (
     display_file_name,  # 내려받을 때 보일 파일명 — 저장 시 붙은 id 접두를 떼어 준다
 )
+
+# 묶음 이웃은 반드시 graph_query seam 경유(대칭 엣지 양방향·status 필터). 직접 graph_edge 쿼리 금지.
+from src.domain.status_vocab import AssetStatus
 from src.relations.graph_query import fetch_active_relations_for_asset
 
 logger = logging.getLogger(__name__)
@@ -43,10 +45,10 @@ LIMIT 1
 # 묶음에 담을 이웃들의 파일 경로 조회.
 # seed 는 ``resolve_download_target`` 로 registered 게이트됨 — 이웃만 SQL 로 재필터.
 # 아직 등록이 끝나지 않은 이웃은 묶음에서 빠진다(파일이 제자리에 없을 수 있다).
-_BUNDLE_PATHS_SQL = """
+_BUNDLE_PATHS_SQL = f"""
 SELECT asset_id, fs_path FROM asset
 WHERE asset_id = ANY(%s)
-  AND status = 'registered'
+  AND status = '{AssetStatus.REGISTERED}'
 """
 
 
@@ -134,7 +136,7 @@ def resolve_download_target(
 
     if row is None:
         return None
-    if row["status"] != "registered":
+    if row["status"] != AssetStatus.REGISTERED:
         return None
 
     fs_path = row["fs_path"]

@@ -26,6 +26,7 @@ from psycopg.rows import dict_row
 
 from service.portal.search_group import display_name
 from src.config.settings import get_current_settings
+from src.domain.status_vocab import AssetStatus
 from src.registry.access_tier import project_ext_meta
 from src.registry.ext_meta_field_registry import fetch_access_tiers
 from src.relations.graph_query import fetch_relations_for_asset
@@ -187,7 +188,7 @@ def fetch_asset_detail(
     # 노출 여부 판정
     if row is None:
         return None
-    if row["status"] != "registered":
+    if row["status"] != AssetStatus.REGISTERED:
         return None
 
     with conn.cursor(row_factory=dict_row) as cur:
