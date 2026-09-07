@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -23,6 +24,7 @@ from src.config.search_modalities import VALID_SEARCH_MODALITIES, parse_modaliti
 from src.domain.numeric import safe_float
 from src.registry.access_tier import project_ext_meta
 from src.registry.ext_meta_field_registry import fetch_access_tiers
+from src.search.facets import aggregate_facets
 from src.search.refine import refine_rows
 from src.search.search_filters import parse_search_filters
 from src.search.search_service import search_hybrid
@@ -89,12 +91,89 @@ def _project_grouped_search(
     return out
 
 
+def _topic_pairs_of(row: Mapping[str, Any]) -> list[str]:
+    """행이 나르는 주제 짝(``topic_pairs``)을 읽는다.
+
+    짝이 없는 옛 행(색인에 짝이 없던 문서)은 부모 주제(``topics``)만으로 센다 — 없는 조합을
+    만들어 내지 않는다.
+
+    Args:
+        row: 결과 행(``_shape`` 가 만든 응답 모양). 아무것도 바꾸지 않는다.
+
+    Returns:
+        ``"부모>자식"`` 또는 ``"부모"`` 문자열 목록(빈 값 제외).
+    """
+    pairs = [str(p) for p in (row.get("topic_pairs") or []) if p]
+    if not pairs:
+        pairs = [str(t) for t in (row.get("topics") or []) if t]
+    return pairs
+
+
+def _topic_keys_of(row: Mapping[str, Any]) -> Iterator[tuple[str, str]]:
+    """주제 축의 "묶는 법" — 짝의 첫 ``>`` 앞이 부모 주제이고, 키가 곧 라벨이다.
+
+    Args:
+        row: 결과 행.
+
+    Yields:
+        ``(부모 주제, 부모 주제)``. 첫 ``>`` 로만 자른다 — 세부주제에 ``>`` 가 섞여도 부모가
+        어긋나지 않게. 부모가 빈 짝은 내지 않는다.
+    """
+    for pair in _topic_pairs_of(row):
+        parent = pair.split(">", 1)[0]
+        if parent:
+            yield parent, parent
+
+
+def _subtopic_keys_of(row: Mapping[str, Any]) -> Iterator[tuple[str, str]]:
+    """세부주제 축의 "묶는 법" — 짝 문자열 자체가 키다(부모 아래에만 귀속돼 교차곱이 생기지 않는다).
+
+    Args:
+        row: 결과 행.
+
+    Yields:
+        ``(짝, 짝)``. 부모나 자식이 빈 짝(``">x"``·``"x>"``)은 내지 않는다.
+    """
+    for pair in _topic_pairs_of(row):
+        idx = pair.find(">")
+        if idx > 0 and pair[idx + 1 :]:
+            yield pair, pair
+
+
+def _asset_unit(row: Mapping[str, Any]) -> str:
+    """계수 단위 = 자산 id — 같은 자산이 여러 모달리티 버킷에 있어도 1건으로 센다.
+
+    Args:
+        row: 결과 행.
+
+    Returns:
+        자산 id. 없으면 빈 문자열(그 행은 세지 않는다).
+    """
+    return str(row.get("asset_id") or "")
+
+
+def _first_original(originals: list[str]) -> str:
+    """닫힌 어휘 축의 표시 라벨 = 키 그대로(표기 투표·공백 다듬기 없음 — 종전 응답과 글자까지 같게).
+
+    Args:
+        originals: 같은 키로 묶인 원문들(주제 축은 전부 같은 값이다).
+
+    Returns:
+        첫 원문.
+    """
+    return originals[0]
+
+
 def _search_topic_facet(grouped: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
     """검색 결과에 걸린 자산들이 공유하는 주제를 세어 패싯으로 만든다.
 
     행에 이미 실려 온 **부모-자식 짝**을 그대로 쓴다 — 자산마다 DB 를 다시 묻지 않는다.
     짝을 쓰는 이유: 부모 목록과 자식 목록을 따로 받아 곱하면, 자산 하나가 여러 주제에
     걸릴 때 있지도 않은 조합이 생긴다.
+
+    **세는 규칙은 코어 정본 하나**(``aggregate_facets`` — 자산당 1회 계수·건수 내림차순·동수는
+    이름순)를 부르고, 여기서는 주제 축의 "묶는 법"과 응답 모양(부모 아래 자식 목록)만 정한다
+    (093 2단계 · 규칙 ① "어디서 세어도 같은 건수" 는 코어, 규칙 ② 화면 모양은 백엔드).
 
     Args:
         grouped: 모달리티별 검색 결과 행. 각 행의 주제 짝만 읽고 아무것도 바꾸지 않는다.
@@ -104,36 +183,29 @@ def _search_topic_facet(grouped: dict[str, list[dict[str, Any]]]) -> list[dict[s
         주제별 자산 수와 그 아래 세부주제 분포. 자산 수 내림차순, 동수는 이름순으로
         갈라 순서를 고정한다.
     """
-    topic_assets: dict[str, set[str]] = {}
-    topic_subs: dict[str, dict[str, set[str]]] = {}  # topic_ko → {subtopic_ko → {asset_id}}
-    for rows in grouped.values():
-        for r in rows:
-            aid = str(r.get("asset_id") or "")
-            if not aid:
-                continue
-            pairs = [str(p) for p in (r.get("topic_pairs") or []) if p]
-            if not pairs:
-                pairs = [str(t) for t in (r.get("topics") or []) if t]
-            for pair in pairs:
-                idx = pair.find(">")  # 첫 '>' 로만 자른다 — 세부주제에 '>' 가 섞여도 부모가 어긋나지 않게
-                tk = pair if idx < 0 else pair[:idx]
-                sk = "" if idx < 0 else pair[idx + 1 :]
-                if not tk:
-                    continue
-                topic_assets.setdefault(tk, set()).add(aid)
-                sub_map = topic_subs.setdefault(tk, {})
-                if sk:  # subtopic 은 실제 부모 tk 아래에만 귀속(교차곱 제거)
-                    sub_map.setdefault(sk, set()).add(aid)
-    facet = []
-    for tk, assets in topic_assets.items():
-        subs = [
-            {"subtopic_ko": sk, "asset_count": len(a)}
-            for sk, a in topic_subs.get(tk, {}).items()
-        ]
-        subs.sort(key=lambda s: (-s["asset_count"], s["subtopic_ko"]))
-        facet.append({"topic_ko": tk, "asset_count": len(assets), "subtopics": subs})
-    facet.sort(key=lambda f: (-f["asset_count"], f["topic_ko"]))
-    return facet
+    rows = [row for bucket_rows in grouped.values() for row in bucket_rows]
+    parents = aggregate_facets(
+        rows, keys_of=_topic_keys_of, unit_of=_asset_unit, label_of=_first_original
+    )
+    pairs = aggregate_facets(
+        rows, keys_of=_subtopic_keys_of, unit_of=_asset_unit, label_of=_first_original
+    )
+    # 짝 목록은 이미 (건수 내림차순 → 짝 문자열 오름차순)이라, 부모별로 나눠 담기만 하면
+    # 부모 안 순서가 (건수 내림차순 → 세부주제 이름순)이 된다 — 앞부분 "부모>" 가 같기 때문.
+    subs_by_topic: dict[str, list[dict[str, Any]]] = {}
+    for item in pairs["items"]:
+        parent, sub = item["label"].split(">", 1)
+        subs_by_topic.setdefault(parent, []).append(
+            {"subtopic_ko": sub, "asset_count": item["count"]}
+        )
+    return [
+        {
+            "topic_ko": item["label"],
+            "asset_count": item["count"],
+            "subtopics": subs_by_topic.get(item["label"], []),
+        }
+        for item in parents["items"]
+    ]
 
 
 def _parse_search_mode(mode: str) -> str:
