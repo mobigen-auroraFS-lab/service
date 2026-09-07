@@ -19,8 +19,8 @@ from pydantic import BaseModel
 from service.api import _infra
 from service.portal.access_log import record_access
 from service.portal.auth import Principal, require_principal
+from service.portal.review_vocab import REVIEW_STATUSES
 from src.relations.review import (
-    _REVIEW_STATUSES,
     bulk_review,
     promote_relation_kind,
     revise_edge,
@@ -159,10 +159,10 @@ def relations_revise(
     Raises:
         HTTPException: 허용 목록 밖 상태면 400.
     """
-    if body.to_status not in _REVIEW_STATUSES:
+    if body.to_status not in REVIEW_STATUSES:
         raise HTTPException(
             status_code=400,
-            detail=f"알 수 없는 to_status: {body.to_status!r} (허용: {list(_REVIEW_STATUSES)})",
+            detail=f"알 수 없는 to_status: {body.to_status!r} (허용: {list(REVIEW_STATUSES)})",
         )
     reviewer = principal.user_id
 
