@@ -75,7 +75,8 @@ class TestGroupRanked(unittest.TestCase):
             set(item.keys()),
             {"asset_id", "modality", "similarity", "summary", "file_name", "domain_label",
              "topics", "subtopics",  # 057-후속: 주제 패싯·클라 좁히기용 통과
-             "topic_pairs"},  # 059: 부모>자식 짝(프론트 트리) 통과
+             "topic_pairs",  # 059: 부모>자식 짝(프론트 트리) 통과
+             "tags"},  # 083 FR-106: 태그 원문 배열(패싯·클라 좁히기·091 재검색용) 통과
         )
         self.assertEqual(item["modality"], "text")
         self.assertEqual(item["domain_label"], "review")
@@ -92,6 +93,7 @@ class TestGroupRanked(unittest.TestCase):
         result = _result({"text_documents": [{"id": "a", "similarity": 0.5}]})
         item = group_ranked(result, limit_per_modality=20)["text"][0]
         self.assertEqual(item["topic_pairs"], [])
+        self.assertEqual(item["tags"], [])  # 083: 태그도 없으면 빈 배열(키는 항상 존재)
 
     def test_all_modality_labels(self) -> None:
         # 4개 버킷 키가 각각 text/audio/image/video 섹션으로 매핑된다.

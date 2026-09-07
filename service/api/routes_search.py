@@ -20,7 +20,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from service.api import _infra
 from service.portal.auth import Principal, require_principal
 from service.portal.search_group import asset_refine_fields, group_ranked
+from service.portal.search_presets import DEFAULT_PRESET, PRESETS, resolve_tuning, tuning_meta
+from src.config.search_constants import TAG_FACET_MIN_COUNT_DEFAULT, TAG_FACET_TOP_N_DEFAULT
 from src.config.search_modalities import VALID_SEARCH_MODALITIES, parse_modalities_csv
+from src.config.settings import get_current_settings
 from src.domain.numeric import safe_float
 from src.registry.access_tier import project_ext_meta
 from src.registry.ext_meta_field_registry import fetch_access_tiers
@@ -28,6 +31,8 @@ from src.search.facets import aggregate_facets
 from src.search.refine import refine_rows
 from src.search.search_filters import parse_search_filters
 from src.search.search_service import search_hybrid
+from src.search.search_tuning import SearchTuning
+from src.search.tag_facets import aggregate_tag_facets
 
 router = APIRouter()
 
@@ -257,6 +262,77 @@ def _parse_modalities(modalities: str | None) -> list[str] | None:
     return mods or None
 
 
+def _parse_preset(preset: str) -> str:
+    """검색 튜닝 프리셋 이름을 검증한다(닫힌 어휘).
+
+    Args:
+        preset: 요청 값. 빈 값이면 ``default`` 로 본다.
+
+    Returns:
+        소문자로 정규화된 프리셋 이름.
+
+    Raises:
+        HTTPException: 허용 밖 값이면 400 — 오타를 기본 프리셋으로 흡수하면 사용자는 다른 눈금으로
+            검색된 줄 안다(``mode`` 검증과 같은 원칙).
+    """
+    name = (preset or DEFAULT_PRESET).strip().lower()
+    if name not in PRESETS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"알 수 없는 preset: {preset!r} (허용: {', '.join(PRESETS)})",
+        )
+    return name
+
+
+def _base_tuning() -> SearchTuning:
+    """서버 설정에서 기본 튜닝 묶음을 해소한다 — 코어가 ``tuning`` 인자 없이 하는 것과 **같은 규칙**.
+
+    같은 설정 객체에 같은 classmethod 를 쓰므로 값이 코어의 자체 해소와 같다. 그래서 ``default``
+    프리셋을 명시적으로 넘겨도 응답은 인자를 안 넘긴 종전과 완전히 같다. 설정 미초기화(순수 단위
+    테스트)면 상수 기본값 — 이것도 코어 폴백과 같다.
+
+    Returns:
+        설정에서 해소한 ``SearchTuning``.
+    """
+    try:
+        cfg = get_current_settings()
+    except RuntimeError:
+        return SearchTuning()
+    return SearchTuning.from_settings(cfg)
+
+
+def _tag_facet_limits() -> tuple[int, int]:
+    """태그 패싯의 상위 노출 개수·노출 하한을 설정에서 읽는다.
+
+    Returns:
+        ``(top_n, min_count)``. 설정 미초기화면 코어 상수 기본값(12·2) — 설정 spec 의 기본과 같은 정본.
+    """
+    try:
+        search_cfg = get_current_settings().search
+    except RuntimeError:
+        return TAG_FACET_TOP_N_DEFAULT, TAG_FACET_MIN_COUNT_DEFAULT
+    return search_cfg.tag_facet_top_n, search_cfg.tag_facet_min_count
+
+
+def _tag_facets(grouped: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    """응답에 실리는 결과 행 전체(모달리티 합)에서 태그 패싯을 센다 — 결과-스코프(083 전달물 §1).
+
+    세는 규칙은 코어 ``aggregate_tag_facets`` 그대로다(자체 집계 금지 — 건수 계약이 코어 테스트에
+    묶여 있다). 여기서는 입력(지금 보이는 행)과 응답 모양만 정한다.
+
+    Args:
+        grouped: 모달리티별 결과 행(권한 투영·좁히기까지 끝난 것 — 화면에 보이는 그 행들).
+
+    Returns:
+        ``{"items": [{"label", "count"}, …], "has_more": bool}``. ``label_by_key`` 는 내부 산출물이라
+        싣지 않는다.
+    """
+    rows = [row for bucket_rows in grouped.values() for row in bucket_rows]
+    top_n, min_count = _tag_facet_limits()
+    out = aggregate_tag_facets(rows, top_n=top_n, min_count=min_count)
+    return {"items": out["items"], "has_more": out["has_more"]}
+
+
 # ── 디버그 뷰(no_cutoff·compact) — 기본 off = 기존 grouped 응답 불변 ──────────────
 # 간략 보기는 이미 계산된 결과를 다시 쓰기만 한다 — 검색을 두 번 돌리지 않는다.
 # 된 grouped 위에서 계산 — 원시 search_hybrid 버킷 사용 시 tier 미투영 요약 유출이라 정제 후 입력(도메인 배제는 dormant).
@@ -340,6 +416,14 @@ def search(
     created_to: str | None = Query(None, description="생성일 상한(YYYY-MM-DD 또는 ISO datetime, UTC)"),
     topic: str | None = Query(None, description="주제(topic) 정확 일치 필터"),
     subtopic: str | None = Query(None, description="세부주제(subtopic) 정확 일치 필터"),
+    tag: list[str] | None = Query(
+        None,
+        description=(
+            "태그 필터(반복 가능 · 화면에 보인 라벨 원문 그대로). 태그끼리 OR, 다른 축(주제·기간·확장자)과"
+            " AND. 패싯 클릭 좁히기는 이 파라미터가 아니라 받은 결과 행의 tags 로 화면이 거른다(083 ⓐ)"
+            " — 이 파라미터는 태그 단독 탐색(전 코퍼스 조회)용이다."
+        ),
+    ),
     no_cutoff: bool = Query(
         False, description="true 면 모달리티별 적합도 컷오프를 무시(약한 매칭까지 노출·디버그용·기본 off)"
     ),
@@ -355,6 +439,13 @@ def search(
         False,
         description="true 면 전 모달리티를 합쳐 점수순 top-K(=size)로 축약(순위·모달리티·점수·파일명·요약·기본 off)",
     ),
+    preset: str = Query(
+        DEFAULT_PRESET,
+        description=(
+            "검색 튜닝 프리셋(닫힌 이름 · 현재 default 하나 = 서버 설정값 그대로). 원시 숫자는 받지 않는다."
+            " 적용된 값은 meta.tuning 에 그대로 기록된다(같은 질의 + 같은 프리셋 = 같은 결과)."
+        ),
+    ),
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
     """하이브리드 검색 결과를 **모달리티별 그룹**으로 돌려준다.
@@ -365,6 +456,9 @@ def search(
     """
     mods = _parse_modalities(modalities)
     search_mode = _parse_search_mode(mode)
+    preset_name = _parse_preset(preset)
+    # 손잡이는 코어(tuning=), 눈금은 백엔드(프리셋) — default 는 설정값 그대로라 종전과 같다.
+    tuning = resolve_tuning(preset_name, _base_tuning())
     try:
         search_filters = parse_search_filters(
             file_ext=file_ext,
@@ -372,6 +466,7 @@ def search(
             created_to=created_to,
             topic=topic,
             subtopic=subtopic,
+            tag=tag,  # 정규화·가공 없이 그대로(정규화는 코어 몫 · 083 전달물 §1)
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=f"필터 파라미터 형식 오류: {exc}") from exc
@@ -386,6 +481,7 @@ def search(
         search_filters=search_filters,
         # 디버그용 우회. 기본은 꺼져 있어 평소 호출에는 영향이 없다.
         disable_os_cutoff=no_cutoff,
+        tuning=tuning,
     )
 
     # 모달리티별로 독립 순위를 매겨 상위 N개씩 담는다(배제 목록은 현재 비어 있다).
@@ -417,6 +513,9 @@ def search(
         # DB 를 다시 잡지 않는다.
         topic_facets = _search_topic_facet(grouped)
 
+    # 태그 패싯도 "지금 보이는 결과" 스코프다(083 SC-02) — 좁힌 뒤의 행으로 센다.
+    tag_facets = _tag_facets(grouped)
+
     # 디버그 opt-in(기본 off): compact 뷰는 이미 clearance projection 된 grouped 위에서 계산(tier 유출 0·도메인 배제 dormant).
     if compact:
         return _compact_view(grouped, q, size)
@@ -430,6 +529,8 @@ def search(
         "counts": counts,
         # 이번 결과 안에서만 주제를 센다 — 화면에서 주제를 누르면 그 값으로 다시 필터한다.
         "topic_facets": topic_facets,
+        # 태그 축(083) — 주제 축과 분리된 단일 목록(상위 N + has_more). 건수는 화면이 재계산하지 않는다.
+        "tag_facets": tag_facets,
     }
     # 파라미터를 준 요청에만 실린다 — 안 주면 응답이 091 이전과 **완전히 같다**(되돌림의 실질).
     if refine_applied:
@@ -442,6 +543,9 @@ def search(
     search_plan = (result.get("meta") or {}).get("search_plan")
     if search_plan is not None:
         meta["search_plan"] = search_plan
+    # 이번 검색에 실제 적용된 튜닝(프리셋 이름 + 값 전부) — 서버 설정이 나중에 바뀌어도 이 응답이
+    # 왜 이렇게 나왔는지 그대로 재현할 수 있다(헌법 3조 · ADR §6-3).
+    meta["tuning"] = tuning_meta(preset_name, tuning)
     # 검색이 남긴 관측치(게이트·검증·정규화)를 응답에 실어 준다 — 있을 때만 넣는다.
     for obs_key in ("os_gate", "llm_verify", "query_norm"):
         obs_val = (result.get("meta") or {}).get(obs_key)
@@ -458,6 +562,7 @@ def search(
             else None,
             "topic": search_filters.topic,
             "subtopic": search_filters.subtopic,
+            "tag": list(search_filters.tags),
         }
 
     return {

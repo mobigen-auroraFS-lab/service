@@ -107,6 +107,9 @@ def _shape(row: dict[str, Any], modality: str) -> dict[str, Any]:
         # 부모·자식을 따로 내리면 화면이 둘을 곱해 있지도 않은 조합을 그린다 — 짝을 그대로 내린다.
         # 색인에 짝이 없는 옛 문서는 빈 목록으로 와, 화면이 부모 목록만으로 그리게 된다.
         "topic_pairs": [str(t) for t in (row.get("topic_pairs") or [])],
+        # 태그 원문 배열(083 FR-106). 항상 있는 키 — 없으면 빈 배열(화면이 키 유무를 분기하지 않게).
+        # 태그 패싯(meta.tag_facets)·화면의 패싯 클릭 좁히기·결과 내 재검색(091)이 이 값을 본다.
+        "tags": [str(t) for t in (row.get("tags") or [])],
     }
 
 
