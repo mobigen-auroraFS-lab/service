@@ -1,33 +1,35 @@
-"""백엔드 부트스트랩 — dataplatform-service 자기 레포 루트의 ``.env.{env}`` 로드 + 코어 init_settings.
+"""백엔드 부트스트랩 — 코어 ``bootstrap_env`` 를 **자기 레포 루트 · 서빙 역할**로 부른다(093 5단계).
 
-왜 코어의 ``src.config.bootstrap.bootstrap_env`` 를 그대로 쓰지 않는가(비자명):
-    코어 부트스트랩은 ``bootstrap.py`` 파일 위치(코어 레포) 기준으로 ``.env.{env}`` 를 찾는다 — 코어 레포
-    자체 진입점(run_ingest 등)용이다. 백엔드가 그걸 호출하면 **코어 레포의 .env 를 로드**해 버려, 백엔드
-    자신의 설정(``dataplatform-service/.env.{env}``)이 무시된다. 그래서 백엔드는 **자기 레포 루트** 기준으로
-    .env 를 로드하는 전용 부트스트랩을 둔다. 로드 후엔 **코어의** ``init_settings`` 로 필수 env 검증 +
-    frozen 설정 생성(이후 ``get_current_settings`` 활성) — 설정 스키마·검증 로직은 코어 단일 출처를 재사용한다.
+무엇을 하는가: 서버가 뜰 때 ``dataplatform-service/.env.{env}`` 를 읽고 코어 설정을 초기화한다. 종전에는
+코어 함수가 코어 레포 위치 기준으로 ``.env`` 를 찾아서(A8) 백엔드가 같은 5줄을 복사해 자기 루트를 계산했다.
+코어가 ``repo_root=`` 를 받게 되면서 복사본은 사라지고 이 모듈은 **호출 한 줄**만 남긴다 — 설정 스키마·필수
+env 검증·``.env`` 탐색 규칙은 코어 단일 출처다.
 
-    (코어는 ``src.*`` 로 설치해 참조하고, 백엔드 코드는 ``service.*`` 다.)
+``role="serving"``: 백엔드는 텍스트 청킹·요약 길이·키워드 수·파일 인코딩 같은 **적재 전용 값을 읽지 않는다**.
+그래서 코어 설정을 서빙 역할로 초기화해 그 5개(``ENCODING``·``CHUNK_SIZE``·``OVERLAP_SIZE``·``SUMMARY_MAX_CHARS``·
+``TOP_K_KEYWORDS``)가 없어도 뜬다. 질의 임베딩 모델·LLM 접속·DB·OpenSearch 는 서빙도 쓰므로 그대로 필수다.
+
+탐색 순서는 코어 규칙 그대로 "작업 디렉터리 → 이 레포 루트"(두 곳에 있으면 앞선 것 하나만). 보통 서버는
+레포 루트에서 띄우므로 두 후보가 같은 파일이다.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-from dotenv import load_dotenv
-
-# 코어(설치/참조)의 설정 생성 로직 재사용 — 스키마·필수 env 검증 단일 출처.
-from src.config.settings import PipelineSettings, init_settings
+from src.config.bootstrap import bootstrap_env as core_bootstrap_env
+from src.config.settings import PipelineSettings
 
 # service/bootstrap.py → parents[1] = 백엔드 레포 루트(dataplatform-service). 코어가 아니라 **여기** 기준.
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def bootstrap_env(env: str) -> PipelineSettings:
-    """``dataplatform-service/.env.{env}`` 로드(있으면·override=False) 후 코어 ``init_settings(env)``.
+    """``dataplatform-service/.env.{env}`` 로드 후 코어 설정을 **서빙 역할**로 초기화한다.
 
-    ``override=False``: OS 에 이미 있는 환경변수(컨테이너 주입 등)를 .env 가 덮지 않는다. .env 부재 시
-    (환경변수 직접 주입) 로드는 건너뛰고 init_settings 는 그대로 수행한다(코어 bootstrap 동형)."""
-    env_file = _REPO_ROOT / f".env.{env}"
-    if env_file.exists():
-        load_dotenv(env_file, override=False)
-    return init_settings(env)
+    Args:
+        env: 설정 프로파일(``dev``·``prod``). ``PORTAL_API_ENV`` 에서 온다.
+
+    Returns:
+        코어 ``init_settings`` 가 만든 frozen 설정(이후 ``get_current_settings`` 활성).
+    """
+    return core_bootstrap_env(env, repo_root=_REPO_ROOT, role="serving")

@@ -71,23 +71,23 @@ set -a; . ./.env.dev; set +a
 
 ### 🔴 필수 — 없으면 기동 시점에 실패합니다
 
-코어 설정 로더가 다음 11개를 **필수로 요구**합니다(미설정 시 `ValueError: 필수 환경변수 누락: <이름>`
-으로 즉시 중단 — 잘못된 설정으로 조용히 도는 것을 막는 fail-fast). `/health` 만 확인할 때는 값이
-형식만 맞으면 되고 DB·LLM 에 접속하지 않습니다.
+백엔드는 코어 설정을 **서빙 역할**로 초기화합니다(`service/bootstrap.py` → 코어 `bootstrap_env(env, repo_root=…, role="serving")`).
+그래서 코어의 필수 11개 중 **적재 전용 5개**(`ENCODING`·`CHUNK_SIZE`·`OVERLAP_SIZE`·`SUMMARY_MAX_CHARS`·`TOP_K_KEYWORDS` —
+요약·청킹이 읽는 값)는 요구하지 않고, 다음 **6개**만 필수입니다(미설정 시 `ValueError: 필수 환경변수 누락: <이름>`
+으로 즉시 중단 — 잘못된 설정으로 조용히 도는 것을 막는 fail-fast). `/health` 만 확인할 때는 값이 형식만 맞으면 되고
+DB·LLM 에 접속하지 않습니다.
 
 ```dotenv
-META_MODEL=              # 온프레미스 LLM 모델 이름
-ENCODING=utf-8
-CHUNK_SIZE=1000
-OVERLAP_SIZE=100
-SUMMARY_MAX_CHARS=500
-TOP_K_KEYWORDS=10
-TEXT_EMBED_MODEL=
-TEXT_EMBED_CHUNK_SIZE=512
-TEXT_EMBED_NORMALIZE=true
+META_MODEL=              # 온프레미스 LLM 모델 이름(검색 결과 검증·질의 정규화 LLM 방식·개체 판정이 켜져 있을 때 사용)
 OPENAI_BASE_URL=         # OpenAI 호환 엔드포인트(= 온프레미스 LLM 서버)
 OPENAI_API_KEY=
+TEXT_EMBED_MODEL=        # 질의를 벡터로 바꾸는 임베딩 모델 — 문서 색인과 같아야 합니다
+TEXT_EMBED_CHUNK_SIZE=512
+TEXT_EMBED_NORMALIZE=true
 ```
+
+> 적재 전용 5개를 그래도 넣어 두면 그 값이 읽힙니다(형식 검증 포함). 없으면 코어가 정한 자리값이 들어가며 백엔드는
+> 그 값을 어디에서도 읽지 않습니다.
 
 ### 그 외
 
@@ -97,9 +97,10 @@ OPENAI_API_KEY=
 | DB | `POSTGRES_HOST` · `POSTGRES_PORT` · `POSTGRES_DB` · `POSTGRES_USER` · `POSTGRES_PASSWORD` |
 | 검색 | `OPENSEARCH_HOST` · `OPENSEARCH_PORT` |
 | 인증 | `PORTAL_AUTH_DISABLED` · `PORTAL_JWT_SECRET` · `PORTAL_JWT_ISSUER` · `PORTAL_JWT_TTL_SECONDS` · `PORTAL_AUTH_BACKEND` |
-| 파일 | `WATCHER_ARCHIVE_DIR`(다운로드·썸네일이 읽는 보관 경로) |
+| 썸네일 | `THUMBNAIL_CACHE_DIR`(선택 · 기본 시스템 임시 디렉터리) |
 
-> ⚠️ 보관 경로는 **파이프라인 레포와 같은 값**이어야 합니다(같은 파일을 읽습니다).
+> 원본 파일 위치는 별도 설정이 없습니다 — 다운로드·썸네일은 **DB 에 기록된 경로(`fs_path`)** 를 읽습니다.
+> 그 경로가 이 서버에서 접근 가능해야 합니다(적재한 기계와 다른 기계면 같은 마운트가 필요합니다).
 
 ### 인증 동작 (중요)
 
@@ -149,7 +150,7 @@ python -m unittest discover -s tests
 service/
   api/          FastAPI 앱·라우터·요청/응답 모델·미들웨어
   portal/       검색 조립·자산 조회·다운로드·썸네일·인증/권한
-  bootstrap.py  설정 로드·초기화
+  bootstrap.py  코어 bootstrap_env 호출(자기 레포 루트의 .env · 서빙 역할)
 tests/          단위 테스트
 ```
 
@@ -182,13 +183,14 @@ tests/          단위 테스트
 ### 검색 결과가 비어 있습니다
 
 적재·색인이 끝나 있어야 합니다. 파이프라인 레포에서 수집을 돌리고 `OPENSEARCH_SYNC_ENABLED=true`
-인지 확인하십시오. 다운로드·썸네일이 404 면 `WATCHER_ARCHIVE_DIR` 가 파이프라인과 **같은 값**인지 보십시오.
+인지 확인하십시오. 다운로드·썸네일이 404 면 DB 에 기록된 원본 경로(`fs_path`)가 **이 서버에서 접근 가능한지** 보십시오
+(적재한 기계와 다르면 같은 경로로 마운트돼 있어야 합니다).
 
 ## 이 레포에 대해
 
-이 레포는 **내부 개발 레포에서 생성된 공개용 사본**입니다. 소스 코드·DB 스키마·테스트만 담고 있고,
-기획·설계 문서는 포함하지 않습니다.
+이 레포는 이 프로젝트의 **공개 개발 레포**입니다 — 소스는 여기서 직접 개발합니다(2026-08-06 이후). 코드·테스트와
+"어떻게 돌리나"(이 README)만 담고, **왜 이렇게 설계했나**(기획·설계 문서·설계 변경 이력·결정 기록)는 별도 비공개
+문서 레포에 있습니다. 그래서 커밋 메시지는 짧고, 근거는 `근거: 설계이력 YYYY-MM-DD` 한 줄로 그 문서를 가리킵니다.
 
-- **직접 커밋·PR 은 반영되지 않습니다** — 내용은 릴리스마다 내부 레포에서 다시 생성되어 덮어써집니다.
-  Issues 는 비활성화돼 있습니다.
+- 코어는 git 태그(`vMAJOR.MINOR.PATCH`)를 기준으로 설치합니다. 코어 공개 API 변경은 코어 `CHANGELOG.md` 에 있습니다.
 - 문의는 과제 담당자에게 해주십시오.
