@@ -44,12 +44,14 @@ from service.portal.lineage_query import (
     relation_proposed_summary,
 )
 from service.portal.review_vocab import REVIEW_STATUSES
+from src.domain.status_vocab import RelationKindStatus
 from src.relations.review import list_edges_for_review, list_relation_kinds
 
 router = APIRouter()
 
-# 필터 드롭다운에 노출할 관계 종류 상태. 검토 대기·활성 둘만 보여 준다.
-_RELATION_KIND_STATUSES = ("active", "inactive")
+# 필터 드롭다운에 노출할 관계 종류 상태(``relation_kind.status`` CHECK 와 동기인 코어 어휘에서 파생).
+# 순서 = Enum 선언 순서 = 400 응답 "허용: [...]" 문구 순서(종전 리터럴 ("active", "inactive") 와 같다).
+_RELATION_KIND_STATUSES = tuple(s.value for s in RelationKindStatus)
 
 
 @router.get("/admin/assets/{asset_id}/lineage")
