@@ -16,6 +16,7 @@ from service.portal._timeline_util import TIMELINE_INTERVALS, pivot_series
 from src.config.filename_util import (
     display_file_name,  # 화면용 파일명 — 저장 시 붙은 id 접두를 떼어 준다
 )
+from src.database.lineage_activity import LineageActivity  # 계보 활동명 정본(파이프가 쓰는 그 값)
 from src.domain.status_vocab import AssetStatus
 
 # 도메인별 제외는 없다 — 통계·목록 모두 전 도메인을 균일하게 센다.
@@ -34,7 +35,9 @@ _SNAPSHOT_BUCKETS = ("processing", "deferred", "registered", "failed", "relation
 _PROCESSING_STATUSES = (AssetStatus.RECEIVED, AssetStatus.ROUTING,
                         AssetStatus.CLASSIFYING, AssetStatus.EXTRACTING)
 # relation_proposed 판별용 계보 activity(자산에 관계 제안이 붙은 lineage 기록).
-_RELATION_PROPOSED_ACTIVITY = "relations.proposed.v1"
+# 🔴 문자열을 여기 적지 않는다 — 쓰는 쪽(코어 관계 생성)과 읽는 쪽(이 집계)이 같은 정본을 봐야
+#    한 글자 어긋남으로 5버킷이 조용히 0이 되는 일이 없다(093 1단계).
+_RELATION_PROPOSED_ACTIVITY = LineageActivity.RELATIONS_PROPOSED
 _RELATION_SCOPES = ("period", "alltime")  # 값 검증은 API 계층 몫 — 여기서는 쓰기만 한다
 # 자산 생성 추이 group_by 화이트리스트 → 컬럼식(고정 매핑·사용자 입력은 키로만 조회·인젝션 안전).
 # file_ext 는 평컬럼이 아닌 확장자 정규식(_EXT_EXPR) — 단일 테이블(asset) 쿼리라 fs_path 비한정 안전.

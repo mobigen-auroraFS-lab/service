@@ -12,7 +12,6 @@
 
 from __future__ import annotations
 
-import math
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -21,6 +20,7 @@ from service.api import _infra
 from service.portal.auth import Principal, require_principal
 from service.portal.search_group import asset_refine_fields, group_ranked
 from src.config.search_modalities import VALID_SEARCH_MODALITIES, parse_modalities_csv
+from src.domain.numeric import safe_float
 from src.registry.access_tier import project_ext_meta
 from src.registry.ext_meta_field_registry import fetch_access_tiers
 from src.search.refine import refine_rows
@@ -190,24 +190,6 @@ def _parse_modalities(modalities: str | None) -> list[str] | None:
 # 된 grouped 위에서 계산 — 원시 search_hybrid 버킷 사용 시 tier 미투영 요약 유출이라 정제 후 입력(도메인 배제는 dormant).
 
 
-def _finite(value: object) -> float:
-    """점수를 **유한한 실수**로 정화한다.
-
-    NaN·무한대가 섞이면 정렬 순서가 실행마다 달라진다 — 정렬 전에 여기서 걸러낸다.
-
-    Args:
-        value: 어떤 값이든.
-
-    Returns:
-        유한 실수. 변환 불가·비유한이면 0.0.
-    """
-    try:
-        x = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return 0.0
-    return x if math.isfinite(x) else 0.0
-
-
 def _clip_text(text: str, max_chars: int) -> str:
     """요약을 한 줄로 펴고 길면 잘라 준다.
 
@@ -245,7 +227,7 @@ def _compact_view(
     flat: list[tuple[float, str, dict[str, Any]]] = []
     for modality, rows in grouped.items():
         for r in rows:
-            score = round(_finite(r.get("similarity")), 4)
+            score = round(safe_float(r.get("similarity")), 4)  # 정화 규칙은 코어 정본 하나(093 1단계)
             iid = str(r.get("asset_id", ""))
             flat.append(
                 (

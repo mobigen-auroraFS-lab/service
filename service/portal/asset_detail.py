@@ -29,6 +29,7 @@ from src.config.settings import get_current_settings
 from src.domain.status_vocab import AssetStatus
 from src.registry.access_tier import project_ext_meta
 from src.registry.ext_meta_field_registry import fetch_access_tiers
+from src.relations.approval_policy import tier_rank  # 노출 등급 순위(강칸 먼저) — 코어 정본
 from src.relations.graph_query import fetch_relations_for_asset
 
 # asset + metadata 1행. LEFT JOIN — 메타 없어도 자산 행 유지(core/ext NULL 가능).
@@ -62,11 +63,10 @@ _EDGE_DETAIL_KEYS = (
     "tier", "folded_kind_codes",
 )
 
-# 이웃 목록 정렬 우선순위 — 강칸이 먼저다(코어 `graph_query._TIER_RANK` 와 같은 값).
-# 이 표가 없으면 아래 정렬이 신뢰도만 보고, 그러면 **고신뢰 약칸이 저신뢰 강칸을 밀어내**
-# 사람이 확인해 준 관계가 아래로 내려간다. 코어가 등급 순으로 넘겨도 여기서 다시 정렬하므로,
-# 등급을 정렬키에 넣지 않으면 코어의 정렬이 무효화된다(지우면 재발한다).
-_TIER_RANK = {"strong": 0, "weak": 1}
+# 이웃 목록 정렬 우선순위 — 강칸이 먼저다. 순위표는 코어 ``approval_policy.tier_rank``(``TIER_ORDER``)
+# 하나만 쓴다(종전에는 같은 표 사본 ``_TIER_RANK`` 를 여기 들고 있었다 — 093 1단계에서 제거).
+# 등급을 정렬키에 넣지 않으면 **고신뢰 약칸이 저신뢰 강칸을 밀어내** 사람이 확인해 준 관계가
+# 아래로 내려간다. 코어가 등급 순으로 넘겨도 여기서 다시 정렬하므로 등급이 키에 있어야 한다.
 
 
 def _conf_sort_key(confidence: Any) -> float:
@@ -134,8 +134,7 @@ def _merge_relations_by_asset(neighbor_edges: list[dict[str, Any]]) -> list[dict
         # 이라 min() 으로 고른다 — max 가 아니다). 코어가 이웃당 하나로 접어 보내므로 보통
         # 엣지는 1건이지만, 접기가 꺼지거나 계약이 바뀌어도 강칸을 잃지 않게 방어한다
         # (약칸 하나 때문에 확인된 관계가 아래로 밀리면 안 된다).
-        tier = min((str(ed.get("tier") or "") for ed in edges),
-                   key=lambda t: _TIER_RANK.get(t, len(_TIER_RANK)), default="")
+        tier = min((str(ed.get("tier") or "") for ed in edges), key=tier_rank, default="")
         merged.append(
             {
                 "asset_id": g["asset_id"],
@@ -151,7 +150,7 @@ def _merge_relations_by_asset(neighbor_edges: list[dict[str, Any]]) -> list[dict
     # **등급이 신뢰도보다 앞선다.** 신뢰도만으로 정렬하면 고신뢰 약칸(참고 자료)이 저신뢰
     # 강칸(연관 자료)을 밀어내 **사람이 확인해 준 관계가 아래로 내려간다**. 코어도 같은 순서로
     # 넘기지만 여기서 다시 정렬하므로 등급을 키에 넣지 않으면 그 정렬이 무효화된다.
-    merged.sort(key=lambda n: (_TIER_RANK.get(str(n["tier"]), len(_TIER_RANK)),
+    merged.sort(key=lambda n: (tier_rank(str(n["tier"])),
                                _conf_sort_key(n["max_confidence"]), n["asset_id"]))
     return merged
 

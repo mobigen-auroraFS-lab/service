@@ -10,43 +10,33 @@
 
 **동점 순서를 못 박는다** — 점수가 같을 때 자산 id 로 갈라, 같은 질의가 매번 같은 순서를 낸다.
 
-⚠️ **표준 라이브러리만 import 한다.** 검색 쪽 모듈을 들여오면 임베딩 모델까지 딸려 올라와,
-이 모듈을 쓰는 가벼운 테스트가 무거워진다. 점수 정화 같은 작은 일도 여기서 다시 만든다.
+⚠️ **가벼운 모듈만 import 한다.** 검색 엔진·임베딩 쪽 모듈을 들여오면 모델까지 딸려 올라와
+이 모듈을 쓰는 가벼운 테스트가 무거워진다. 코어에서는 **순수·의존 0 인 정본 모듈만** 가져온다
+(파일명 규칙 · 버킷↔모달리티 표 · 유한 실수 정화). 규칙을 여기 사본으로 두지 않는다(093 1단계).
 """
 
 from __future__ import annotations
 
-import math
-import re
 from collections.abc import Mapping
 from typing import Any
 
-# 파일명 처리는 코어 함수를 그대로 쓴다(같은 규칙이 두 곳에 생기지 않게) —
-# 끌지 않으므로 본 모듈의 "표준 라이브러리만 import" 순수 계약(torch 등 미로드)이 유지된다.
-from src.config.filename_util import basename_of
+# 파일명 규칙(경로→basename · 아카이브 asset_id 접두 제거)은 코어 정본을 그대로 쓴다 — 같은 정규식이
+# 두 곳에 있으면 접두 포맷이 바뀔 때 한쪽만 고쳐진다(종전 사본 ``_ASSET_ID_PREFIX`` 제거).
+from src.config.filename_util import basename_of, strip_asset_id_prefix
 
-# 저장할 때 붙인 id 접두(``{asset_id}__``)를 화면용 파일명에서 벗겨 내는 패턴.
-# 정본은 파이프라인 레포 ``processing/ingest/archiver.py::_ASSET_ID_PREFIX`` 다. 레포 분리로 백엔드는
-# 크로스레포 import 를 하지 않으므로 같은 UUIDv7 패턴을 작은 사본으로 둔다(포맷 변경 시 양쪽 동기).
-_ASSET_ID_PREFIX = re.compile(
-    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}__"
-)
+# 응답 버킷 키(``text_documents`` 등) → 모달리티 라벨. 코어 검색이 버킷을 만드는 표의 역표 —
+# 검색 쪽이 버킷 이름을 바꾸면 여기도 자동으로 따라간다(종전 사본 ``_BUCKET_TO_MODALITY`` 제거).
+from src.config.search_modalities import BUCKET_TO_MODALITY
 
-# 결과 버킷 키 → 모달리티 라벨. search_service._MODALITY_BUCKETS 의 역매핑과 같은 표를 포탈
-# 계층에 작은 사본으로 둔다(검색 서비스에 묶이지 않도록). 미지정 버킷은 키 그대로 노출.
-_BUCKET_TO_MODALITY = {
-    "text_documents": "text",
-    "audio": "audio",
-    "image": "image",
-    "video": "video",
-}
+# 점수를 유한 실수로 정화하는 규칙(NaN·무한대 → 0.0)도 코어 정본 하나만 쓴다.
+from src.domain.numeric import safe_float
 
 
 def _row_similarity(row: dict[str, Any]) -> float:
     """행의 점수를 **유한한 실수**로 읽는다.
 
-    같은 일을 하는 함수가 검색 쪽에도 있지만 가져다 쓰지 않는다 — 그 모듈을 import 하면
-    임베딩 모델까지 딸려 올라와, 표준 라이브러리만 쓰는 이 모듈의 가벼움이 깨진다.
+    정화 규칙은 코어 ``safe_float`` 하나다(종전에는 같은 로직을 여기 다시 적었다 — 093 1단계에서
+    정본 참조로 바꿈. 코어의 그 모듈은 의존 0 이라 이 모듈의 가벼움이 유지된다).
 
     Args:
         row: 결과 행. 점수 키가 없거나 값이 이상해도 예외를 올리지 않는다.
@@ -54,12 +44,7 @@ def _row_similarity(row: dict[str, Any]) -> float:
     Returns:
         유한 실수. 읽을 수 없거나 NaN·무한대면 0.0(정렬이 실행마다 달라지는 것을 막는다).
     """
-    value = row.get("similarity")
-    try:
-        x = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return 0.0
-    return x if math.isfinite(x) else 0.0
+    return safe_float(row.get("similarity"))
 
 
 def display_name(uri: str) -> str:
@@ -78,7 +63,7 @@ def display_name(uri: str) -> str:
     **공개 심볼**: 상세 응답(``asset_detail``)·테스트가 모듈 경계 너머로 재사용하는 표시명 단일
     여러 모듈이 함께 쓰므로 밑줄 없는 공개 이름으로 둔다(비공개 이름을 남이 import 하지 않게).
     """
-    return _ASSET_ID_PREFIX.sub("", basename_of(uri))
+    return strip_asset_id_prefix(basename_of(uri))
 
 
 def _sort_key(item: dict[str, Any]) -> tuple[float, str]:
@@ -153,7 +138,7 @@ def group_ranked(
 
     grouped: dict[str, list[dict[str, Any]]] = {}
     for bucket, rows in (search_result.get("results") or {}).items():
-        modality = _BUCKET_TO_MODALITY.get(bucket, bucket)
+        modality = BUCKET_TO_MODALITY.get(bucket, bucket)
         shaped: list[dict[str, Any]] = []
         for row in rows or []:
             label = row.get("domain_label")
