@@ -19,10 +19,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from service.api import _infra
 from service.portal.auth import Principal, require_principal
-from service.portal.search_group import group_ranked
+from service.portal.search_group import asset_refine_fields, group_ranked
 from src.config.search_modalities import VALID_SEARCH_MODALITIES, parse_modalities_csv
 from src.registry.access_tier import project_ext_meta
 from src.registry.ext_meta_field_registry import fetch_access_tiers
+from src.search.refine import refine_rows
 from src.search.search_filters import parse_search_filters
 from src.search.search_service import search_hybrid
 
@@ -288,6 +289,14 @@ def search(
     no_cutoff: bool = Query(
         False, description="true 면 모달리티별 적합도 컷오프를 무시(약한 매칭까지 노출·디버그용·기본 off)"
     ),
+    refine: str | None = Query(
+        None,
+        description=(
+            "결과 내 재검색(글자 좁히기). 공백으로 쪼갠 낱말이 **모두** 들어 있는 행만 남긴다"
+            "(파일명·요약·태그 대상). 서버에 다시 묻지 않고 **이번 결과 안에서만** 좁히므로"
+            " 상위 N 밖은 대상이 아니다. 미지정·빈 값이면 좁히지 않는다."
+        ),
+    ),
     compact: bool = Query(
         False,
         description="true 면 전 모달리티를 합쳐 점수순 top-K(=size)로 축약(순위·모달리티·점수·파일명·요약·기본 off)",
@@ -337,6 +346,23 @@ def search(
 
     grouped, topic_facets = _infra._run_in_db(_project_and_facet)
 
+    # ── 결과 내 재검색(091) ────────────────────────────────────────────────────
+    # 🔴 **서버에 다시 묻지 않는다.** 질의를 바꿔 재검색하면 게이트가 다시 판정해 원 결과에
+    #    없던 것이 나타난다(083 실측: 재검색 방식은 93항목 중 80%만 일치). 이번 결과만 걸러
+    #    "47건 중 12건"이 정의상 성립하게 한다. 판단 로직은 코어 순수 함수 한 곳에 있다.
+    # ⚠️ 좁히기는 compact 뷰 **앞**에 둔다 — compact 가 요약을 자르므로, 뒤에 두면 잘린 글자로
+    #    걸러져 "화면엔 보이는데 안 걸림"이 생긴다(spec 091 §2-5). 여기서는 원문을 본다.
+    scope_counts = {modality: len(rows) for modality, rows in grouped.items()}
+    refine_applied = bool(refine and refine.strip())
+    if refine_applied:
+        grouped = {
+            modality: refine_rows(rows, refine, fields_of=asset_refine_fields)
+            for modality, rows in grouped.items()
+        }
+        # 패싯은 "지금 보이는 결과" 스코프다(083 SC-02) — 좁힌 뒤로 다시 센다. 순수 계산이라
+        # DB 를 다시 잡지 않는다.
+        topic_facets = _search_topic_facet(grouped)
+
     # 디버그 opt-in(기본 off): compact 뷰는 이미 clearance projection 된 grouped 위에서 계산(tier 유출 0·도메인 배제 dormant).
     if compact:
         return _compact_view(grouped, q, size)
@@ -351,6 +377,14 @@ def search(
         # 이번 결과 안에서만 주제를 센다 — 화면에서 주제를 누르면 그 값으로 다시 필터한다.
         "topic_facets": topic_facets,
     }
+    # 파라미터를 준 요청에만 실린다 — 안 주면 응답이 091 이전과 **완전히 같다**(되돌림의 실질).
+    if refine_applied:
+        meta["refine"] = {
+            "q": refine,
+            "scope_counts": scope_counts,
+            "scope_total": sum(scope_counts.values()),
+            "total": sum(counts.values()),
+        }
     search_plan = (result.get("meta") or {}).get("search_plan")
     if search_plan is not None:
         meta["search_plan"] = search_plan
