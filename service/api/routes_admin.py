@@ -43,7 +43,8 @@ from service.portal.lineage_query import (
     query_lineage_feed,
     relation_proposed_summary,
 )
-from src.relations.review import _REVIEW_STATUSES, list_edges_for_review, list_relation_kinds
+from service.portal.review_vocab import REVIEW_STATUSES
+from src.relations.review import list_edges_for_review, list_relation_kinds
 
 router = APIRouter()
 
@@ -388,10 +389,10 @@ def relations_list(
     시작>끝). 조건이 서로 어긋나면 결과가 0건으로 나올 텐데, 그것이 '진짜 없음'인지
     '조건 실수'인지 화면에서 구분할 방법이 없기 때문이다. 도메인에 따른 제외는 없다.
     """
-    if status not in _REVIEW_STATUSES:
+    if status not in REVIEW_STATUSES:
         raise HTTPException(
             status_code=400,
-            detail=f"알 수 없는 status: {status!r} (허용: {list(_REVIEW_STATUSES)})",
+            detail=f"알 수 없는 status: {status!r} (허용: {list(REVIEW_STATUSES)})",
         )
     for name, val in (("min_confidence", min_confidence), ("max_confidence", max_confidence)):
         if val is not None and not (0.0 <= val <= 1.0):
