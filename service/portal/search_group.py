@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Mapping
 from typing import Any
 
 # 파일명 처리는 코어 함수를 그대로 쓴다(같은 규칙이 두 곳에 생기지 않게) —
@@ -162,3 +163,42 @@ def group_ranked(
         shaped.sort(key=_sort_key)
         grouped[modality] = shaped[:limit_per_modality]
     return grouped
+
+
+def asset_refine_fields(
+    row: Mapping[str, Any], *, summary: str | None = None
+) -> list[str]:
+    """결과 내 재검색(091)이 **글자를 찾아볼 필드**를 응답 행에서 뽑는다(순수).
+
+    좁히는 판단 자체는 코어 ``src.search.refine.refine_rows`` 가 한다. 이 함수는 그 판단에
+    "어느 글자를 보라"고 넘겨 주는 재료 추출기다. 코어가 아니라 **여기** 있는 이유는 읽는 키
+    (``file_name``·``summary``·``tags``)가 위 ``_shape`` 가 만든 **응답 모양**이기 때문이다 —
+    응답 모양을 정한 쪽이 그 키를 알아야 하고, 코어가 이 키를 알면 화면 모양이 바뀔 때 코어를
+    함께 고쳐야 한다(093 책무 경계 규칙 ② "프론트가 바뀌면 함께 바뀌는 것은 백엔드").
+
+    셋을 고른 이유는 **화면 카드에 실제로 보이는 값**이기 때문이다 — "보이는 것으로 걸러진다"는
+    계약이 서면 사용자가 결과에 놀라지 않는다. 검색 내부용 키(``_kwtext`` 등)는 보지 않는다.
+
+    Args:
+        row: ``_shape`` 가 만든 결과 행. 세 키 중 없거나 타입이 다른 것은 그 축이 없는 것으로
+            본다(행 모양이 바뀌어도 좁히기 전체가 죽지 않게).
+        summary: 요약 **클립 전 원문**. 간략 보기는 요약을 자르는데, 잘린 글자로 거르면
+            "화면엔 보이는데 안 걸림"이 생긴다. ``None`` 이면 행의 ``summary`` 를 쓴다.
+
+    Returns:
+        빈 값을 제외한 필드 문자열 목록(파일명 → 요약 → 태그 순).
+    """
+    out: list[str] = []
+    file_name = row.get("file_name")
+    if isinstance(file_name, str) and file_name:
+        out.append(file_name)
+
+    text = summary if summary is not None else row.get("summary")
+    if isinstance(text, str) and text:
+        out.append(text)
+
+    tags = row.get("tags")
+    # 문자열 하나가 오면 글자 단위로 순회돼 쓰레기 값이 생긴다 — 배열만 받는다.
+    if isinstance(tags, (list, tuple)):
+        out.extend(t for t in tags if isinstance(t, str) and t)
+    return out
