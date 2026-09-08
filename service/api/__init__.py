@@ -15,7 +15,14 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException
 
-from service.api import _infra, routes_admin, routes_assets, routes_review, routes_search
+from service.api import (
+    _infra,
+    routes_admin,
+    routes_assets,
+    routes_mm_meta,
+    routes_review,
+    routes_search,
+)
 from service.portal.auth import Principal, require_principal
 from service.portal.auth.config import load_portal_auth_config
 from service.portal.auth.dev_issuer import issue_dev_token
@@ -66,5 +73,6 @@ app.include_router(routes_admin.router)
 app.include_router(routes_review.router)
 app.include_router(routes_search.router)
 app.include_router(routes_assets.router)
+app.include_router(routes_mm_meta.router)
 
 __all__ = ["app"]
