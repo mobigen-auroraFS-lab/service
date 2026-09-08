@@ -23,9 +23,12 @@ from fastapi.testclient import TestClient
 
 from service.api import app, routes_file_search
 from src.search.file_search import (
+    ABOUT_BRANCH_DEFAULT,
     RANK_DEPTH_DEFAULT,
+    SEMANTIC_MIN_COSINE_DEFAULT,
     SORT_DEPTH_DEFAULT,
     SORT_OPTIONS,
+    WORD_OPERATOR_DEFAULT,
 )
 from src.search.file_search import (
     search_files as core_search_files,
@@ -49,7 +52,7 @@ def _found(**over: Any) -> dict[str, Any]:
         "total": 3,
         "total_capped": False,
         "facets": {"topic": [{"key": "음식·요리", "label": "음식·요리", "count": 3}],
-                   "subtopic": [], "tag": []},
+                   "subtopic": [], "tag": [], "modality": []},
         "from": 0,
         "size": 50,
         "sort": "relevance",
@@ -148,6 +151,35 @@ class TestFileSearchRoute(unittest.TestCase):
         self.client.get("/file-search", params={"q": "김치"})
         mock_embed.assert_called_once()
         self.assertEqual(mock_find.call_args.kwargs["query_vector"], [0.1])
+
+    @patch("service.api.routes_file_search.embed_query_for_media_search")
+    @patch("service.api.routes_file_search.search_files")
+    def test_종류_필터가_여럿_그대로_넘어간다(self, mock_find, mock_embed) -> None:
+        # 멀티모달 검색이 결과를 버킷으로 나눠 보이던 것을 칩 축으로 대신한다.
+        mock_find.return_value = _found()
+        mock_embed.return_value = [0.0]
+        body = self.client.get("/file-search", params={
+            "q": "김치", "modality": ["text", "video"]}).json()
+        self.assertEqual(mock_find.call_args.kwargs["filters"].modalities, ("text", "video"))
+        self.assertEqual(body["filters"]["modality"], ["text", "video"])
+
+    @patch("service.api.routes_file_search.embed_query_for_media_search")
+    @patch("service.api.routes_file_search.search_files")
+    def test_적용값을_전부_되돌려_준다(self, mock_find, mock_embed) -> None:
+        # 헌법 3조 재현성 — 서버 설정이 나중에 바뀌어도 이 응답이 왜 이렇게 나왔는지 알 수 있어야 한다.
+        mock_find.return_value = _found()
+        mock_embed.return_value = [0.0]
+        applied = self.client.get("/file-search", params={"q": "김치"}).json()["applied"]
+        self.assertEqual(applied["word_operator"], WORD_OPERATOR_DEFAULT)
+        self.assertEqual(applied["semantic_min_cosine"], SEMANTIC_MIN_COSINE_DEFAULT)
+        self.assertIs(applied["about_branch"], ABOUT_BRANCH_DEFAULT)
+        self.assertEqual(applied["rank_depth"], RANK_DEPTH_DEFAULT)
+        self.assertEqual(applied["sort_depth"], SORT_DEPTH_DEFAULT)
+        # 값이 하나라도 빠지면 재현이 안 된다 — 키 집합을 못 박는다.
+        self.assertEqual(set(applied), {
+            "word_operator", "semantic_min_cosine", "semantic_cap", "about_branch",
+            "total_cap", "rank_depth", "sort_depth", "facet_size", "facet_show",
+            "search_pipeline"})
 
     def test_모르는_정렬은_422(self) -> None:
         resp = self.client.get("/file-search", params={"q": "김치", "sort": "크기순"})

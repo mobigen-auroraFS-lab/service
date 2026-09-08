@@ -1,8 +1,12 @@
 """파일 검색 라우트 — 조건으로 좁히고 유사도로 줄 세우고 정확히 센다(사용 시나리오 ③).
 
-**기존 `/search` 를 손대지 않는다.** 두 화면이 다른 일을 하기 때문이다:
-    · `/search`(멀티모달 검색) — 뜻으로 **찾아오기**. 관련도 컷을 통과한 상위만 본다.
-    · `/file-search`(이 창구) — 조건으로 **좁혀 훑기**. 전부 세고 페이지로 넘긴다.
+🔴 **이 창구는 `/search`(멀티모달 검색)를 대체하기 위한 것이다**(2026-09-09 사용자 확인).
+`/search` 는 관련도 컷을 파이썬에서 계산하므로 **패싯도 페이징도 만들 수 없다** — 검색 엔진이 집합을
+셀 수 없기 때문이다. 이 창구는 그 둘을 얻기 위해 만들었고, 집합을 엔진이 판정하는 조건으로 확정했다.
+
+대체 대조표(무엇이 무엇을 대신하나)는 코어 `src/search/file_search.py` 모듈 docstring 에 있다.
+⚠️ **`/search` 코드는 지우지 않는다** — 과제 산출물 8건의 구현체이고 KPI F-4.3 에 완료로 기록돼 있다.
+화면을 이 창구로 옮기는 것과 코드를 지우는 것은 다르다. 라우터 등재도 당장 내리지 않는다.
 
 **이 파일이 하는 일은 넷뿐이다**: 파라미터 검증, 질의 임베딩, 코어 조회 호출, 응답 조립(권한 가리기·
 크기·수정일 붙이기). 세는 규칙·순위·집계는 전부 코어와 검색 엔진 몫이다(093 책무 경계).
@@ -26,12 +30,17 @@ from src.config.settings import active_embed_channel, get_current_settings
 from src.registry.access_tier import project_ext_meta
 from src.registry.ext_meta_field_registry import fetch_access_tiers
 from src.search.file_search import (
+    ABOUT_BRANCH_DEFAULT,
     FACET_SIZE_DEFAULT,
     RANK_DEPTH_DEFAULT,
+    SEARCH_PIPELINE_DEFAULT,
+    SEMANTIC_CAP_DEFAULT,
+    SEMANTIC_MIN_COSINE_DEFAULT,
     SORT_DEFAULT,
     SORT_DEPTH_DEFAULT,
     SORT_OPTIONS,
     TOTAL_CAP_DEFAULT,
+    WORD_OPERATOR_DEFAULT,
     search_files,
 )
 from src.search.query_embed import embed_query_for_media_search
@@ -106,6 +115,13 @@ def file_search(
             " 다른 칸과는 그리고 로 걸린다"
         ),
     ),
+    modality: list[str] | None = Query(
+        None,
+        description=(
+            "종류 필터(반복 가능 · text|image|video|audio). 멀티모달 검색이 결과를 버킷으로 나눠"
+            " 보이던 것을 칩 축으로 대신한다 — 건수가 함께 보이고 눌러 좁힌다"
+        ),
+    ),
     file_ext: list[str] | None = Query(None, description="확장자 필터(반복 가능)"),
     created_from: str | None = Query(None, description="생성일 하한(YYYY-MM-DD 또는 ISO, UTC)"),
     created_to: str | None = Query(None, description="생성일 상한"),
@@ -133,9 +149,11 @@ def file_search(
     조건이 겹치는 방식은 검색 엔진 규칙 그대로다. 같은 칸에서 여럿 고르면 **또는**, 다른 칸끼리는
     **그리고**. 조건을 바꾸면 개수와 칩이 함께 다시 계산된다.
 
-    **집합의 뜻**(096): 「검색어의 모든 형태소가 든 파일」 **또는** 「뜻이 아주 가까운 파일(코사인
-    하한 이상)」 중 조건에 맞는 것. 단어 절은 멀티모달 검색과 **같은 것**을 쓰고, 뜻에는 상위 k개가
-    아니라 **유사도 하한**을 둔다 — 그래야 코퍼스에 없는 질의가 0건이 되고 개수가 뜻을 갖는다.
+    **집합의 뜻**(096): 세 갈래의 합집합 중 조건에 맞는 것 —
+    ① 검색어의 **모든 형태소**가 든 파일(단어 절은 멀티모달 검색과 같은 것)
+    ② **뜻이 아주 가까운** 파일(코사인 하한 이상 · 상위 k개가 아니라 하한이라 경계가 있다)
+    ③ **개체(about)가 질의 낱말과 완전히 같은** 파일(글자도 뜻도 못 잡은 것을 개체로 잡는다).
+    세 갈래 모두 검색 엔진이 판정하는 조건이라 개수와 칩을 엔진이 정확히 센다.
 
     **칩 숫자의 뜻**: 그 칩 **하나만** 골랐을 때 나오는 수(다른 칸 조건은 그대로 적용). 같은 칸에서
     여럿 고르면 「또는」이라 결과는 각 칩 수의 합집합이므로 개별 칩 수보다 크거나 같다. 그래서 고른
@@ -147,6 +165,7 @@ def file_search(
         topic: 주제 필터(여럿 = 또는).
         subtopic: 하위주제 필터(여럿 = 또는). 주제와는 「그리고」로 걸린다.
         tag: 태그 필터. 정규화·가공 없이 코어로 넘긴다.
+        modality: 종류 필터(여럿 = 또는).
         file_ext: 확장자 필터.
         created_from: 생성일 하한.
         created_to: 생성일 상한.
@@ -158,9 +177,10 @@ def file_search(
         principal: 인증 주체.
 
     Returns:
-        ``{query, items, total, total_capped, offset, limit, sort, facets, filters, refine?}``.
+        ``{query, items, total, total_capped, offset, limit, sort, applied, facets, filters,
+        refine?}``. ``applied`` 는 이번 조회에 쓰인 값 전부(재현성 기록).
         ``total_capped`` 가 참이면 ``total`` 은 "이 수 이상"이라는 뜻이다(화면이 그렇게 표기한다).
-        ``facets`` 는 ``{topic|subtopic|tag: [{key, label, count}]}`` — ``key`` 를 되보내면 그 수만큼
+        ``facets`` 는 ``{topic|subtopic|tag|modality: [{key, label, count}]}`` — ``key`` 를 되보내면 그 수만큼
         나온다. 각 행에는 표에 찍을 ``file_ext``·``file_size``·``updated_at`` 이 **항상** 있다.
 
     Raises:
@@ -179,6 +199,7 @@ def file_search(
             created_to=created_to,
             topic=topic,
             subtopic=subtopic,
+            modality=modality,
             tag=tag,
         )
     except ValueError as exc:
@@ -248,11 +269,26 @@ def file_search(
         "offset": found["from"],
         "limit": found["size"],
         "sort": found["sort"],
+        # 이번 조회에 실제 적용된 값 전부 — 서버 설정이 나중에 바뀌어도 이 응답이 왜 이렇게 나왔는지
+        # 재현할 수 있다(헌법 3조 · `/search` 의 `meta.tuning` 과 같은 취지).
+        "applied": {
+            "word_operator": WORD_OPERATOR_DEFAULT,
+            "semantic_min_cosine": SEMANTIC_MIN_COSINE_DEFAULT,
+            "semantic_cap": SEMANTIC_CAP_DEFAULT,
+            "about_branch": ABOUT_BRANCH_DEFAULT,
+            "total_cap": TOTAL_CAP_DEFAULT,
+            "rank_depth": RANK_DEPTH_DEFAULT,
+            "sort_depth": SORT_DEPTH_DEFAULT,
+            "facet_size": FACET_SIZE_DEFAULT,
+            "facet_show": _FACET_SHOW,
+            "search_pipeline": SEARCH_PIPELINE_DEFAULT,
+        },
         # 칩은 상위 몇 개만 보인다 — 코어는 넉넉히 주고 무엇을 보일지는 화면 정책이다.
         "facets": {axis: rows[:_FACET_SHOW] for axis, rows in found["facets"].items()},
         "filters": {
             "topic": list(filters.topics) if filters else [],
             "subtopic": list(filters.subtopics) if filters else [],
+            "modality": list(filters.modalities) if filters else [],
             "tag": list(filters.tags) if filters else [],
             "file_ext": list(filters.file_exts) if filters else [],
             "created_from": created_from,
