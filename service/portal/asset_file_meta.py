@@ -72,23 +72,3 @@ def fetch_file_meta(
         }
         for r in rows
     }
-
-
-def attach_file_meta(
-    grouped: dict[str, list[dict[str, Any]]], meta: dict[str, dict[str, Any]]
-) -> None:
-    """조회한 파일 메타를 결과 행에 **제자리로** 얹는다(순수 · 사본을 만들지 않는다).
-
-    행마다 키를 **항상** 넣는다 — 없으면 크기 0·날짜 ``None``. 프론트가 키 유무로 분기하지 않게 한다
-    (083 이 행 ``tags`` 를 항상 넣기로 한 것과 같은 이유).
-
-    Args:
-        grouped: 모달리티별 결과 행. 이 dict 안의 행을 직접 고친다.
-        meta: ``fetch_file_meta`` 결과.
-    """
-    for rows in grouped.values():
-        for row in rows:
-            got = meta.get(str(row.get("asset_id") or "")) or {}
-            row["file_size"] = int(got.get("file_size") or 0)
-            row["updated_at"] = got.get("updated_at")
-            row["created_at"] = got.get("created_at")

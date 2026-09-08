@@ -18,7 +18,6 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from service.api import _infra
-from service.portal.asset_file_meta import attach_file_meta, fetch_file_meta
 from service.portal.auth import Principal, require_principal
 from service.portal.search_group import asset_refine_fields, group_ranked
 from service.portal.search_presets import DEFAULT_PRESET, PRESETS, resolve_tuning, tuning_meta
@@ -522,12 +521,6 @@ def search(
         return _compact_view(grouped, q, size)
 
     counts = {modality: len(rows) for modality, rows in grouped.items()}
-
-    # 표에 찍을 크기·수정일을 **보이는 행에만** 붙인다(095 파일 검색 화면). 색인에 없는 값이라
-    # DB 에서 읽는데, 좁히기까지 끝난 뒤라 조회 대상이 한 페이지 분량이다. 키는 항상 존재한다.
-    shown_ids = [str(r.get("asset_id") or "") for rows in grouped.values() for r in rows]
-    if shown_ids:
-        attach_file_meta(grouped, _infra._run_in_db(lambda conn: fetch_file_meta(conn, shown_ids)))
 
     meta: dict[str, Any] = {
         "query": q,

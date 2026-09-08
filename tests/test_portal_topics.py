@@ -188,12 +188,6 @@ class TestSearchTopicFacetAndFilter(unittest.TestCase):
         tiers.start()
         self.addCleanup(tiers.stop)
         self.client = TestClient(app)
-        # 095: /search 가 표에 찍을 크기·수정일을 DB 에서 한 번 더 읽는다 — 실 DB 없는
-        # 단위 테스트에서는 빈 결과로 대역한다(행에는 키가 기본값으로 채워진다).
-        fm = patch("service.api.routes_search.fetch_file_meta", return_value={})
-        fm.start()
-        self.addCleanup(fm.stop)
-
 
     @patch("service.api.routes_search.search_hybrid")
     def test_search_returns_topic_facet(self, mock_search) -> None:
