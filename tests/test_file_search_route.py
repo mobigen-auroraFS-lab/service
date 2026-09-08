@@ -130,11 +130,15 @@ class TestFileSearchRoute(unittest.TestCase):
 
     @patch("service.api.routes_file_search.embed_query_for_media_search")
     @patch("service.api.routes_file_search.search_files")
-    def test_필드_정렬은_임베딩을_만들지_않는다(self, mock_find, mock_embed) -> None:
-        mock_find.return_value = _found(sort="name_asc")
-        self.client.get("/file-search", params={"q": "김치", "sort": "name_asc"})
-        mock_embed.assert_not_called()
-        self.assertIsNone(mock_find.call_args.kwargs["query_vector"])
+    def test_어느_정렬이든_임베딩을_만든다(self, mock_find, mock_embed) -> None:
+        # 🔴 뜻이 **집합 판정**에 쓰이므로(코사인 하한 이상이면 글자가 안 겹쳐도 집합에 든다)
+        #    정렬과 무관하게 임베딩이 필요하다. 정렬에 따라 개수가 달라지면 화면이 거짓말을 한다.
+        mock_embed.return_value = [0.3]
+        for name in SORT_OPTIONS:
+            mock_find.return_value = _found(sort=name)
+            self.client.get("/file-search", params={"q": "김치", "sort": name})
+            self.assertEqual(mock_find.call_args.kwargs["query_vector"], [0.3], name)
+        self.assertEqual(mock_embed.call_count, len(SORT_OPTIONS))
 
     @patch("service.api.routes_file_search.embed_query_for_media_search")
     @patch("service.api.routes_file_search.search_files")
@@ -156,7 +160,9 @@ class TestFileSearchRoute(unittest.TestCase):
             "q": "김치", "offset": RANK_DEPTH_DEFAULT, "limit": 10})
         self.assertEqual(deep.status_code, 400)
         self.assertIn("이름·등록일 정렬", deep.json()["detail"])
-        with patch("service.api.routes_file_search.search_files") as mock_find:
+        with patch("service.api.routes_file_search.search_files") as mock_find, \
+             patch("service.api.routes_file_search.embed_query_for_media_search",
+                   return_value=[0.1]):
             mock_find.return_value = _found(sort="name_asc", **{"from": RANK_DEPTH_DEFAULT})
             ok = self.client.get("/file-search", params={
                 "q": "김치", "sort": "name_asc", "offset": RANK_DEPTH_DEFAULT, "limit": 10})

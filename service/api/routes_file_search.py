@@ -133,6 +133,10 @@ def file_search(
     조건이 겹치는 방식은 검색 엔진 규칙 그대로다. 같은 칸에서 여럿 고르면 **또는**, 다른 칸끼리는
     **그리고**. 조건을 바꾸면 개수와 칩이 함께 다시 계산된다.
 
+    **집합의 뜻**(096): 「검색어의 모든 형태소가 든 파일」 **또는** 「뜻이 아주 가까운 파일(코사인
+    하한 이상)」 중 조건에 맞는 것. 단어 절은 멀티모달 검색과 **같은 것**을 쓰고, 뜻에는 상위 k개가
+    아니라 **유사도 하한**을 둔다 — 그래야 코퍼스에 없는 질의가 0건이 되고 개수가 뜻을 갖는다.
+
     **칩 숫자의 뜻**: 그 칩 **하나만** 골랐을 때 나오는 수(다른 칸 조건은 그대로 적용). 같은 칸에서
     여럿 고르면 「또는」이라 결과는 각 칩 수의 합집합이므로 개별 칩 수보다 크거나 같다. 그래서 고른
     뒤에도 같은 칸의 다른 값이 칩으로 남아 **갈아탈 수 있다**(코어 `build_facet_plan` 이 축마다 자기
@@ -147,8 +151,8 @@ def file_search(
         created_from: 생성일 하한.
         created_to: 생성일 상한.
         refine: 이번 페이지를 글자로 좁힐 말.
-        sort: 정렬 이름(닫힌 목록 · 모르는 값은 422). 이름·등록일 정렬이면 **질의 임베딩을 만들지
-            않는다** — 순서를 필드가 정하므로 뜻이 관여할 이유가 없다(그만큼 빠르다).
+        sort: 정렬 이름(닫힌 목록 · 모르는 값은 422). 어느 정렬이든 **집합은 같다** — 정렬은 순서만
+            바꾼다(개수가 달라지면 화면이 거짓말을 한다).
         offset: 페이지 시작 위치.
         limit: 이 페이지의 행 수.
         principal: 인증 주체.
@@ -198,11 +202,9 @@ def file_search(
     from src.search.opensearch_sync import get_client
 
     try:
-        # 필드 정렬이면 뜻이 순서에 관여하지 않으므로 **임베딩을 만들지 않는다**(모델 호출을 아낀다).
-        query_vector = (
-            None if by_field
-            else embed_query_for_media_search(q, channel=active_embed_channel())
-        )
+        # 🔴 정렬과 무관하게 임베딩이 필요하다 — 뜻이 **집합 판정**에 쓰이기 때문이다(코사인 하한
+        #    이상이면 글자가 안 겹쳐도 집합에 든다). 정렬에 따라 개수가 달라지면 화면이 거짓말을 한다.
+        query_vector = embed_query_for_media_search(q, channel=active_embed_channel())
         found = search_files(
             get_client(), get_current_settings().opensearch.index,
             query=q, query_vector=query_vector, filters=filters,
