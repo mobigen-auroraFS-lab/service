@@ -28,6 +28,9 @@ from src.registry.ext_meta_field_registry import fetch_access_tiers
 from src.search.file_search import (
     FACET_SIZE_DEFAULT,
     RANK_DEPTH_DEFAULT,
+    SORT_DEFAULT,
+    SORT_DEPTH_DEFAULT,
+    SORT_OPTIONS,
     TOTAL_CAP_DEFAULT,
     search_files,
 )
@@ -113,6 +116,14 @@ def file_search(
             " 🔴 **이번 페이지 안에서만** 좁힌다 — 서버에 다시 묻지 않으므로 전체 개수는 그대로다"
         ),
     ),
+    sort: str = Query(
+        SORT_DEFAULT,
+        description=(
+            "정렬 — relevance(관련도 · 기본) · name_asc/name_desc(이름) ·"
+            " created_desc/created_asc(등록일) · updated_desc/updated_asc(수정일) ·"
+            " size_desc/size_asc(크기). 관련도 외의 정렬은 더 깊이 넘길 수 있다"
+        ),
+    ),
     offset: int = Query(0, ge=0, description="페이지 시작 위치(0부터)"),
     limit: int = Query(50, ge=1, le=_PAGE_SIZE_MAX, description="이 페이지의 행 수"),
     principal: Annotated[Principal, Depends(require_principal)] = ...,
@@ -122,65 +133,82 @@ def file_search(
     조건이 겹치는 방식은 검색 엔진 규칙 그대로다. 같은 칸에서 여럿 고르면 **또는**, 다른 칸끼리는
     **그리고**. 조건을 바꾸면 개수와 칩이 함께 다시 계산된다.
 
-    ⚠️ **주제·하위주제를 여럿 받지만 지금은 첫 값만 걸린다** — 코어 필터가 아직 단일값이다. 파라미터를
-    미리 반복형으로 열어 둔 이유는 화면이 다중 선택으로 만들어졌을 때 계약을 바꾸지 않으려는 것이고,
-    코어 필터가 복수로 넓혀지면 이 라우트는 **한 줄만** 고치면 된다. 태그는 이미 여럿이 걸린다.
+    **칩 숫자의 뜻**: 그 칩 **하나만** 골랐을 때 나오는 수(다른 칸 조건은 그대로 적용). 같은 칸에서
+    여럿 고르면 「또는」이라 결과는 각 칩 수의 합집합이므로 개별 칩 수보다 크거나 같다. 그래서 고른
+    뒤에도 같은 칸의 다른 값이 칩으로 남아 **갈아탈 수 있다**(코어 `build_facet_plan` 이 축마다 자기
+    조건을 빼고 센다).
 
     Args:
         q: 검색어. 빈 값은 422 다(조건만으로 훑는 경로는 이 창구가 아니다).
-        topic: 주제 필터. 지금은 첫 값만 적용된다.
-        subtopic: 하위주제 필터. 지금은 첫 값만 적용된다.
+        topic: 주제 필터(여럿 = 또는).
+        subtopic: 하위주제 필터(여럿 = 또는). 주제와는 「그리고」로 걸린다.
         tag: 태그 필터. 정규화·가공 없이 코어로 넘긴다.
         file_ext: 확장자 필터.
         created_from: 생성일 하한.
         created_to: 생성일 상한.
         refine: 이번 페이지를 글자로 좁힐 말.
+        sort: 정렬 이름(닫힌 목록 · 모르는 값은 422). 이름·등록일 정렬이면 **질의 임베딩을 만들지
+            않는다** — 순서를 필드가 정하므로 뜻이 관여할 이유가 없다(그만큼 빠르다).
         offset: 페이지 시작 위치.
         limit: 이 페이지의 행 수.
         principal: 인증 주체.
 
     Returns:
-        ``{query, items, total, total_capped, offset, limit, facets, filters, refine?}``.
+        ``{query, items, total, total_capped, offset, limit, sort, facets, filters, refine?}``.
         ``total_capped`` 가 참이면 ``total`` 은 "이 수 이상"이라는 뜻이다(화면이 그렇게 표기한다).
         ``facets`` 는 ``{topic|subtopic|tag: [{key, label, count}]}`` — ``key`` 를 되보내면 그 수만큼
         나온다. 각 행에는 표에 찍을 ``file_ext``·``file_size``·``updated_at`` 이 **항상** 있다.
 
     Raises:
-        HTTPException: 필터 형식 오류는 422 · 순위 깊이를 넘는 페이지는 400(그 밖은 순위를 매기지
-            않았으므로 빈 페이지로 돌려주면 "끝"과 구분되지 않는다) · 검색 엔진 미도달은 503.
+        HTTPException: 필터 형식·정렬 이름 오류는 422 · 넘길 수 있는 깊이를 넘는 페이지는 400(그 밖은
+            순서를 매기지 않았으므로 빈 페이지로 돌려주면 "끝"과 구분되지 않는다) · 검색 엔진 미도달은 503.
     """
+    if sort not in SORT_OPTIONS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"알 수 없는 정렬입니다: {sort!r} (가능: {', '.join(sorted(SORT_OPTIONS))})",
+        )
     try:
         filters = parse_search_filters(
             file_ext=file_ext,
             created_from=created_from,
             created_to=created_to,
-            # ⚠️ 코어 필터가 단일값이라 첫 값만 넘어간다(위 docstring 참조).
-            topic=(topic or [None])[0],
-            subtopic=(subtopic or [None])[0],
+            topic=topic,
+            subtopic=subtopic,
             tag=tag,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=f"필터 파라미터 형식 오류: {exc}") from exc
 
-    if offset + limit > RANK_DEPTH_DEFAULT:
+    # 넘길 수 있는 깊이는 정렬에 따라 다르다 — 관련도는 이웃 탐색 깊이에, 필드 정렬은 색인 결과창에 걸린다.
+    by_field = SORT_OPTIONS[sort] is not None
+    depth = SORT_DEPTH_DEFAULT if by_field else RANK_DEPTH_DEFAULT
+    if offset + limit > depth:
+        hint = "조건을 더 걸어 좁혀 주십시오"
+        if not by_field:
+            hint = "조건을 더 걸거나 이름·등록일 정렬로 바꿔 주십시오"
         raise HTTPException(
             status_code=400,
             detail=(
-                f"이 창구는 상위 {RANK_DEPTH_DEFAULT}건까지 순서를 매깁니다"
-                f"(요청 {offset}+{limit}) — 조건을 더 걸어 좁혀 주십시오"
+                f"이 창구는 {sort} 정렬로 상위 {depth}건까지 넘길 수 있습니다"
+                f"(요청 {offset}+{limit}) — {hint}"
             ),
         )
 
     from src.search.opensearch_sync import get_client
 
     try:
-        query_vector = embed_query_for_media_search(q, channel=active_embed_channel())
+        # 필드 정렬이면 뜻이 순서에 관여하지 않으므로 **임베딩을 만들지 않는다**(모델 호출을 아낀다).
+        query_vector = (
+            None if by_field
+            else embed_query_for_media_search(q, channel=active_embed_channel())
+        )
         found = search_files(
             get_client(), get_current_settings().opensearch.index,
             query=q, query_vector=query_vector, filters=filters,
-            from_=offset, size=limit,
+            from_=offset, size=limit, sort=sort,
             rank_depth=RANK_DEPTH_DEFAULT, total_cap=TOTAL_CAP_DEFAULT,
-            facet_size=FACET_SIZE_DEFAULT,
+            sort_depth=SORT_DEPTH_DEFAULT, facet_size=FACET_SIZE_DEFAULT,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -217,11 +245,12 @@ def file_search(
         "total_capped": found["total_capped"],
         "offset": found["from"],
         "limit": found["size"],
+        "sort": found["sort"],
         # 칩은 상위 몇 개만 보인다 — 코어는 넉넉히 주고 무엇을 보일지는 화면 정책이다.
         "facets": {axis: rows[:_FACET_SHOW] for axis, rows in found["facets"].items()},
         "filters": {
-            "topic": list(topic or []),
-            "subtopic": list(subtopic or []),
+            "topic": list(filters.topics) if filters else [],
+            "subtopic": list(filters.subtopics) if filters else [],
             "tag": list(filters.tags) if filters else [],
             "file_ext": list(filters.file_exts) if filters else [],
             "created_from": created_from,
