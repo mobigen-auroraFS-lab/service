@@ -161,6 +161,8 @@ class TestRoute(unittest.TestCase):
         for target, repl in (
             ("service.api._infra._run_in_db", _passthrough_db),
             ("service.api.routes_search.fetch_access_tiers", lambda *_a, **_k: {}),
+            # 095: 표에 찍을 크기·수정일 조회 — 실 DB 없는 단위 테스트라 빈 결과로 대역한다.
+            ("service.api.routes_search.fetch_file_meta", lambda *_a, **_k: {}),
         ):
             p = patch(target, repl)
             p.start()

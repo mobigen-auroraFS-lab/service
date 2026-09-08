@@ -76,11 +76,13 @@ class TestGroupRanked(unittest.TestCase):
             {"asset_id", "modality", "similarity", "summary", "file_name", "domain_label",
              "topics", "subtopics",  # 057-후속: 주제 패싯·클라 좁히기용 통과
              "topic_pairs",  # 059: 부모>자식 짝(프론트 트리) 통과
-             "tags"},  # 083 FR-106: 태그 원문 배열(패싯·클라 좁히기·091 재검색용) 통과
+             "tags",  # 083 FR-106: 태그 원문 배열(패싯·클라 좁히기·091 재검색용) 통과
+             "file_ext"},  # 095: 표의 "종류" 칸 — 표시 파일명에서 뽑는다
         )
         self.assertEqual(item["modality"], "text")
         self.assertEqual(item["domain_label"], "review")
         self.assertEqual(item["file_name"], "report.txt")
+        self.assertEqual(item["file_ext"], "txt")
         self.assertEqual(item["summary"], "S")
         self.assertEqual(item["topics"], ["요리"])
         self.assertEqual(item["subtopics"], ["제빵"])
@@ -94,6 +96,7 @@ class TestGroupRanked(unittest.TestCase):
         item = group_ranked(result, limit_per_modality=20)["text"][0]
         self.assertEqual(item["topic_pairs"], [])
         self.assertEqual(item["tags"], [])  # 083: 태그도 없으면 빈 배열(키는 항상 존재)
+        self.assertEqual(item["file_ext"], "")  # 확장자가 없는 파일명도 빈 문자열(키는 항상 존재)
 
     def test_all_modality_labels(self) -> None:
         # 4개 버킷 키가 각각 text/audio/image/video 섹션으로 매핑된다.

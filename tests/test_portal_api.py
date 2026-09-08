@@ -55,6 +55,11 @@ def _enable_portal_test_auth_bypass(test_case: unittest.TestCase) -> None:
     db = patch("service.api._infra._run_in_db", _passthrough_db)
     db.start()
     test_case.addCleanup(db.stop)
+    # 095: /search 가 표에 찍을 크기·수정일을 DB 에서 한 번 더 읽는다 — 실 DB 없는 단위
+    # 테스트에서는 빈 결과로 대역한다(행에는 키가 기본값으로 채워진다).
+    fm = patch("service.api.routes_search.fetch_file_meta", return_value={})
+    fm.start()
+    test_case.addCleanup(fm.stop)
 
 
 def _fake_search_result() -> dict:

@@ -81,6 +81,20 @@ def _sort_key(item: dict[str, Any]) -> tuple[float, str]:
     return (-round(_row_similarity(item), 6), str(item.get("asset_id", "")))
 
 
+def _ext_of(file_name: str) -> str:
+    """표시 파일명에서 확장자를 뽑는다(소문자 · 없으면 빈 문자열).
+
+    Args:
+        file_name: 표시용 파일명. 점이 없거나 점으로 끝나면 확장자가 없는 것으로 본다.
+
+    Returns:
+        확장자(``jpg``) 또는 빈 문자열.
+    """
+    if "." not in file_name or file_name.endswith("."):
+        return ""
+    return file_name.rsplit(".", 1)[-1].strip().lower()
+
+
 def _shape(row: dict[str, Any], modality: str) -> dict[str, Any]:
     """원시 검색 행 → 포탈 응답 항목.
 
@@ -93,12 +107,13 @@ def _shape(row: dict[str, Any], modality: str) -> dict[str, Any]:
     Returns:
         응답 항목 dict. 도메인 라벨이 없으면 기본값으로 채운다(뒤 단계가 None 을 만나지 않게).
     """
+    display = display_name(str(row.get("file_uri", "")))
     return {
         "asset_id": str(row.get("id", "")),
         "modality": modality,
         "similarity": _row_similarity(row),
         "summary": row.get("summary", "") or "",
-        "file_name": display_name(str(row.get("file_uri", ""))),
+        "file_name": display,
         "domain_label": row.get("domain_label") or "general",
         # 주제 패싯·결과 좁히기에 쓸 값을 그대로 통과시킨다 — 화면이 이미 받은 결과로
         # 이 topics 로 클라 필터(재검색 없이) → 패싯 수와 표시 수 일치·컷오프 무관.
@@ -110,6 +125,9 @@ def _shape(row: dict[str, Any], modality: str) -> dict[str, Any]:
         # 태그 원문 배열(083 FR-106). 항상 있는 키 — 없으면 빈 배열(화면이 키 유무를 분기하지 않게).
         # 태그 패싯(meta.tag_facets)·화면의 패싯 클릭 좁히기·결과 내 재검색(091)이 이 값을 본다.
         "tags": [str(t) for t in (row.get("tags") or [])],
+        # 파일 확장자 — 표의 "종류" 칸. 색인에도 있지만 결과 행에는 오지 않아 파일명에서 뽑는다
+        # (경로가 아니라 표시 파일명 기준이라 자산 id 접두가 이미 벗겨진 값이다).
+        "file_ext": _ext_of(display),
     }
 
 
