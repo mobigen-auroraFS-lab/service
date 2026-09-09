@@ -26,6 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from service.api import _infra
 from service.portal.asset_file_meta import fetch_file_meta
 from service.portal.auth import Principal, require_principal
+from src.config.search_modalities import VALID_SEARCH_MODALITIES
 from src.config.settings import active_embed_channel, get_current_settings
 from src.registry.access_tier import project_ext_meta
 from src.registry.ext_meta_field_registry import fetch_access_tiers
@@ -118,8 +119,9 @@ def file_search(
     modality: list[str] | None = Query(
         None,
         description=(
-            "종류 필터(반복 가능 · text|image|video|audio). 멀티모달 검색이 결과를 버킷으로 나눠"
-            " 보이던 것을 칩 축으로 대신한다 — 건수가 함께 보이고 눌러 좁힌다"
+            "종류 필터(반복 가능 · text|image|video|audio · 닫힌 어휘라 그 밖의 값은 422)."
+            " 멀티모달 검색이 결과를 버킷으로 나눠 보이던 것을 칩 축으로 대신한다 —"
+            " 건수가 함께 보이고 눌러 좁힌다"
         ),
     ),
     file_ext: list[str] | None = Query(None, description="확장자 필터(반복 가능)"),
@@ -165,7 +167,7 @@ def file_search(
         topic: 주제 필터(여럿 = 또는).
         subtopic: 하위주제 필터(여럿 = 또는). 주제와는 「그리고」로 걸린다.
         tag: 태그 필터. 정규화·가공 없이 코어로 넘긴다.
-        modality: 종류 필터(여럿 = 또는).
+        modality: 종류 필터(여럿 = 또는). **닫힌 어휘**라 모르는 값은 422 다.
         file_ext: 확장자 필터.
         created_from: 생성일 하한.
         created_to: 생성일 상한.
@@ -184,13 +186,24 @@ def file_search(
         나온다. 각 행에는 표에 찍을 ``file_ext``·``file_size``·``updated_at`` 이 **항상** 있다.
 
     Raises:
-        HTTPException: 필터 형식·정렬 이름 오류는 422 · 넘길 수 있는 깊이를 넘는 페이지는 400(그 밖은
+        HTTPException: 필터 형식·정렬 이름·종류 값 오류는 422 · 넘길 수 있는 깊이를 넘는 페이지는 400(그 밖은
             순서를 매기지 않았으므로 빈 페이지로 돌려주면 "끝"과 구분되지 않는다) · 검색 엔진 미도달은 503.
     """
     if sort not in SORT_OPTIONS:
         raise HTTPException(
             status_code=422,
             detail=f"알 수 없는 정렬입니다: {sort!r} (가능: {', '.join(sorted(SORT_OPTIONS))})",
+        )
+    # 종류는 **닫힌 어휘**다(코어 정본). 모르는 값을 조용히 0건으로 넘기면 오타(`문서`·`텍스트`)를
+    # "그런 파일이 없다"로 읽게 된다 — `/search` 도 같은 자리에서 거부한다(routes_search).
+    unknown_mods = [m for m in (modality or []) if m not in VALID_SEARCH_MODALITIES]
+    if unknown_mods:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"알 수 없는 종류입니다: {unknown_mods} "
+                f"(가능: {', '.join(VALID_SEARCH_MODALITIES)})"
+            ),
         )
     try:
         filters = parse_search_filters(

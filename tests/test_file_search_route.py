@@ -22,6 +22,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from service.api import app, routes_file_search
+from src.config.search_modalities import VALID_SEARCH_MODALITIES
 from src.search.file_search import (
     ABOUT_BRANCH_DEFAULT,
     RANK_DEPTH_DEFAULT,
@@ -180,6 +181,23 @@ class TestFileSearchRoute(unittest.TestCase):
             "word_operator", "semantic_min_cosine", "semantic_cap", "about_branch",
             "total_cap", "rank_depth", "sort_depth", "facet_size", "facet_show",
             "search_pipeline"})
+
+    def test_모르는_종류는_422(self) -> None:
+        # 닫힌 어휘다. 조용히 0건으로 넘기면 오타(`문서`·`텍스트`)를 "그런 파일이 없다"로 읽게 된다.
+        resp = self.client.get("/file-search", params={"q": "김치", "modality": "문서"})
+        self.assertEqual(resp.status_code, 422)
+        self.assertIn("종류", resp.json()["detail"])
+        for good in VALID_SEARCH_MODALITIES:
+            self.assertIn(good, resp.json()["detail"], "허용값을 알려 주지 않는다")
+
+    @patch("service.api.routes_file_search.embed_query_for_media_search")
+    @patch("service.api.routes_file_search.search_files")
+    def test_허용된_종류는_통과한다(self, mock_find, mock_embed) -> None:
+        mock_find.return_value = _found()
+        mock_embed.return_value = [0.0]
+        for good in VALID_SEARCH_MODALITIES:
+            resp = self.client.get("/file-search", params={"q": "김치", "modality": good})
+            self.assertEqual(resp.status_code, 200, good)
 
     def test_모르는_정렬은_422(self) -> None:
         resp = self.client.get("/file-search", params={"q": "김치", "sort": "크기순"})
