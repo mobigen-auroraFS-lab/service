@@ -24,12 +24,11 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from service.api import _infra
+from service.portal.access_project import project_rows
 from service.portal.asset_file_meta import fetch_file_meta
 from service.portal.auth import Principal, require_principal
 from src.config.search_modalities import VALID_SEARCH_MODALITIES
 from src.config.settings import active_embed_channel, get_current_settings
-from src.registry.access_tier import project_ext_meta
-from src.registry.ext_meta_field_registry import fetch_access_tiers
 from src.search.file_search import (
     ABOUT_BRANCH_DEFAULT,
     FACET_SIZE_DEFAULT,
@@ -46,7 +45,7 @@ from src.search.file_search import (
 )
 from src.search.query_embed import embed_query_for_media_search
 from src.search.refine import refine_rows
-from src.search.search_filters import parse_search_filters
+from src.search.search_filters import applied_date_bounds, parse_search_filters
 
 router = APIRouter()
 
@@ -54,39 +53,14 @@ router = APIRouter()
 _PAGE_SIZE_MAX = 200
 # 화면에 보일 칩 수 — 083 태그 패싯 표시 기본(12)과 같은 값으로 맞춘다(축이 달라도 눈에 보이는 양은 같게).
 _FACET_SHOW = 12
-
-
-def _clearance_projected(
-    conn: Any, rows: list[dict[str, Any]], *, clearance: str
-) -> list[dict[str, Any]]:
-    """요약에서 **권한이 못 보는 항목을 지운다**(색인·검색은 건드리지 않고 응답 단계에서만).
-
-    권한이 못 미치면 그 키를 행에서 아예 뺀다 — 키의 존재 자체가 "요약이 있다"는 정보이기 때문이다.
-
-    Args:
-        conn: DB 커넥션.
-        rows: 코어가 준 결과 행. 원본을 바꾸지 않고 새 목록을 만든다.
-        clearance: 요청자 권한 등급.
-
-    Returns:
-        같은 순서의 새 행 목록. 도메인마다 등급표를 한 번만 조회해 재사용한다.
-    """
-    tiers: dict[str, dict[str, str]] = {}
-    out: list[dict[str, Any]] = []
-    for row in rows:
-        domain = str(row.get("domain_label") or "general")
-        if domain not in tiers:
-            tiers[domain] = fetch_access_tiers(conn, domain)
-        summary = row.get("summary") or ""
-        masked = project_ext_meta({"summary": summary} if summary else {}, tiers[domain],
-                                  domain=domain, clearance=clearance)
-        new_row = dict(row)
-        if summary and "summary" not in masked:
-            new_row.pop("summary", None)
-        elif "summary" in masked:
-            new_row["summary"] = masked["summary"]
-        out.append(new_row)
-    return out
+# 반복 파라미터(주제·태그 등) 한 번에 받을 개수 상한. 화면은 칩을 눌러 몇 개 고르는 정도라 50 이면
+# 넉넉하고, 수천 개를 보내 ``terms`` 절을 부풀리는 요청을 여기서 막는다(엔진 한계 65,536 보다 훨씬 앞).
+_REPEAT_MAX = 50
+# 검색 엔진 **연결** 실패로 볼 예외들. 클라이언트가 안 깔린 환경(순수 단위 테스트)에서는 빈 튜플이라
+# ``except ()`` 가 아무것도 잡지 않는다 — 그 환경에는 잡을 연결 실패도 없다.
+_OS_CONN_ERRORS: tuple[type[BaseException], ...] = (
+    (_infra.OSConnectionError,) if _infra.OSConnectionError is not None else ()
+)
 
 
 def _ext_of(file_name: str) -> str:
@@ -163,7 +137,7 @@ def file_search(
     조건을 빼고 센다).
 
     Args:
-        q: 검색어. 빈 값은 422 다(조건만으로 훑는 경로는 이 창구가 아니다).
+        q: 검색어. 공백만이어도 422 다(조건만으로 훑는 경로는 이 창구가 아니다).
         topic: 주제 필터(여럿 = 또는).
         subtopic: 하위주제 필터(여럿 = 또는). 주제와는 「그리고」로 걸린다.
         tag: 태그 필터. 정규화·가공 없이 코어로 넘긴다.
@@ -186,9 +160,20 @@ def file_search(
         나온다. 각 행에는 표에 찍을 ``file_ext``·``file_size``·``updated_at`` 이 **항상** 있다.
 
     Raises:
-        HTTPException: 필터 형식·정렬 이름·종류 값 오류는 422 · 넘길 수 있는 깊이를 넘는 페이지는 400(그 밖은
+        HTTPException: 빈 검색어·필터 형식·정렬 이름·종류 값·반복 파라미터 개수 오류는 422 · 넘길 수 있는 깊이를 넘는 페이지는 400(그 밖은
             순서를 매기지 않았으므로 빈 페이지로 돌려주면 "끝"과 구분되지 않는다) · 검색 엔진 미도달은 503.
     """
+    # 입력 오류는 전부 **422** 로 통일한다(리뷰 2026-09-09 — 공백만인 q 가 코어 ValueError 경로로
+    # 400 이 되어 다른 입력 오류와 어긋났다). 프론트가 상태 코드 하나로 "입력을 고쳐 달라"를 판단한다.
+    if not q.strip():
+        raise HTTPException(status_code=422, detail="검색어가 비어 있습니다")
+    for name, values in (("topic", topic), ("subtopic", subtopic), ("tag", tag),
+                         ("modality", modality), ("file_ext", file_ext)):
+        if values is not None and len(values) > _REPEAT_MAX:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{name} 은(는) 한 번에 {_REPEAT_MAX}개까지만 받습니다(요청 {len(values)}개)",
+            )
     if sort not in SORT_OPTIONS:
         raise HTTPException(
             status_code=422,
@@ -235,10 +220,18 @@ def file_search(
 
     from src.search.opensearch_sync import get_client
 
+    # 🔴 정렬과 무관하게 임베딩이 필요하다 — 뜻이 **집합 판정**에 쓰이기 때문이다(코사인 하한
+    #    이상이면 글자가 안 겹쳐도 집합에 든다). 정렬에 따라 개수가 달라지면 화면이 거짓말을 한다.
+    # 임베딩 서버 장애는 검색 엔진 장애와 **다른 원인**이라 따로 알린다(리뷰 2026-09-09 — 종전에는
+    # 모든 예외가 "검색 엔진 연결 실패"로 뭉개져 운영자가 엉뚱한 곳을 봤다). 코어 임베더는 API
+    # 실패를 RuntimeError, 응답 이상을 ValueError 로 올린다.
     try:
-        # 🔴 정렬과 무관하게 임베딩이 필요하다 — 뜻이 **집합 판정**에 쓰이기 때문이다(코사인 하한
-        #    이상이면 글자가 안 겹쳐도 집합에 든다). 정렬에 따라 개수가 달라지면 화면이 거짓말을 한다.
         query_vector = embed_query_for_media_search(q, channel=active_embed_channel())
+    except (RuntimeError, ValueError) as exc:
+        _infra._LOG.warning("질의 임베딩 실패: %s", exc, exc_info=True)
+        raise HTTPException(status_code=503, detail="임베딩 서버에 연결할 수 없습니다") from exc
+
+    try:
         found = search_files(
             get_client(), get_current_settings().opensearch.index,
             query=q, query_vector=query_vector, filters=filters,
@@ -248,14 +241,25 @@ def file_search(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001
+    except _OS_CONN_ERRORS as exc:
         # 검색 엔진에 닿지 못한 것을 빈 결과로 감추면 "자료가 없다"와 "검색이 죽었다"가 같아진다.
-        _infra._LOG.warning("파일 검색 실패: %s", exc, exc_info=True)
+        # **연결 실패만** 503 으로 — 그 밖의 예외(코드 결함)는 그대로 올려 전역 핸들러가 500 으로
+        # 구분한다(`_infra.os_unavailable_handler` 가 정한 원칙: 코드 버그 500 과 구분·운영 알람용).
+        _infra._LOG.warning("파일 검색 — 검색 엔진 연결 실패: %s", exc, exc_info=True)
         raise HTTPException(status_code=503, detail="검색 엔진에 연결할 수 없습니다") from exc
 
     def _finish(conn: Any) -> list[dict[str, Any]]:
-        """권한 가리기와 파일 메타 붙이기를 **한 트랜잭션**에서 끝낸다(연결을 두 번 잡지 않게)."""
-        rows = _clearance_projected(conn, found["rows"], clearance=principal.clearance)
+        """권한 가리기와 파일 메타 붙이기를 **한 트랜잭션**에서 끝낸다(연결을 두 번 잡지 않게).
+
+        Args:
+            conn: DB 커넥션(``_run_in_db`` 가 넘긴다).
+
+        Returns:
+            코어가 준 순서 그대로의 행 목록. 각 행에 표에 찍을 ``file_ext``·``file_size``·
+            ``updated_at``·``created_at`` 이 **항상** 있다(모르는 값은 0·``None``) — 프론트가
+            키 유무로 분기하지 않게.
+        """
+        rows = project_rows(conn, found["rows"], clearance=principal.clearance)
         meta = fetch_file_meta(conn, [r["asset_id"] for r in rows])
         for row in rows:
             got = meta.get(row["asset_id"]) or {}
@@ -274,6 +278,8 @@ def file_search(
     if refine_applied:
         items = refine_rows(items, refine, fields_of=_refine_fields)
 
+    # 기간 되돌림은 코어가 검색 절에 넣는 값과 **같은 계산**으로(원문이 아니라 적용값).
+    applied_dates = applied_date_bounds(filters)
     body: dict[str, Any] = {
         "query": q,
         "items": items,
@@ -304,8 +310,10 @@ def file_search(
             "modality": list(filters.modalities) if filters else [],
             "tag": list(filters.tags) if filters else [],
             "file_ext": list(filters.file_exts) if filters else [],
-            "created_from": created_from,
-            "created_to": created_to,
+            # 되돌리는 값은 **실제 적용값**이다 — 원문은 공백·시각을 포함할 수 있는데 적용은 날짜까지만
+            # 이라, 원문을 되돌리면 "안 걸린 조건이 걸린 것처럼" 보인다(리뷰 2026-09-09).
+            "created_from": applied_dates[0],
+            "created_to": applied_dates[1],
         },
     }
     if refine_applied:

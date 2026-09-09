@@ -18,6 +18,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from service.api import _infra
+from service.portal.access_project import project_grouped
 from service.portal.auth import Principal, require_principal
 from service.portal.search_group import asset_refine_fields, group_ranked
 from service.portal.search_presets import DEFAULT_PRESET, PRESETS, resolve_tuning, tuning_meta
@@ -25,8 +26,6 @@ from src.config.search_constants import TAG_FACET_MIN_COUNT_DEFAULT, TAG_FACET_T
 from src.config.search_modalities import VALID_SEARCH_MODALITIES, parse_modalities_csv
 from src.config.settings import get_current_settings
 from src.domain.numeric import safe_float
-from src.registry.access_tier import project_ext_meta
-from src.registry.ext_meta_field_registry import fetch_access_tiers
 from src.search.facets import aggregate_facets
 from src.search.refine import refine_rows
 from src.search.search_filters import parse_search_filters
@@ -50,50 +49,6 @@ _SEARCH_LIMIT_PER_BUCKET_MAX = 500
 
 # 간략 보기에서 요약을 자를 길이(고정값 — 요청 파라미터로 받지 않는다).
 _COMPACT_SUMMARY_CHARS = 160
-
-
-def _project_grouped_search(
-    conn: Any,
-    grouped: dict[str, list[dict[str, Any]]],
-    *,
-    clearance: str,
-) -> dict[str, list[dict[str, Any]]]:
-    """검색 결과의 요약에서 **권한이 못 보는 항목을 지운다**.
-
-    권한이 못 미치면 그 키를 **행에서 아예 뺀다**(빈 값으로 바꾸지 않는다 — 키의 존재 자체가
-    '요약이 있다'는 정보이기 때문). 색인은 건드리지 않고 응답 단계에서만 가린다.
-
-    Args:
-        grouped: 모달리티별 결과 행. 원본을 바꾸지 않고 새 dict 를 만든다.
-        clearance: 요청자 권한 등급.
-
-    Returns:
-        같은 구조의 dict. 도메인마다 등급표를 한 번만 조회해 재사용한다.
-    """
-    # 도메인별 access_tier 를 메모이제이션 — 같은 도메인 행이 여럿이면 fetch_access_tiers DB 조회를 1회로 묶는다.
-    tiers_cache: dict[str, dict[str, str]] = {}
-    out: dict[str, list[dict[str, Any]]] = {}
-    for modality, rows in grouped.items():
-        projected: list[dict[str, Any]] = []
-        for row in rows:
-            domain = str(row.get("domain_label") or "general")
-            if domain not in tiers_cache:
-                tiers_cache[domain] = fetch_access_tiers(conn, domain)
-            summary = row.get("summary") or ""
-            masked = project_ext_meta(
-                {"summary": summary} if summary else {},
-                tiers_cache[domain],
-                domain=domain,
-                clearance=clearance,
-            )
-            new_row = dict(row)
-            if summary and "summary" not in masked:
-                new_row.pop("summary", None)
-            elif "summary" in masked:
-                new_row["summary"] = masked["summary"]
-            projected.append(new_row)
-        out[modality] = projected
-    return out
 
 
 def _topic_pairs_of(row: Mapping[str, Any]) -> list[str]:
@@ -490,7 +445,7 @@ def search(
     # 권한 투영과 주제 패싯을 **한 트랜잭션에서** 끝낸다 — 연결을 두 번 잡지 않기 위해서다.
     def _project_and_facet(conn: Any) -> tuple[dict[str, list[dict[str, Any]]], list[dict[str, Any]]]:
         """권한별 필드 가리기와 주제 패싯 계산을 **한 번의 조회**로 끝낸다(연결을 두 번 잡지 않게)."""
-        projected = _project_grouped_search(conn, grouped_raw, clearance=principal.clearance)
+        projected = project_grouped(conn, grouped_raw, clearance=principal.clearance)
         facet = _search_topic_facet(projected)
         return projected, facet
 

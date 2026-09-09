@@ -71,7 +71,7 @@ class TestFileSearchRoute(unittest.TestCase):
         self.addCleanup(env.stop)
         for target, repl in (
             ("service.api._infra._run_in_db", _passthrough_db),
-            ("service.api.routes_file_search.fetch_access_tiers", lambda *_a, **_k: {}),
+            ("service.portal.access_project.fetch_access_tiers", lambda *_a, **_k: {}),
             ("service.api.routes_file_search.fetch_file_meta", lambda *_a, **_k: {}),
             ("src.search.opensearch_sync.get_client", lambda *_a, **_k: object()),
             # 설정 미초기화 상태로 도는 단위 테스트다 — 색인 이름·임베딩 채널만 대역으로 준다.
@@ -181,6 +181,65 @@ class TestFileSearchRoute(unittest.TestCase):
             "word_operator", "semantic_min_cosine", "semantic_cap", "about_branch",
             "total_cap", "rank_depth", "sort_depth", "facet_size", "facet_show",
             "search_pipeline"})
+
+    def test_공백만인_검색어는_422(self) -> None:
+        # 입력 오류는 전부 422 로 통일 — 종전엔 코어 ValueError 경로로 400 이 되어 어긋났다.
+        resp = self.client.get("/file-search", params={"q": "   "})
+        self.assertEqual(resp.status_code, 422)
+
+    def test_반복_파라미터_개수_상한(self) -> None:
+        many = [f"주제{i}" for i in range(routes_file_search._REPEAT_MAX + 1)]
+        resp = self.client.get("/file-search", params={"q": "김치", "topic": many})
+        self.assertEqual(resp.status_code, 422)
+        self.assertIn(str(routes_file_search._REPEAT_MAX), resp.json()["detail"])
+
+    @patch("service.api.routes_file_search.embed_query_for_media_search")
+    @patch("service.api.routes_file_search.search_files")
+    def test_날짜_되돌림은_실제_적용값이다(self, mock_find, mock_embed) -> None:
+        # 원문은 공백·시각을 포함할 수 있는데 적용은 날짜까지만 — 원문을 되돌리면 "안 걸린 조건이
+        # 걸린 것처럼" 보인다(리뷰 2026-09-09).
+        mock_find.return_value = _found()
+        mock_embed.return_value = [0.0]
+        body = self.client.get("/file-search", params={
+            "q": "김치", "created_from": "2026-01-01T15:30:00+09:00", "created_to": "   "}).json()
+        self.assertEqual(body["filters"]["created_from"], "2026-01-01")
+        self.assertIsNone(body["filters"]["created_to"], "공백은 필터가 아니므로 None 이어야 한다")
+
+    @patch("service.api.routes_file_search.embed_query_for_media_search")
+    def test_임베딩_실패는_임베딩_503(self, mock_embed) -> None:
+        # 임베딩 서버 장애와 검색 엔진 장애는 다른 원인 — 문구로 구분한다.
+        mock_embed.side_effect = RuntimeError("임베딩 API 호출 실패")
+        resp = self.client.get("/file-search", params={"q": "김치"})
+        self.assertEqual(resp.status_code, 503)
+        self.assertIn("임베딩", resp.json()["detail"])
+
+    @patch("service.api.routes_file_search.embed_query_for_media_search")
+    @patch("service.api.routes_file_search.search_files")
+    def test_코드_결함은_503으로_둔갑하지_않는다(self, mock_find, mock_embed) -> None:
+        # 연결 실패만 503 — 그 밖의 예외는 그대로 올라가 전역 핸들러가 500 으로 구분한다
+        # (_infra.os_unavailable_handler 가 정한 원칙 · 리뷰 2026-09-09).
+        mock_embed.return_value = [0.0]
+        mock_find.side_effect = KeyError("코드 결함 흉내")
+        client = TestClient(app, raise_server_exceptions=False)
+        resp = client.get("/file-search", params={"q": "김치"})
+        self.assertEqual(resp.status_code, 500)
+
+    @patch("service.api.routes_file_search.embed_query_for_media_search")
+    @patch("service.api.routes_file_search.search_files")
+    def test_권한이_못_보는_요약은_키가_빠진다(self, mock_find, mock_embed) -> None:
+        # 🔴 등급표를 빈 dict 로 대역하면 미등록 키 통과 규칙 때문에 가리기가 켜져도 꺼져도 통과한다.
+        #    실제 등급을 넣어야 가리기가 검증된다(리뷰 2026-09-09). regulated 는 최상위 등급이라
+        #    인증 꺼짐 모드의 개발 principal 은 반드시 그 아래다.
+        mock_find.return_value = _found()
+        mock_embed.return_value = [0.0]
+        with patch("service.portal.access_project.fetch_access_tiers",
+                   return_value={"summary": "regulated"}):
+            body = self.client.get("/file-search", params={"q": "김치"}).json()
+        self.assertNotIn("summary", body["items"][0], "권한이 못 보는 요약이 그대로 나갔다")
+        self.assertEqual(body["items"][0]["asset_id"], "a1", "가리기가 행 자체를 지우면 안 된다")
+        # 등급표가 비면(미등록) 종전처럼 통과한다 — 대역 방식에 따라 결과가 갈림을 함께 봉인.
+        body = self.client.get("/file-search", params={"q": "김치"}).json()
+        self.assertEqual(body["items"][0]["summary"], "요약")
 
     def test_모르는_종류는_422(self) -> None:
         # 닫힌 어휘다. 조용히 0건으로 넘기면 오타(`문서`·`텍스트`)를 "그런 파일이 없다"로 읽게 된다.
