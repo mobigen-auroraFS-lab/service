@@ -135,6 +135,8 @@ curl "http://127.0.0.1:8001/health"
 curl "http://127.0.0.1:8001/search?q=김치%20담그기&modalities=video,text&size=10"
 ```
 
+> ⚠️ **새 화면은 `GET /file-search` 를 쓴다**(대체 창구 — 같은 단어 절·점수식 · 개수·칩·페이징·정렬 · 12배 빠름). `/search` 는 기존 화면과 과제 산출물 근거로 남는다.
+
 `GET /search` 는 결과를 **모달리티별 그룹**(text·image·video·audio)으로 반환하며 섹션마다 독립
 랭킹입니다. 주제·기간·확장자·출처 필터와 주제 facet 을 함께 제공합니다.
 
