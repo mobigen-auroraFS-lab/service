@@ -15,7 +15,15 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException
 
-from service.api import _infra, routes_admin, routes_assets, routes_review, routes_search
+from service.api import (
+    _infra,
+    routes_admin,
+    routes_assets,
+    routes_file_search,
+    routes_mm_meta,
+    routes_review,
+    routes_search,
+)
 from service.portal.auth import Principal, require_principal
 from service.portal.auth.config import load_portal_auth_config
 from service.portal.auth.dev_issuer import issue_dev_token
@@ -65,6 +73,9 @@ def me(principal: Annotated[Principal, Depends(require_principal)]) -> dict[str,
 app.include_router(routes_admin.router)
 app.include_router(routes_review.router)
 app.include_router(routes_search.router)
+# 파일 검색(시나리오 ③) — 조건으로 좁혀 훑는 창구. 위 /search 와 다른 화면이라 따로 둔다.
+app.include_router(routes_file_search.router)
 app.include_router(routes_assets.router)
+app.include_router(routes_mm_meta.router)
 
 __all__ = ["app"]

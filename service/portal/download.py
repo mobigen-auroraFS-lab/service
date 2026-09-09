@@ -150,10 +150,13 @@ def resolve_download_target(
     }
 
 
-def _fetch_asset_paths(
+def fetch_asset_paths(
     conn: Connection[Any], asset_ids: list[str]
 ) -> dict[str, Any]:
     """자산 id 들의 파일 경로를 **한 번에** 조회한다(자산마다 따로 묻지 않는다).
+
+    **공개 심볼**: 개체 카드 zip(``portal/mm_meta.py``)도 같은 조회를 필요로 한다 — 밑줄 이름을 남이
+    쓰거나 SQL 을 두 벌로 두면 노출 기준(``status='registered'``)이 갈릴 수 있어 공개 이름으로 둔다.
 
     Args:
         asset_ids: 조회할 자산 목록. 빈 목록이면 DB 를 건드리지 않는다.
@@ -230,7 +233,7 @@ def collect_bundle_assets(
 
     # 최종 순서: seed 먼저 → 이웃(위 정렬). 경로 일괄 조회 후 enrich.
     ordered_ids = [seed_id] + [nid for nid, _ in ordered]
-    path_map = _fetch_asset_paths(conn, ordered_ids)
+    path_map = fetch_asset_paths(conn, ordered_ids)
 
     targets: list[dict[str, Any]] = []
     for aid in ordered_ids:

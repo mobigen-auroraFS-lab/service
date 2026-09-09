@@ -105,7 +105,7 @@ class TestSearch(unittest.TestCase):
 
     def setUp(self) -> None:
         _enable_portal_test_auth_bypass(self)
-        tiers = patch("service.api.routes_search.fetch_access_tiers", side_effect=_empty_tiers)
+        tiers = patch("service.portal.access_project.fetch_access_tiers", side_effect=_empty_tiers)
         tiers.start()
         self.addCleanup(tiers.stop)
         # 057-후속/065: /search 주제 패싯(FR-503)은 결과 행의 **색인 topics**(=필터 소스)로 계산하며

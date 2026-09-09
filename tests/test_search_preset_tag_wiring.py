@@ -160,7 +160,7 @@ class TestRoute(unittest.TestCase):
         self.addCleanup(env.stop)
         for target, repl in (
             ("service.api._infra._run_in_db", _passthrough_db),
-            ("service.api.routes_search.fetch_access_tiers", lambda *_a, **_k: {}),
+            ("service.portal.access_project.fetch_access_tiers", lambda *_a, **_k: {}),
         ):
             p = patch(target, repl)
             p.start()

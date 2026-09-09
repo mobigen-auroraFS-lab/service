@@ -31,6 +31,7 @@ from service.portal.download import (
 )
 from service.portal.thumbnail import THUMBNAILABLE_MODALITIES, cached_thumbnail
 from src.config.filename_util import display_file_name
+from src.relations.graph_query import mm_meta_of_asset
 from src.topic.asset_topic_query import (
     assets_in_topic,
     assets_unclassified,
@@ -189,6 +190,28 @@ def _file_iterator(path: str, start: int, end: int) -> Iterator[bytes]:
                 break
             remaining -= len(chunk)
             yield chunk
+
+
+@router.get("/assets/{asset_id}/mm-meta")
+def asset_mm_meta(
+    asset_id: str,
+    principal: Annotated[Principal, Depends(require_principal)] = ...,
+) -> dict[str, Any]:
+    """자산 상세의 "이 파일이 속한 개체" 블록 — 코어 seam 위임.
+
+    ⚠️ **묶음 크기 1 도 그대로 싣는다.** 목록 창구는 1 인 개체를 감추지만(자산 하나짜리는 "묶음"이
+    아니다), 자산 쪽에서 보면 "이 파일이 그 개체에 속한다"는 것은 사실이다. 감출지는 화면이 정한다.
+
+    Args:
+        asset_id: 자산 UUID(문자열).
+        principal: 인증 주체.
+
+    Returns:
+        ``{"items": [{entity_type, entity_uid, name, bundle_size, edge_id, status, reason}]}`` —
+        종류·표기 키 오름차순. 소속이 없으면 빈 목록이다.
+    """
+    items = _infra._run_in_db(lambda conn: mm_meta_of_asset(conn, asset_id=asset_id))
+    return {"items": items}
 
 
 @router.get("/assets/{asset_id}/download")
