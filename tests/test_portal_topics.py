@@ -184,7 +184,7 @@ class TestSearchTopicFacetAndFilter(unittest.TestCase):
 
     def setUp(self) -> None:
         _enable_bypass(self)
-        tiers = patch("service.api.routes_search.fetch_access_tiers", side_effect=_empty_tiers)
+        tiers = patch("service.portal.access_project.fetch_access_tiers", side_effect=_empty_tiers)
         tiers.start()
         self.addCleanup(tiers.stop)
         self.client = TestClient(app)
