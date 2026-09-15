@@ -37,6 +37,10 @@ _STREAM_CHUNK = 64 * 1024
 #    숫자를 믿지 않게 된다("적힌 숫자 = 누르면 나오는 수" 원칙 · 2026-09-08 판정으로 통일).
 #    값 자체는 코어에서 읽는다 — 판정 배치가 대상을 고를 때 같은 값을 써야 판정과 노출이 안 어긋난다.
 _MIN_BUNDLE_SIZE = MIN_BUNDLE_SIZE
+# 검색어가 있을 때 훑는 모수의 상한. 목록 상한(`limit`)과 다른 값이다 — 저쪽은 **화면에 몇 개를
+#   보일까**이고 이쪽은 **어디까지 뒤져 볼까**다. 코어 `list_entities` 가 상한을 필수로 받으므로
+#   무제한 대신 넉넉한 값을 준다(노출 임계가 모수를 이미 크게 줄여 실제 행은 훨씬 적다).
+_SEARCH_SCOPE_MAX = 10_000
 
 
 def _parse_names(raw: str | None) -> list[str]:
@@ -125,14 +129,20 @@ def list_mm_meta(
         **"확인된 N건"** 으로 표기한다(완전성을 약속하지 않는다).
     """
     picked_areas = _parse_names(areas)
+    # 🔴 검색어가 있으면 **상한 밖까지** 모수를 가져온다 — 먼저 잘라 놓고 그 안에서 찾으면
+    #    상위 N 밖의 개체는 검색으로도 닿을 수 없다(2026-09-15 실측: 「숭례문」이 색인에 있는데 0건).
+    #    상한은 `search_and_refine` 이 **찾은 뒤에** 적용한다. 모수 자체는 노출 임계
+    #    (`_MIN_BUNDLE_SIZE`)가 이미 줄여 놓아 무거워지지 않는다.
+    scope = _SEARCH_SCOPE_MAX if (q and q.strip()) else limit
     items = _infra._run_in_db(
         lambda conn: mm_meta.fetch_list(
             conn, entity_type=entity_type, areas=picked_areas,
-            min_bundle_size=_MIN_BUNDLE_SIZE, limit=limit,
+            min_bundle_size=_MIN_BUNDLE_SIZE, limit=scope,
         )
     )
     items, scope_total = mm_meta.search_and_refine(
-        items, q=q, refine=refine, run_in_db=_infra._run_in_db  # type: ignore[arg-type]
+        items, q=q, refine=refine, run_in_db=_infra._run_in_db,  # type: ignore[arg-type]
+        limit=limit,
     )
     body: dict[str, Any] = {"items": items, "total": len(items)}
     if refine and refine.strip():
