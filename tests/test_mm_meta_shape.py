@@ -365,3 +365,85 @@ class TestZipHelpers(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSearchBeforeLimit(unittest.TestCase):
+    """🔴 찾아오기(q)는 상한보다 **먼저**다 — 상한을 먼저 적용하면 상위 N 밖의 개체는 검색으로도 닿을 수 없다.
+
+    2026-09-15 실측: 「숭례문」이 개체 색인에 있는데 화면에서 0건이었다. 목록 상한 200 을 먼저 자르고
+    그 안에서 찾았기 때문이다. 골라내기(refine)는 반대로 **이번 결과 안에서만** 좁히는 것이 맞다.
+    """
+
+    def setUp(self) -> None:
+        # 구성 자산 수 내림차순 목록 — 뒤쪽은 상한 밖으로 밀려나는 꼬리 개체다.
+        self.items = [
+            dict(_row(entity_uid=f"흔한{i}", name=f"흔한{i}", keywords=[f"흔한{i}"],
+                      confirmed_count=100 - i))
+            for i in range(5)
+        ] + [dict(_row(entity_uid="숭례문", name="숭례문", keywords=["숭례문"], confirmed_count=1))]
+
+    def test_상한은_찾은_뒤에_적용된다(self) -> None:
+        with patch.object(mm_meta, "get_current_settings", return_value=_cfg()):
+            out, _scope = mm_meta.search_and_refine(
+                self.items, q="숭례문", refine=None, run_in_db=lambda fn: fn(object()), limit=3)
+        self.assertEqual([r["entity_uid"] for r in out], ["숭례문"],
+                         "꼬리 개체라도 찾으면 나와야 한다")
+
+    def test_찾은_결과가_상한보다_많으면_자른다(self) -> None:
+        with patch.object(mm_meta, "get_current_settings", return_value=_cfg()):
+            out, _scope = mm_meta.search_and_refine(
+                self.items, q="흔한", refine=None, run_in_db=lambda fn: fn(object()), limit=3)
+        self.assertEqual(len(out), 3, "상한은 찾은 결과에 적용된다")
+
+    def test_scope_total_은_자른_뒤_기준이다(self) -> None:
+        """화면이 "지우면 N건"을 띄우는 재료다 — 자르기 전 수를 주면 화면이 거짓말을 한다."""
+        with patch.object(mm_meta, "get_current_settings", return_value=_cfg()):
+            _out, scope = mm_meta.search_and_refine(
+                self.items, q="흔한", refine="없는말", run_in_db=lambda fn: fn(object()), limit=3)
+        self.assertEqual(scope, 3)
+
+    def test_limit_을_안_주면_종전과_같다(self) -> None:
+        with patch.object(mm_meta, "get_current_settings", return_value=_cfg()):
+            out, scope = mm_meta.search_and_refine(
+                self.items, q="흔한", refine=None, run_in_db=lambda fn: fn(object()))
+        self.assertEqual(len(out), 5)
+        self.assertEqual(scope, 5)
+
+
+class TestRouteSearchScope(unittest.TestCase):
+    """라우트가 검색어 유무에 따라 **조회 범위**를 달리 잡는지."""
+
+    def test_검색어가_있으면_상한_없이_모수를_가져온다(self) -> None:
+        from service.api import routes_mm_meta as mod
+        seen: dict[str, object] = {}
+
+        def fake_fetch(_conn, **kw):
+            seen.update(kw)
+            return []
+
+        with (
+            patch.object(mod._infra, "_run_in_db", lambda fn: fn(object())),
+            patch.object(mod.mm_meta, "fetch_list", fake_fetch),
+            patch.object(mod.mm_meta, "search_and_refine", lambda items, **kw: ([], 0)),
+        ):
+            mod.list_mm_meta(q="숭례문", entity_type=None, areas=None, refine=None,
+                             limit=200, principal=SimpleNamespace(clearance="authorized"))
+        self.assertEqual(seen["limit"], mod._SEARCH_SCOPE_MAX,
+                         "검색어가 있으면 목록 상한이 아니라 검색 모수를 가져온다")
+
+    def test_검색어가_없으면_목록_상한을_그대로_쓴다(self) -> None:
+        from service.api import routes_mm_meta as mod
+        seen: dict[str, object] = {}
+
+        def fake_fetch(_conn, **kw):
+            seen.update(kw)
+            return []
+
+        with (
+            patch.object(mod._infra, "_run_in_db", lambda fn: fn(object())),
+            patch.object(mod.mm_meta, "fetch_list", fake_fetch),
+            patch.object(mod.mm_meta, "search_and_refine", lambda items, **kw: ([], 0)),
+        ):
+            mod.list_mm_meta(q=None, entity_type=None, areas=None, refine=None,
+                             limit=200, principal=SimpleNamespace(clearance="authorized"))
+        self.assertEqual(seen["limit"], 200)

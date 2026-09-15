@@ -176,6 +176,7 @@ def search_and_refine(
     q: str | None,
     refine: str | None,
     run_in_db: Callable[[Callable[[Any], Any]], Any],
+    limit: int | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """목록을 검색어로 좁히고(선택) 결과 안에서 글자로 한 번 더 좁힌다.
 
@@ -198,10 +199,15 @@ def search_and_refine(
         refine: 결과 내 재검색 글자. 공백으로 쪼갠 낱말이 **모두** 있는 행만 남는다.
         run_in_db: DB 작업을 트랜잭션 안에서 돌려 주는 호출자의 함수(라우트가 넘긴다). 되돌림 경로의
             의미 검색이 커넥션을 필요로 해 주입받는다 — 이 모듈이 인프라를 직접 잡지 않게.
+        limit: 화면에 보일 최대 개체 수. 🔴 **찾은 뒤에** 적용한다 — 먼저 자르면 상위 N 밖의 개체는
+            검색으로도 닿을 수 없다. ``None`` 이면 자르지 않는다(호출자가 이미 잘라 온 경우).
 
     Returns:
         ``(좁혀진 목록, 좁히기 전 건수)``. 뒤 값은 화면이 "지우면 N건"을 띄우는 재료다.
     """
+    # 순서가 계약이다(2026-09-15 실측 — 「숭례문」이 색인에 있는데 화면에서 0건이었다):
+    #   ① 찾아오기(q)는 모수 전체를 본다 → ② 상한(limit)은 찾은 결과에 적용 →
+    #   ③ 골라내기(refine)는 이번 결과 안에서만. ①과 ③은 다른 일이다.
     # 매칭은 코어 한 곳에 있다 — 표기 정규화 규칙이 두 벌이 되면 표기 해석이 갈린다.
     string_hits = narrow_entities(items, q)
     has_query = bool(q and q.strip())
@@ -214,6 +220,9 @@ def search_and_refine(
     else:
         items = string_hits
 
+    if limit is not None:
+        items = items[:limit]
+    # 자른 뒤의 수여야 한다 — 화면은 이 값으로 "지우면 N건"을 띄운다.
     scope_total = len(items)
     if refine and refine.strip():
         items = refine_rows(items, refine, fields_of=entity_refine_fields)
