@@ -29,6 +29,7 @@ from service.portal.asset_file_meta import fetch_file_meta
 from service.portal.auth import Principal, require_principal
 from src.config.search_modalities import VALID_SEARCH_MODALITIES
 from src.config.settings import active_embed_channel, get_current_settings
+from src.search.cursor import CursorError
 from src.search.file_search import (
     ABOUT_BRANCH_DEFAULT,
     FACET_SIZE_DEFAULT,
@@ -41,6 +42,7 @@ from src.search.file_search import (
     SORT_OPTIONS,
     TOTAL_CAP_DEFAULT,
     WORD_OPERATOR_DEFAULT,
+    browse_files,
     search_files,
 )
 from src.search.query_embed import embed_query_for_media_search
@@ -79,7 +81,14 @@ def _ext_of(file_name: str) -> str:
 
 @router.get("/file-search")
 def file_search(
-    q: str = Query(..., min_length=1, description="검색어 — 파일 이름과 내용을 함께 찾는다"),
+    q: str = Query(
+        "",
+        description=(
+            "검색어 — 파일 이름과 내용을 함께 찾는다."
+            " **비우면 조건에 맞는 전부**(첫 화면 훑기 · 097). 그때는 관련도가 뜻이 없으므로"
+            " 정렬이 relevance 면 created_desc 로 바꾼다"
+        ),
+    ),
     topic: list[str] | None = Query(
         None, description="주제 필터(반복 가능). 여럿이면 그중 하나라도 맞으면 남는다"),
     subtopic: list[str] | None = Query(None, description="하위주제 필터(반복 가능)"),
@@ -116,57 +125,86 @@ def file_search(
             " size_desc/size_asc(크기). 관련도 외의 정렬은 더 깊이 넘길 수 있다"
         ),
     ),
-    offset: int = Query(0, ge=0, description="페이지 시작 위치(0부터)"),
+    offset: int = Query(0, ge=0, description="페이지 시작 위치(0부터) — 얕은 페이지용. cursor 와 함께 줄 수 없다"),
+    cursor: str | None = Query(
+        None,
+        description=(
+            "이어 읽기 표식(책갈피 · 097). 직전 응답의 next_cursor 를 그대로 넘긴다."
+            " 🔴 offset 과 달리 **1만 건 벽이 없다** — 무한 스크롤용."
+            " relevance 정렬에는 줄 수 없다(점수가 상위 일부만 계산돼 이어받을 기준값이 없다)"
+        ),
+    ),
     limit: int = Query(50, ge=1, le=_PAGE_SIZE_MAX, description="이 페이지의 행 수"),
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
     """조건으로 좁힌 파일을 한 페이지씩 돌려준다 — 전체 개수와 좁히기 칩을 함께.
 
-    조건이 겹치는 방식은 검색 엔진 규칙 그대로다. 같은 칸에서 여럿 고르면 **또는**, 다른 칸끼리는
-    **그리고**. 조건을 바꾸면 개수와 칩이 함께 다시 계산된다.
-
-    **집합의 뜻**(096): 세 갈래의 합집합 중 조건에 맞는 것 —
-    ① 검색어의 **모든 형태소**가 든 파일(단어 절은 멀티모달 검색과 같은 것)
-    ② **뜻이 아주 가까운** 파일(코사인 하한 이상 · 상위 k개가 아니라 하한이라 경계가 있다)
-    ③ **개체(about)가 질의 낱말과 완전히 같은** 파일(글자도 뜻도 못 잡은 것을 개체로 잡는다).
-    세 갈래 모두 검색 엔진이 판정하는 조건이라 개수와 칩을 엔진이 정확히 센다.
-
-    **칩 숫자의 뜻**: 그 칩 **하나만** 골랐을 때 나오는 수(다른 칸 조건은 그대로 적용). 같은 칸에서
-    여럿 고르면 「또는」이라 결과는 각 칩 수의 합집합이므로 개별 칩 수보다 크거나 같다. 그래서 고른
-    뒤에도 같은 칸의 다른 값이 칩으로 남아 **갈아탈 수 있다**(코어 `build_facet_plan` 이 축마다 자기
-    조건을 빼고 센다).
-
     Args:
-        q: 검색어. 공백만이어도 422 다(조건만으로 훑는 경로는 이 창구가 아니다).
+        q: 검색어. 비우면 조건에 맞는 **전부**를 훑는다(097 · 첫 화면 전량 목록).
         topic: 주제 필터(여럿 = 또는).
         subtopic: 하위주제 필터(여럿 = 또는). 주제와는 「그리고」로 걸린다.
         tag: 태그 필터. 정규화·가공 없이 코어로 넘긴다.
-        modality: 종류 필터(여럿 = 또는). **닫힌 어휘**라 모르는 값은 422 다.
+        modality: 종류 필터(여럿 = 또는). 닫힌 어휘라 모르는 값은 422 다.
         file_ext: 확장자 필터.
         created_from: 생성일 하한.
         created_to: 생성일 상한.
         refine: 이번 페이지를 글자로 좁힐 말.
-        sort: 정렬 이름(닫힌 목록 · 모르는 값은 422). 어느 정렬이든 **집합은 같다** — 정렬은 순서만
-            바꾼다(개수가 달라지면 화면이 거짓말을 한다).
-        offset: 페이지 시작 위치.
+        sort: 정렬 이름(닫힌 목록 · 모르는 값은 422). 어느 정렬이든 집합은 같고 순서만 바뀐다.
+            훑기에서 relevance 면 created_desc 로 갈아 끼운다(관련도가 뜻이 없으므로).
+        offset: 페이지 시작 위치(얕은 페이지용). cursor 와 함께 주면 400.
+        cursor: 이어 읽기 표식. 직전 응답의 ``next_cursor`` 를 그대로 넘긴다 — offset 과 달리 1만 건
+            벽이 없다. relevance 정렬에는 줄 수 없다(이어받을 점수 기준값이 없다 · 400).
         limit: 이 페이지의 행 수.
         principal: 인증 주체.
 
     Returns:
-        ``{query, items, total, total_capped, offset, limit, sort, applied, facets, filters,
-        refine?}``. ``applied`` 는 이번 조회에 쓰인 값 전부(재현성 기록).
-        ``total_capped`` 가 참이면 ``total`` 은 "이 수 이상"이라는 뜻이다(화면이 그렇게 표기한다).
-        ``facets`` 는 ``{topic|subtopic|tag|modality: [{key, label, count}]}`` — ``key`` 를 되보내면 그 수만큼
-        나온다. 각 행에는 표에 찍을 ``file_ext``·``file_size``·``updated_at`` 이 **항상** 있다.
+        ``{query, items, total, total_capped, offset, limit, sort, next_cursor, applied, facets,
+        filters, refine?}``. ``applied`` 는 이번 조회에 쓰인 값 전부(재현성 기록).
+        ``total_capped`` 가 참이면 ``total`` 은 "이 수 이상"이고, ``next_cursor`` 가 ``None`` 이면 더 없다.
+        ``facets`` 는 ``{축: [{key, label, count}]}`` — ``key`` 를 되보내면 그 수만큼 나온다.
 
     Raises:
-        HTTPException: 빈 검색어·필터 형식·정렬 이름·종류 값·반복 파라미터 개수 오류는 422 · 넘길 수 있는 깊이를 넘는 페이지는 400(그 밖은
-            순서를 매기지 않았으므로 빈 페이지로 돌려주면 "끝"과 구분되지 않는다) · 검색 엔진 미도달은 503.
+        HTTPException: 형식·어휘·개수 위반은 422 · 자리 모순·깊이 초과·깨진 커서는 400 · 엔진 미도달 503.
+
+    설계 배경: `docs/설계_변경이력.md` 2026-09-15 (1)
     """
+    # 조건이 겹치는 방식은 검색 엔진 규칙 그대로다 — 같은 칸에서 여럿 고르면 「또는」, 다른 칸끼리는
+    #   「그리고」. 조건을 바꾸면 개수와 칩이 함께 다시 계산된다.
+    # 집합의 뜻(096): 세 갈래의 합집합 중 조건에 맞는 것 —
+    #   ① 검색어의 모든 형태소가 든 파일(단어 절은 멀티모달 검색과 같은 것)
+    #   ② 뜻이 아주 가까운 파일(코사인 하한 이상 · 상위 k개가 아니라 하한이라 경계가 있다)
+    #   ③ 개체(about)가 질의 낱말과 완전히 같은 파일(글자도 뜻도 못 잡은 것을 개체로 잡는다).
+    #   세 갈래 모두 검색 엔진이 판정하는 조건이라 개수와 칩을 엔진이 정확히 센다.
+    # 칩 숫자의 뜻: 그 칩 하나만 골랐을 때 나오는 수(다른 칸 조건은 그대로 적용). 같은 칸에서 여럿
+    #   고르면 「또는」이라 결과는 각 칩 수의 합집합이므로 개별 칩 수보다 크거나 같다. 그래서 고른
+    #   뒤에도 같은 칸의 다른 값이 칩으로 남아 갈아탈 수 있다(코어 `build_facet_plan` 이 축마다 자기
+    #   조건을 빼고 센다).
+    # 각 행에는 표에 찍을 `file_ext`·`file_size`·`updated_at` 이 항상 있다(`_finish` 가 붙인다).
     # 입력 오류는 전부 **422** 로 통일한다(리뷰 2026-09-09 — 공백만인 q 가 코어 ValueError 경로로
     # 400 이 되어 다른 입력 오류와 어긋났다). 프론트가 상태 코드 하나로 "입력을 고쳐 달라"를 판단한다.
-    if not q.strip():
-        raise HTTPException(status_code=422, detail="검색어가 비어 있습니다")
+    # 🔴 검색어가 비면 **조건만으로 훑는 화면**이다(097). 종전에는 422 로 막았다 — 첫 화면 전량
+    #    목록을 낼 창구가 없었기 때문이다. 이제는 커서 경로가 그것을 맡는다.
+    browsing = not q.strip()
+    if cursor is not None and offset:
+        raise HTTPException(
+            status_code=400,
+            detail="cursor 와 offset 은 함께 줄 수 없습니다 — 어느 자리부터 읽을지 모호합니다",
+        )
+    # 🔴 **대체를 먼저** 한다 — 순서가 반대면 첫 화면이 이어 읽기를 못 한다(실측 결함 2026-09-15).
+    #    첫 쪽은 sort 없이 오므로 relevance 가 기본인데, 응답의 커서에는 실제 쓰인 created_desc 가
+    #    찍힌다. 다음 쪽도 sort 없이 오니, 대체보다 거부를 먼저 두면 **자기가 준 커서를 자기가 막는다.**
+    if browsing and sort == SORT_DEFAULT:
+        sort = "created_desc"
+    # 관련도는 점수가 상위 rank_depth 개만 계산돼 **이어받을 기준값이 없다**(097 §2-5).
+    #   막다른 길이 아니라 갈림길로 안내한다 — 정렬을 바꾸면 끝까지 넘길 수 있다.
+    if cursor is not None and sort == SORT_DEFAULT:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "관련도 정렬은 이어 읽기(cursor)를 지원하지 않습니다 — "
+                "created_desc·name_asc 로 바꾸면 끝까지 넘길 수 있습니다"
+            ),
+        )
     for name, values in (("topic", topic), ("subtopic", subtopic), ("tag", tag),
                          ("modality", modality), ("file_ext", file_ext)):
         if values is not None and len(values) > _REPEAT_MAX:
@@ -225,20 +263,37 @@ def file_search(
     # 임베딩 서버 장애는 검색 엔진 장애와 **다른 원인**이라 따로 알린다(리뷰 2026-09-09 — 종전에는
     # 모든 예외가 "검색 엔진 연결 실패"로 뭉개져 운영자가 엉뚱한 곳을 봤다). 코어 임베더는 API
     # 실패를 RuntimeError, 응답 이상을 ValueError 로 올린다.
-    try:
-        query_vector = embed_query_for_media_search(q, channel=active_embed_channel())
-    except (RuntimeError, ValueError) as exc:
-        _infra._LOG.warning("질의 임베딩 실패: %s", exc, exc_info=True)
-        raise HTTPException(status_code=503, detail="임베딩 서버에 연결할 수 없습니다") from exc
+    # 훑기(검색어 없음)에는 임베딩이 필요 없다 — 뜻으로 걸 질의가 없다. 임베딩 서버가 죽어 있어도
+    #   첫 화면은 떠야 한다(전량 목록은 조건만으로 정해진다).
+    query_vector: list[float] | None = None
+    if not browsing:
+        try:
+            query_vector = embed_query_for_media_search(q, channel=active_embed_channel())
+        except (RuntimeError, ValueError) as exc:
+            _infra._LOG.warning("질의 임베딩 실패: %s", exc, exc_info=True)
+            raise HTTPException(status_code=503, detail="임베딩 서버에 연결할 수 없습니다") from exc
 
+    # 🔴 두 경로를 **나란히** 둔다(097 설계 ①). 종전 offset 호출은 그대로 `search_files` 로 가고,
+    #    커서·훑기만 `browse_files` 로 간다 — 되돌림 경로를 남기고 기존 화면을 흔들지 않는다.
+    use_cursor = cursor is not None or browsing
     try:
-        found = search_files(
-            get_client(), get_current_settings().opensearch.index,
-            query=q, query_vector=query_vector, filters=filters,
-            from_=offset, size=limit, sort=sort,
-            rank_depth=RANK_DEPTH_DEFAULT, total_cap=TOTAL_CAP_DEFAULT,
-            sort_depth=SORT_DEPTH_DEFAULT, facet_size=FACET_SIZE_DEFAULT,
-        )
+        if use_cursor:
+            found = browse_files(
+                get_client(), get_current_settings().opensearch.index,
+                query=q, query_vector=query_vector, filters=filters,
+                sort=sort, cursor=cursor, size=limit, facet_size=FACET_SIZE_DEFAULT,
+            )
+        else:
+            found = search_files(
+                get_client(), get_current_settings().opensearch.index,
+                query=q, query_vector=query_vector, filters=filters,
+                from_=offset, size=limit, sort=sort,
+                rank_depth=RANK_DEPTH_DEFAULT, total_cap=TOTAL_CAP_DEFAULT,
+                sort_depth=SORT_DEPTH_DEFAULT, facet_size=FACET_SIZE_DEFAULT,
+            )
+    except CursorError as exc:
+        # 커서가 깨졌거나 정렬이 어긋났다 — **조용히 다른 자리에서 이어 주지 않는다**(097 §2-3).
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except _OS_CONN_ERRORS as exc:
@@ -285,9 +340,13 @@ def file_search(
         "items": items,
         "total": found["total"],
         "total_capped": found["total_capped"],
-        "offset": found["from"],
+        # 커서 경로에는 "몇 번째부터"가 없다 — 그 자리에 책갈피를 준다.
+        "offset": found.get("from", 0),
         "limit": found["size"],
         "sort": found["sort"],
+        # 다음 쪽 책갈피. `None` 이면 **더 없다**(화면이 스크롤을 멈춘다).
+        #   offset 경로에서는 주지 않는다(그쪽은 offset 으로 넘긴다).
+        "next_cursor": found.get("next_cursor"),
         # 이번 조회에 실제 적용된 값 전부 — 서버 설정이 나중에 바뀌어도 이 응답이 왜 이렇게 나왔는지
         # 재현할 수 있다(헌법 3조 · `/search` 의 `meta.tuning` 과 같은 취지).
         "applied": {

@@ -182,10 +182,19 @@ class TestFileSearchRoute(unittest.TestCase):
             "total_cap", "rank_depth", "sort_depth", "facet_size", "facet_show",
             "search_pipeline"})
 
-    def test_공백만인_검색어는_422(self) -> None:
-        # 입력 오류는 전부 422 로 통일 — 종전엔 코어 ValueError 경로로 400 이 되어 어긋났다.
+    @patch("service.api.routes_file_search.browse_files")
+    def test_공백만인_검색어는_훑기다(self, mock_browse) -> None:
+        """🔴 계약 변경(097) — 종전에는 **422 로 막았다.**
+
+        이유는 "조건만으로 훑는 화면은 이 창구의 몫이 아니다"였고, 그때는 전량 목록을 낼 창구가
+        아예 없었다. 097 이 커서 경로를 만들며 **첫 화면 전량이 이 창구의 몫이 됐다** —
+        검색어가 비면 오류가 아니라 "조건에 맞는 전부"다.
+        입력 오류를 422 로 모으는 원칙(2026-09-09)은 그대로다: 빈 검색어가 더는 입력 오류가 아닐 뿐이다.
+        """
+        mock_browse.return_value = _browsed()
         resp = self.client.get("/file-search", params={"q": "   "})
-        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(mock_browse.call_args.kwargs["query"], "   ")
 
     def test_반복_파라미터_개수_상한(self) -> None:
         many = [f"주제{i}" for i in range(routes_file_search._REPEAT_MAX + 1)]
@@ -294,3 +303,110 @@ class TestFileSearchRoute(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _browsed(**over: Any) -> dict[str, Any]:
+    """코어 ``browse_files`` 대역 결과 — ``search_files`` 와 달리 ``from`` 이 없고 ``next_cursor`` 가 있다."""
+    base = _found(sort="created_desc")
+    base.pop("from")
+    base["next_cursor"] = "eyJvIjoiY3JlYXRlZF9kZXNjIiwicyI6WzEsIjAxOGYiXX0"
+    base.update(over)
+    return base
+
+
+class TestFileSearchCursor(unittest.TestCase):
+    """097 커서 경로 — 훑기·이어 읽기·막아야 할 조합.
+
+    🔴 여기서 막는 것은 **조용한 오동작**이다: 커서가 엉뚱한 자리에서 이어지거나 권한 가리기가
+    한 쪽이라도 빠지면 오류 없이 잘못된 화면이 나간다.
+    """
+
+    def setUp(self) -> None:
+        env = patch.dict(os.environ, _AUTH_DISABLED_ENV, clear=False)
+        env.start()
+        self.addCleanup(env.stop)
+        for target, repl in (
+            ("service.api._infra._run_in_db", _passthrough_db),
+            ("service.portal.access_project.fetch_access_tiers", lambda *_a, **_k: {}),
+            ("service.api.routes_file_search.fetch_file_meta", lambda *_a, **_k: {}),
+            ("src.search.opensearch_sync.get_client", lambda *_a, **_k: object()),
+            ("service.api.routes_file_search.get_current_settings",
+             lambda: SimpleNamespace(opensearch=SimpleNamespace(index="assets"))),
+            ("service.api.routes_file_search.active_embed_channel", lambda: "text"),
+        ):
+            p = patch(target, repl)
+            p.start()
+            self.addCleanup(p.stop)
+        self.client = TestClient(app)
+
+    def test_코어_훑기_함수를_그대로_참조한다(self) -> None:
+        from src.search.file_search import browse_files as core_browse
+        self.assertIs(routes_file_search.browse_files, core_browse)
+
+    @patch("service.api.routes_file_search.browse_files")
+    def test_검색어가_없으면_훑기로_가고_임베딩을_만들지_않는다(self, mock_browse) -> None:
+        """🔴 첫 화면은 임베딩 서버가 죽어 있어도 떠야 한다 — 뜻으로 걸 질의가 없다."""
+        mock_browse.return_value = _browsed()
+        with patch("service.api.routes_file_search.embed_query_for_media_search") as mock_embed:
+            body = self.client.get("/file-search", params={"limit": 3}).json()
+        mock_embed.assert_not_called()
+        self.assertEqual(mock_browse.call_args.kwargs["query"], "")
+        self.assertIsNone(mock_browse.call_args.kwargs["query_vector"])
+        self.assertEqual(body["sort"], "created_desc")
+
+    @patch("service.api.routes_file_search.browse_files")
+    def test_검색어가_없으면_정렬이_최신순으로_바뀐다(self, mock_browse) -> None:
+        """관련도는 점수가 다 같아 뜻이 없다 — 화면이 sort 를 안 보내도 이어 읽기가 되어야 한다."""
+        mock_browse.return_value = _browsed()
+        self.client.get("/file-search", params={"limit": 3})
+        self.assertEqual(mock_browse.call_args.kwargs["sort"], "created_desc")
+
+    @patch("service.api.routes_file_search.browse_files")
+    def test_커서를_그대로_코어에_넘기고_다음_커서를_돌려준다(self, mock_browse) -> None:
+        mock_browse.return_value = _browsed()
+        body = self.client.get("/file-search", params={
+            "cursor": "abc", "sort": "created_desc", "limit": 3}).json()
+        self.assertEqual(mock_browse.call_args.kwargs["cursor"], "abc")
+        self.assertEqual(body["next_cursor"], _browsed()["next_cursor"])
+
+    @patch("service.api.routes_file_search.search_files")
+    @patch("service.api.routes_file_search.embed_query_for_media_search")
+    def test_검색어가_있고_커서가_없으면_기존_경로다(self, mock_embed, mock_find) -> None:
+        """🔴 종전 호출은 그대로 돌아야 한다 — 되돌림 경로를 남긴다(097 설계 ①)."""
+        mock_find.return_value = _found()
+        mock_embed.return_value = [0.0]
+        body = self.client.get("/file-search", params={"q": "김치", "limit": 3}).json()
+        mock_find.assert_called_once()
+        self.assertIsNone(body["next_cursor"])   # offset 경로는 책갈피를 주지 않는다
+
+    def test_커서와_offset_을_함께_주면_막는다(self) -> None:
+        r = self.client.get("/file-search", params={"cursor": "abc", "offset": 50})
+        self.assertEqual(r.status_code, 400)
+
+    def test_관련도_정렬에_커서를_주면_갈림길로_안내한다(self) -> None:
+        """막다른 길이 아니다 — 어떤 정렬로 바꾸면 되는지 문구에 있어야 한다."""
+        r = self.client.get("/file-search", params={"q": "김치", "cursor": "abc"})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("created_desc", r.json()["detail"])
+
+    @patch("service.api.routes_file_search.browse_files")
+    def test_깨진_커서는_400_이다(self, mock_browse) -> None:
+        """🔴 조용히 다른 자리에서 이어 주지 않는다(097 §2-3)."""
+        from src.search.cursor import CursorError
+        mock_browse.side_effect = CursorError("커서를 읽을 수 없다")
+        r = self.client.get("/file-search", params={"cursor": "!!!", "sort": "created_desc"})
+        self.assertEqual(r.status_code, 400)
+
+    @patch("service.api.routes_file_search.project_rows")
+    @patch("service.api.routes_file_search.browse_files")
+    def test_커서_경로에도_권한_가리기가_걸린다(self, mock_browse, mock_project) -> None:
+        """🔴 무한 스크롤은 쪽마다 따로 응답한다 — 한 쪽이라도 빠지면 권한 없는 사용자가 요약을 본다.
+
+        ⚠️ 등급표를 빈 dict 로 대역하면 가리기가 켜져도 꺼져도 통과한다(코어 미등록 키 보존 규칙).
+        그래서 **호출 자체**를 봉인한다 — 가리기 함수가 그 쪽의 행을 받았는지.
+        """
+        mock_browse.return_value = _browsed()
+        mock_project.return_value = _browsed()["rows"]
+        self.client.get("/file-search", params={"limit": 3, "sort": "created_desc"})
+        mock_project.assert_called_once()
+        self.assertEqual(mock_project.call_args.args[1], _browsed()["rows"])
