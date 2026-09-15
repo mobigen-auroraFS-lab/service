@@ -40,6 +40,7 @@ from src.search.file_search import (
     SORT_DEFAULT,
     SORT_DEPTH_DEFAULT,
     SORT_OPTIONS,
+    STABLE_SORTS,
     TOTAL_CAP_DEFAULT,
     WORD_OPERATOR_DEFAULT,
     browse_files,
@@ -58,6 +59,8 @@ _FACET_SHOW = 12
 # 반복 파라미터(주제·태그 등) 한 번에 받을 개수 상한. 화면은 칩을 눌러 몇 개 고르는 정도라 50 이면
 # 넉넉하고, 수천 개를 보내 ``terms`` 절을 부풀리는 요청을 여기서 막는다(엔진 한계 65,536 보다 훨씬 앞).
 _REPEAT_MAX = 50
+# 깊이에 닿았을 때 권하는 정렬(spec §2-5) — 끝까지 넘길 수 있는 **안정** 정렬만 고른다.
+_SUGGEST_SORT: tuple[str, ...] = ("created_desc", "name_asc")
 # 검색 엔진 **연결** 실패로 볼 예외들. 클라이언트가 안 깔린 환경(순수 단위 테스트)에서는 빈 튜플이라
 # ``except ()`` 가 아무것도 잡지 않는다 — 그 환경에는 잡을 연결 실패도 없다.
 _OS_CONN_ERRORS: tuple[type[BaseException], ...] = (
@@ -242,19 +245,24 @@ def file_search(
         raise HTTPException(status_code=422, detail=f"필터 파라미터 형식 오류: {exc}") from exc
 
     # 넘길 수 있는 깊이는 정렬에 따라 다르다 — 관련도는 이웃 탐색 깊이에, 필드 정렬은 색인 결과창에 걸린다.
+    # 🔴 깊이에 닿는 것은 **오류가 아니라 안내**다(spec §2-5). 400 으로 끊으면 화면이 「끝」과
+    #    「고장」을 구분하지 못한다 — 200 으로 주고 `depth_limited` 로 알려 정렬 전환을 권한다.
+    # 경계에 걸친 요청(990+50)은 남은 10건을 마저 준다 — 통째로 막으면 볼 수 있는 것을 못 본다.
+    # 🔴 두 경로를 **나란히** 둔다(097 설계 ①). 종전 offset 호출은 그대로 `search_files` 로 가고,
+    #    커서·훑기만 `browse_files` 로 간다 — 되돌림 경로를 남기고 기존 화면을 흔들지 않는다.
+    use_cursor = cursor is not None or browsing
     by_field = SORT_OPTIONS[sort] is not None
     depth = SORT_DEPTH_DEFAULT if by_field else RANK_DEPTH_DEFAULT
-    if offset + limit > depth:
-        hint = "조건을 더 걸어 좁혀 주십시오"
-        if not by_field:
-            hint = "조건을 더 걸거나 이름·등록일 정렬로 바꿔 주십시오"
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"이 창구는 {sort} 정렬로 상위 {depth}건까지 넘길 수 있습니다"
-                f"(요청 {offset}+{limit}) — {hint}"
-            ),
-        )
+    depth_limited = not use_cursor and offset + limit > depth
+    # 깊이 **밖**(offset 이 이미 한계)이면 줄 행이 없다. 그래도 총계·칩은 세야 하므로(화면이
+    #   "전체 N건 중 여기까지"를 쓴다) 첫 쪽 한 건만 떠보고 행은 버린다 — 총계·칩은 페이지와
+    #   무관하다. 코어는 `size=0` 과 깊이 초과 `from_` 을 둘 다 거부하므로 이렇게 우회한다.
+    beyond_depth = depth_limited and offset >= depth
+    page_from, page_size = offset, limit
+    if depth_limited:
+        page_size = depth - offset
+    if beyond_depth:
+        page_from, page_size = 0, 1
 
     from src.search.opensearch_sync import get_client
 
@@ -273,9 +281,6 @@ def file_search(
             _infra._LOG.warning("질의 임베딩 실패: %s", exc, exc_info=True)
             raise HTTPException(status_code=503, detail="임베딩 서버에 연결할 수 없습니다") from exc
 
-    # 🔴 두 경로를 **나란히** 둔다(097 설계 ①). 종전 offset 호출은 그대로 `search_files` 로 가고,
-    #    커서·훑기만 `browse_files` 로 간다 — 되돌림 경로를 남기고 기존 화면을 흔들지 않는다.
-    use_cursor = cursor is not None or browsing
     try:
         if use_cursor:
             found = browse_files(
@@ -287,7 +292,7 @@ def file_search(
             found = search_files(
                 get_client(), get_current_settings().opensearch.index,
                 query=q, query_vector=query_vector, filters=filters,
-                from_=offset, size=limit, sort=sort,
+                from_=page_from, size=page_size, sort=sort,
                 rank_depth=RANK_DEPTH_DEFAULT, total_cap=TOTAL_CAP_DEFAULT,
                 sort_depth=SORT_DEPTH_DEFAULT, facet_size=FACET_SIZE_DEFAULT,
             )
@@ -314,7 +319,9 @@ def file_search(
             ``updated_at``·``created_at`` 이 **항상** 있다(모르는 값은 0·``None``) — 프론트가
             키 유무로 분기하지 않게.
         """
-        rows = project_rows(conn, found["rows"], clearance=principal.clearance)
+        # 깊이 밖에서 떠본 한 건은 이 페이지의 결과가 아니다 — 가리기·메타를 붙이기 전에 버린다.
+        rows = project_rows(conn, [] if beyond_depth else found["rows"],
+                            clearance=principal.clearance)
         meta = fetch_file_meta(conn, [r["asset_id"] for r in rows])
         for row in rows:
             got = meta.get(row["asset_id"]) or {}
@@ -341,12 +348,21 @@ def file_search(
         "total": found["total"],
         "total_capped": found["total_capped"],
         # 커서 경로에는 "몇 번째부터"가 없다 — 그 자리에 책갈피를 준다.
-        "offset": found.get("from", 0),
+        #   깊이 밖에서는 코어에 0 을 떠봤으므로 **요청한 자리**를 그대로 돌려준다.
+        "offset": offset if beyond_depth else found.get("from", 0),
         "limit": found["size"],
         "sort": found["sort"],
         # 다음 쪽 책갈피. `None` 이면 **더 없다**(화면이 스크롤을 멈춘다).
         #   offset 경로에서는 주지 않는다(그쪽은 offset 으로 넘긴다).
         "next_cursor": found.get("next_cursor"),
+        # 깊이 경계 안내(spec §2-5) — 참이면 이 정렬로는 여기까지다. 오류가 아니라 갈림길이라
+        #   `suggest_sort` 로 끝까지 볼 수 있는 정렬을 함께 준다.
+        "depth_limited": depth_limited,
+        "depth": depth,
+        "suggest_sort": list(_SUGGEST_SORT) if depth_limited else [],
+        # 🔴 값이 변하는 정렬은 커서가 어긋날 수 있다(spec §2-8). 막지 않는 것이 결정이고,
+        #   대신 계약에 경고를 단다 — 정확해야 하는 순회는 등록 시각 정렬을 쓴다.
+        "sort_unstable": sort not in STABLE_SORTS and sort != SORT_DEFAULT,
         # 이번 조회에 실제 적용된 값 전부 — 서버 설정이 나중에 바뀌어도 이 응답이 왜 이렇게 나왔는지
         # 재현할 수 있다(헌법 3조 · `/search` 의 `meta.tuning` 과 같은 취지).
         "applied": {
