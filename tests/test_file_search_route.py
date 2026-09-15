@@ -273,21 +273,34 @@ class TestFileSearchRoute(unittest.TestCase):
         self.assertIn("정렬", resp.json()["detail"])
 
     def test_깊이_한계는_정렬마다_다르다(self) -> None:
-        # 관련도는 이웃 탐색 깊이에서 막히고, 필드 정렬은 그보다 깊이 넘길 수 있다.
-        deep = self.client.get("/file-search", params={
-            "q": "김치", "offset": RANK_DEPTH_DEFAULT, "limit": 10})
-        self.assertEqual(deep.status_code, 400)
-        self.assertIn("이름·등록일 정렬", deep.json()["detail"])
+        """관련도는 이웃 탐색 깊이에서, 필드 정렬은 그보다 깊은 색인 결과창에서 걸린다.
+
+        ⚠️ 2026-09-15 계약 변경 — 깊이에 닿는 것은 **400 이 아니라 200 + ``depth_limited``** 다
+        (spec §2-5 · D6). 종전에는 400 을 봉인했으나, 그러면 화면이 「끝」과 「고장」을 구분하지
+        못하고 정렬 전환을 권할 재료도 없다. 확인하는 불변식(정렬마다 깊이가 다르다)은 그대로다.
+        """
         with patch("service.api.routes_file_search.search_files") as mock_find, \
              patch("service.api.routes_file_search.embed_query_for_media_search",
                    return_value=[0.1]):
             mock_find.return_value = _found(sort="name_asc", **{"from": RANK_DEPTH_DEFAULT})
+            deep = self.client.get("/file-search", params={
+                "q": "김치", "offset": RANK_DEPTH_DEFAULT, "limit": 10})
             ok = self.client.get("/file-search", params={
                 "q": "김치", "sort": "name_asc", "offset": RANK_DEPTH_DEFAULT, "limit": 10})
+            too_deep = self.client.get("/file-search", params={
+                "q": "김치", "sort": "name_asc", "offset": SORT_DEPTH_DEFAULT, "limit": 10})
+        # 관련도는 1,000 에서 걸린다 — 오류가 아니라 갈림길 안내로.
+        self.assertEqual(deep.status_code, 200)
+        self.assertTrue(deep.json()["depth_limited"])
+        self.assertEqual(deep.json()["depth"], RANK_DEPTH_DEFAULT)
+        self.assertIn("created_desc", deep.json()["suggest_sort"])
+        # 같은 자리라도 필드 정렬은 아직 안 걸린다(색인 결과창이 더 깊다).
         self.assertEqual(ok.status_code, 200)
-        too_deep = self.client.get("/file-search", params={
-            "q": "김치", "sort": "name_asc", "offset": SORT_DEPTH_DEFAULT, "limit": 10})
-        self.assertEqual(too_deep.status_code, 400)
+        self.assertFalse(ok.json()["depth_limited"])
+        # 필드 정렬도 제 깊이에 닿으면 같은 방식으로 알린다.
+        self.assertEqual(too_deep.status_code, 200)
+        self.assertTrue(too_deep.json()["depth_limited"])
+        self.assertEqual(too_deep.json()["depth"], SORT_DEPTH_DEFAULT)
 
     @patch("service.api.routes_file_search.embed_query_for_media_search")
     @patch("service.api.routes_file_search.search_files")
@@ -410,3 +423,91 @@ class TestFileSearchCursor(unittest.TestCase):
         self.client.get("/file-search", params={"limit": 3, "sort": "created_desc"})
         mock_project.assert_called_once()
         self.assertEqual(mock_project.call_args.args[1], _browsed()["rows"])
+
+
+class TestFileSearchDepthAndStability(unittest.TestCase):
+    """097 D6·D10 — 깊이 경계는 **오류가 아니라 안내**, 불안정 정렬은 **경고를 단다**.
+
+    🔴 두 기준 모두 "조용한 실패"를 막는 장치다: 깊이에 닿았을 때 400 만 내면 화면은 끝과
+    고장을 구분하지 못하고, 수정일 정렬의 커서 어긋남은 오류 없이 중복·누락으로만 나타난다.
+    """
+
+    def setUp(self) -> None:
+        env = patch.dict(os.environ, _AUTH_DISABLED_ENV, clear=False)
+        env.start()
+        self.addCleanup(env.stop)
+        for target, repl in (
+            ("service.api._infra._run_in_db", _passthrough_db),
+            ("service.portal.access_project.fetch_access_tiers", lambda *_a, **_k: {}),
+            ("service.api.routes_file_search.fetch_file_meta", lambda *_a, **_k: {}),
+            ("src.search.opensearch_sync.get_client", lambda *_a, **_k: object()),
+            ("service.api.routes_file_search.get_current_settings",
+             lambda: SimpleNamespace(opensearch=SimpleNamespace(index="assets"))),
+            ("service.api.routes_file_search.active_embed_channel", lambda: "text"),
+        ):
+            pt = patch(target, repl)
+            pt.start()
+            self.addCleanup(pt.stop)
+        self.client = TestClient(app)
+
+    @patch("service.api.routes_file_search.search_files")
+    @patch("service.api.routes_file_search.embed_query_for_media_search")
+    def test_관련도_깊이를_넘으면_오류가_아니라_안내다(self, mock_embed, mock_find) -> None:
+        """spec §2-5 — `ValueError` 대신 `depth_limited`·`depth`·`suggest_sort` 로 알린다."""
+        mock_embed.return_value = [0.0] * 8
+        mock_find.return_value = _found()
+        r = self.client.get("/file-search",
+                            params={"q": "문화재", "sort": "relevance", "offset": 1000, "limit": 50})
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertTrue(body["depth_limited"])
+        self.assertEqual(body["depth"], RANK_DEPTH_DEFAULT)
+        self.assertIn("created_desc", body["suggest_sort"])
+        self.assertEqual(body["items"], [], "깊이 밖은 줄 것이 없다")
+        # 총계·칩은 페이지와 무관하게 세야 한다 — 그래서 호출은 하되 첫 쪽을 떠보고 행은 버린다.
+        self.assertEqual(mock_find.call_args.kwargs["from_"], 0)
+        self.assertEqual(body["offset"], 1000, "응답 offset 은 떠본 자리가 아니라 요청한 자리다")
+        self.assertEqual(body["total"], _found()["total"], "총계는 그대로 센다")
+
+    @patch("service.api.routes_file_search.search_files")
+    @patch("service.api.routes_file_search.embed_query_for_media_search")
+    def test_깊이_경계에_걸치면_깊이까지만_준다(self, mock_embed, mock_find) -> None:
+        """990+50 은 1,000 까지 10건이 남아 있다 — 통째로 막으면 볼 수 있는 것을 못 본다."""
+        mock_embed.return_value = [0.0] * 8
+        mock_find.return_value = _found()
+        r = self.client.get("/file-search",
+                            params={"q": "문화재", "sort": "relevance", "offset": 990, "limit": 50})
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["depth_limited"])
+        self.assertEqual(mock_find.call_args.kwargs["size"], 10, "깊이까지만 요청해야 한다")
+
+    @patch("service.api.routes_file_search.search_files")
+    @patch("service.api.routes_file_search.embed_query_for_media_search")
+    def test_깊이_안이면_안내가_꺼져_있다(self, mock_embed, mock_find) -> None:
+        mock_embed.return_value = [0.0] * 8
+        mock_find.return_value = _found()
+        r = self.client.get("/file-search", params={"q": "문화재", "offset": 0, "limit": 50})
+        self.assertFalse(r.json()["depth_limited"])
+
+    @patch("service.api.routes_file_search.browse_files")
+    def test_수정일_정렬_커서는_주되_경고를_단다(self, mock_browse) -> None:
+        """spec §2-8 결정 — 막지 않는다. 다만 값이 변하는 정렬이라 어긋날 수 있음을 계약에 남긴다."""
+        mock_browse.return_value = _browsed(sort="updated_desc")
+        r = self.client.get("/file-search", params={"sort": "updated_desc", "limit": 3})
+        self.assertEqual(r.status_code, 200)
+        self.assertIsNotNone(r.json()["next_cursor"], "커서는 준다(막지 않는다)")
+        self.assertTrue(r.json()["sort_unstable"], "다만 경고를 단다")
+
+    @patch("service.api.routes_file_search.browse_files")
+    def test_등록일_정렬은_경고가_없다(self, mock_browse) -> None:
+        mock_browse.return_value = _browsed()
+        r = self.client.get("/file-search", params={"sort": "created_desc", "limit": 3})
+        self.assertFalse(r.json()["sort_unstable"])
+
+    def test_불안정_정렬_목록이_코어_표식과_일치한다(self) -> None:
+        """🔴 라우트가 자기 목록을 따로 들면 코어와 갈린다 — 코어 `STABLE_SORTS` 를 그대로 쓴다."""
+        from service.api import routes_file_search as mod
+        from src.search.file_search import SORT_OPTIONS, STABLE_SORTS
+        unstable = {s for s in SORT_OPTIONS if s not in STABLE_SORTS and s != "relevance"}
+        self.assertEqual(unstable, {"updated_asc", "updated_desc"})
+        self.assertIs(mod.STABLE_SORTS, STABLE_SORTS)
