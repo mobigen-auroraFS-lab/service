@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from collections.abc import Mapping, Sequence
@@ -28,6 +29,10 @@ from service.portal.download import fetch_asset_paths
 from src.config import search_constants
 from src.config.filename_util import display_file_name
 from src.config.settings import active_embed_channel, get_current_settings
+
+# 표기 키 정규화는 **코어 정본 하나**(083 태그 키·084 개체 키 공용)를 쓴다 — 여기서 새 규칙을
+# 만들면 "이름이 같다"의 뜻이 화면과 저장소에서 갈라진다(`entity_uid` 자체가 이 함수의 결과다).
+from src.domain.text_norm import normalize_text_key
 from src.mm_classify.read import label_names_of_assets
 
 # 「걸린 이유」 문구는 **코어 상수 그대로** 쓴다 — 백엔드가 문구를 새로 만들면 같은 사실이 화면마다
@@ -68,9 +73,11 @@ ENTITY_SEARCH_BACKEND = "opensearch"
 # 이름이 달라야 한다 — 파일 목록에서 받은 책갈피를 개체 목록에 쓰면 엉뚱한 자리에서 조용히 이어진다.
 # 값은 실제 정렬(`confirmed_count DESC, entity_uid ASC`)을 그대로 읽은 것이다.
 ENTITY_CURSOR_SORT = "confirmed_count_desc"
-# 그 정렬이 쓰는 **정렬값 개수** — `(confirmed_count, entity_uid)` 둘이다. 구버전·위조 토큰이 반쪽
-# 책갈피로 들어오면 첫 쪽을 다시 읽어 **중복**이 나는데 오류가 없어 화면은 그것을 알 수 없다.
-ENTITY_CURSOR_ARITY = 2
+# 그 정렬이 쓰는 **정렬값 개수** — `(우선 티어, confirmed_count, entity_uid)` 셋이다(099 G7 에서
+# 둘에서 늘었다 · 이름이 걸린 개체를 맨 앞에 세우는 티어가 정렬 첫 키가 됐다).
+# 🔴 **옛 2값 토큰은 여기서 400 으로 끊긴다 — 의도된 깨는 변경**이다. 통과시키면 반쪽 책갈피로
+# 엉뚱한 자리에서 이어져 목록에 구멍이 나는데, 오류가 없어 화면은 그것을 알 수 없다.
+ENTITY_CURSOR_ARITY = 3
 
 # 카드 한 장을 zip 으로 내보낼 때의 자산 수 상한. 묶음이 커도 응답이 무한정 커지지 않게 막는다.
 CARD_BUNDLE_MAX_ASSETS = 200
@@ -159,9 +166,11 @@ def fetch_list(
     areas: Sequence[str] | None,
     min_bundle_size: int,
     limit: int,
+    after_tier: int | None = None,
     after_count: int | None = None,
     after_uid: str | None = None,
     uid_allow: set[tuple[str, str]] | None = None,
+    uid_first: set[tuple[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """노출 개체 목록을 읽어 화면 항목으로 정형한다(선택: 책갈피부터 이어 읽기 · 검색 집합 안에서만).
 
@@ -171,15 +180,18 @@ def fetch_list(
         areas: 갈래 이름들 — 모두 가진 개체만(AND). ``None``·빈 목록이면 필터 없음.
         min_bundle_size: 노출 임계(구성 자산 수 하한).
         limit: 이 **쪽**에 담을 개체 수(커서가 생긴 뒤의 뜻 — 전체 상한이 아니다).
-        after_count: 이어읽기 책갈피 — 직전 쪽 마지막 개체의 ``confirmed_count``. ``None`` 이면 첫 쪽.
-        after_uid: 이어읽기 책갈피의 ``entity_uid``(동점 무더기를 가르는 유일 키).
-            ``after_count`` 와 **둘 다** 주거나 둘 다 생략한다(반쪽이면 코어가 ``ValueError``).
+        after_tier: 이어읽기 책갈피 ① — 직전 쪽 마지막 개체의 **우선 티어**(099 G7).
+        after_count: 이어읽기 책갈피 ② — 직전 쪽 마지막 개체의 ``confirmed_count``. ``None`` 이면 첫 쪽.
+        after_uid: 이어읽기 책갈피 ③ — ``entity_uid``(동점 무더기를 가르는 유일 키).
+            세 값은 **함께** 주거나 함께 생략한다(일부만 주면 코어가 ``ValueError``).
         uid_allow: 찾아오기·좁히기가 정한 개체 화이트리스트(``search_and_refine`` 의 결과).
             🔴 ``None`` = **필터 없음(전체)** · 빈 집합 = **0건**. 둘을 섞으면 "검색했는데 전체가
             나오는" 조용한 오류가 된다.
+        uid_first: **맨 앞에 세울** 개체 집합(099 G7 · ``EntityScope.name_first``). 순서만 바꾸고
+            거르지 않는다 — ``uid_allow`` 와 달리 빈 집합도 "앞세울 것이 없다"일 뿐 0건이 아니다.
 
     Returns:
-        정형된 목록(구성 자산 수 내림차순 → 표기 키 오름차순).
+        정형된 목록(우선 티어 내림차순 → 구성 자산 수 내림차순 → 표기 키 오름차순).
     """
     rows = list_entities(
         conn,
@@ -188,9 +200,11 @@ def fetch_list(
         min_bundle_size=min_bundle_size,
         limit=limit,
         form_skill_codes=list(form_skill_codes()),
+        after_tier=after_tier,
         after_count=after_count,
         after_uid=after_uid,
         uid_allow=uid_allow,
+        uid_first=uid_first,
     )
     return [shape_list_item(r) for r in rows]
 
@@ -233,40 +247,126 @@ def fetch_total(
     )
 
 
-def decode_entity_cursor(token: str) -> tuple[int, str]:
-    """개체 목록 커서(책갈피)를 풀어 ``(구성 자산 수, 표기 키)`` 로 돌려준다.
+def entity_cursor_scope(
+    *, q: str | None, refine: str | None, entity_type: str | None,
+    areas: Sequence[str] | None, min_bundle_size: int,
+) -> str:
+    """이번 **결과 집합을 정의하는 것 전부**를 문자열 하나로 모은다(커서 조건 지문 재료 · 099 G7).
+
+    왜 필요한가(실측 2026-09-17 · 실 DB·실 OS): ``q=사찰`` 로 받은 커서를 ``q=석탑`` 요청에 넣자
+    서버가 **200** 으로 이어 주었고, 정상 1쪽에 있던 석굴암·경주시가 통째로 빠졌다. 종전에는
+    "q·refine 을 고치면 커서를 버려라"가 **주석으로만** 있었다 — 서버가 강제하지 않으면 그것은
+    계약이 아니라 바람이고, 프론트가 한 번 실수하면 **오류 없이 자료가 사라진다**.
+    도서관 비유로, 요리책에 꽂아 둔 책갈피를 역사책에 끼우고 "여기서부터 읽으세요"라고 답한 셈이다.
+
+    🔴 **무엇을 넣었나와 근거**: ``q``·``refine`` 은 결과 집합(화이트리스트)을 통째로 정하고,
+    ``entity_type``·``areas``·``min_bundle_size`` 는 목록 SQL 의 조건이라 집합을 바꾼다.
+    **우선 티어**(``uid_first``)는 ``q``·``refine`` 에서 파생되므로 따로 넣지 않는다 — 두 질의가
+    같으면 우선 대상도 같다(파생값을 또 넣으면 같은 사실을 두 번 적는 것이다).
+
+    **일부러 뺀 것**: ``limit``(한 쪽 크기 — 집합을 바꾸지 않는다. 넣으면 쪽 크기를 바꾼 멀쩡한
+    순회가 400 으로 끊긴다) · 정렬 이름(코어 커서가 ``expect_sort`` 로 **이미 따로** 대조한다).
+
+    ⚠️ **조건을 늘리면 여기도 늘려야 한다.** 빠뜨리면 그 조건만 바뀐 커서가 조용히 통과한다.
+
+    Args:
+        q: 찾아오기 검색어(앞뒤 공백은 결과를 바꾸지 않으므로 떼고 쓴다).
+        refine: 결과 내 재검색어. ``None``·공백뿐이면 "좁히지 않음"과 같은 값으로 접는다.
+        entity_type: 종류 필터. ``None`` 이면 전체.
+        areas: 갈래 이름들. **정렬해** 담는다 — 여럿을 고른 순서는 결과를 바꾸지 않기 때문이다
+            (순서만 다른 요청까지 끊으면 멀쩡한 순회가 멈춘다).
+        min_bundle_size: 노출 임계(구성 자산 수 하한). 지금은 상수지만 조건의 일부다.
+
+    Returns:
+        같은 조건이면 언제나 같은 문자열(헌법 3조). 코어는 이 문자열의 **지문**만 커서에 싣는다.
+    """
+    material = {
+        "q": (q or "").strip(),
+        "refine": (refine or "").strip(),
+        "entity_type": entity_type or "",
+        "areas": sorted(str(a) for a in (areas or [])),
+        "min_bundle_size": int(min_bundle_size),
+    }
+    return json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def name_first_keys(
+    *, q: str | None, refine: str | None, keys: set[tuple[str, str]] | None
+) -> set[tuple[str, str]]:
+    """**이름이 정확히 같은** 개체를 고른다 — 목록 맨 앞에 세울 대상(099 G7 · 결함 B).
+
+    왜 필요한가(실측 2026-09-17): ``숭례문`` 으로 찾으면 그 개체가 **7위**, ``경포대`` 는 **15위**
+    였다(1~3위는 서울특별시·운문사·화엄사). 정렬이 구성 자산 수 하나뿐이라 **큰 개체가 늘 위**로
+    오기 때문이다. 전화번호부에서 이름을 정확히 아는 사람에게 두꺼운 항목부터 보여 주는 셈이다.
+
+    🔴 **판정 규칙은 화면 정책이라 여기 있다**(093 책무 경계). 코어는 "이 짝들을 앞세워라"만 받는다.
+    🔴 표기 비교는 **코어 정본**(``normalize_text_key``)으로 한다 — 새 규칙을 만들지 않는다.
+    개체의 ``entity_uid`` 자체가 그 함수로 만든 키라(``mm_meta.persist``), 질의를 같은 함수로 누르면
+    "제 주 도"·"제주도"·"ＪＥＪＵ"가 한 칸으로 모인다.
+
+    ⚠️ **부분 일치는 앞세우지 않는다.** `사찰` 로 찾았을 때 `운문사` 를 위로 올리면 순위가 뒤집힌
+    이유를 아무도 설명하지 못한다. 여기서 말하는 것은 "이름을 정확히 쳤다" 하나뿐이다.
+    ⚠️ 낱말 단위로는 보지 않는다 — `숭례문 화재` 처럼 **여러 낱말**을 친 질의는 이름 정확 일치가
+    아니므로 종전 순서를 그대로 둔다(경계가 애매하면 현행 유지 · 필요해지면 그때 넓힌다).
+
+    Args:
+        q: 찾아오기 검색어. ``None``·공백뿐이면 재료가 아니다.
+        refine: 결과 내 재검색어. 어느 칸에 쳤든 "그 개체를 찾는다"는 뜻은 같으므로 함께 본다.
+        keys: 이번 결과 집합의 개체 키들(``EntityScope.uid_allow``). ``None``(검색 없음)이면
+            우선 대상도 없다 — 목록 화면은 **종전 순서 그대로**여야 한다(회귀).
+
+    Returns:
+        맨 앞에 세울 ``(entity_type, entity_uid)`` 집합. 해당 없으면 빈 집합(= 앞세울 것 없음).
+    """
+    if keys is None:
+        return set()
+    wanted = {normalize_text_key(text) for text in (q, refine) if text and text.strip()}
+    wanted.discard("")
+    if not wanted:
+        return set()
+    return {(etype, uid) for etype, uid in keys if uid in wanted}
+
+
+def decode_entity_cursor(token: str, *, scope: str) -> tuple[int, int, str]:
+    """개체 목록 커서(책갈피)를 풀어 ``(우선 티어, 구성 자산 수, 표기 키)`` 로 돌려준다.
 
     풀이: 커서는 "여기까지 읽었다"를 적어 둔 **책갈피**다. 책 페이지 번호(offset)와 달리 앞쪽에 줄이
     끼어들어도 자리가 밀리지 않는다 — 어느 줄 **다음**인지를 적어 두기 때문이다.
 
-    🔴 정렬 이름·정렬값 개수를 코어가 함께 검사한다(``expect_sort``·``expect_arity``). 검사를 빼면
-    파일 목록에서 받은 책갈피나 구버전 토큰이 조용히 통과해 **엉뚱한 자리에서 이어진다** — 사용자는
-    목록이 틀린 줄 모르고 나중에 "그 개체가 왜 없지"로 나타난다.
+    🔴 정렬 이름·정렬값 개수·**조건 지문**을 코어가 함께 검사한다. 검사를 빼면 파일 목록에서 받은
+    책갈피나 구버전 토큰, 그리고 **조건이 바뀐 커서**가 조용히 통과해 엉뚱한 자리에서 이어진다 —
+    사용자는 목록이 틀린 줄 모르고 나중에 "그 개체가 왜 없지"로 나타난다.
 
     Args:
         token: 직전 응답의 ``next_cursor`` 문자열.
+        scope: 이번 요청의 조건 지문 재료(``entity_cursor_scope``). 커서를 만들 때와 **같은 값**
+            이어야 한다 — 다르면 조건이 바뀐 것이므로 거부한다.
 
     Returns:
-        ``(after_count, after_uid)`` — ``fetch_list`` 에 그대로 넘길 책갈피 두 값.
+        ``(after_tier, after_count, after_uid)`` — ``fetch_list`` 에 그대로 넘길 책갈피 세 값.
 
     Raises:
-        CursorError: 토큰이 깨졌거나 · 정렬이 어긋나거나 · 정렬값 개수·타입이 다를 때
-            (호출부가 **400** 으로 바꾼다 — 서버 오류가 아니라 입력 오류다).
+        CursorError: 토큰이 깨졌거나 · 정렬이 어긋나거나 · 정렬값 개수·타입이 다르거나 ·
+            **조건 지문이 없거나 다를 때**(호출부가 **400** 으로 바꾼다 — 입력 오류다).
     """
-    values = decode_cursor(token, expect_sort=ENTITY_CURSOR_SORT, expect_arity=ENTITY_CURSOR_ARITY)
-    raw_count, raw_uid = values[0], values[1]
+    values = decode_cursor(token, expect_sort=ENTITY_CURSOR_SORT,
+                           expect_arity=ENTITY_CURSOR_ARITY, expect_scope=scope)
+    raw_tier, raw_count, raw_uid = values[0], values[1], values[2]
     try:
         # 수가 아닌 값(위조 토큰의 ``"abc"``·``None``)이 그대로 SQL 로 흘러가면 DB 오류 → HTTP 500 이
         # 된다. 문 앞에서 CursorError 로 바꿔 400 으로 나가게 한다.
-        after_count = int(raw_count)
+        after_tier, after_count = int(raw_tier), int(raw_count)
     except (TypeError, ValueError) as exc:
-        raise CursorError(f"커서의 구성 자산 수가 숫자가 아니다: {raw_count!r}") from exc
+        raise CursorError(f"커서의 정렬 자리가 숫자가 아니다: {(raw_tier, raw_count)!r}") from exc
     if not isinstance(raw_uid, str) or not raw_uid:
         raise CursorError(f"커서의 표기 키가 비었거나 문자열이 아니다: {raw_uid!r}")
-    return after_count, raw_uid
+    return after_tier, after_count, raw_uid
 
 
-def next_entity_cursor(rows: Sequence[Mapping[str, Any]], *, page_size: int) -> str | None:
+def next_entity_cursor(
+    rows: Sequence[Mapping[str, Any]], *, page_size: int, scope: str,
+    uid_first: set[tuple[str, str]] | None = None,
+) -> str | None:
     """이번 쪽의 마지막 행으로 **다음 책갈피**를 만든다(마지막 쪽이면 ``None``).
 
     🔴 **이번 쪽이 꽉 찼을 때만** 준다 — 덜 찼으면 더 없다는 뜻이라 ``None`` 을 준다. 그래야 화면이
@@ -276,12 +376,18 @@ def next_entity_cursor(rows: Sequence[Mapping[str, Any]], *, page_size: int) -> 
     만들면, 걸러진 꼬리 행들을 다음 쪽이 건너뛴다(누락). 099 G5 부터 찾아오기·좁히기는 **SQL 이**
     하므로(화이트리스트) 이 쪽은 이미 걸러진 결과이고, 파이썬이 다시 거를 일이 없다.
 
-    ⚠️ 커서는 **정렬 자리**(구성 자산 수·표기 키)만 담는다 — 어떤 질의에서 나온 책갈피인지는 모른다.
-    그래서 ``q``·``refine`` 이 바뀌면 화면이 커서를 버려야 하고, 서버는 그것을 강제하지 못한다.
+    🔴 커서에는 **정렬 자리 셋**(우선 티어·구성 자산 수·표기 키)과 **조건 지문**이 함께 담긴다
+    (099 G7). 종전에는 정렬 자리만 담아 "어떤 질의에서 나온 책갈피인지"를 몰랐고, 그래서 조건이
+    바뀐 커서가 조용히 통과해 자료가 빠졌다(실측: ``q=사찰`` 커서를 ``q=석탑`` 에 쓰자 석굴암 등이
+    통째로 누락). 이제는 서버가 대조해 거부한다.
 
     Args:
         rows: 이번 쪽의 목록 행들(정형 전후 무관 · ``confirmed_count``·``entity_uid`` 만 읽는다).
         page_size: 이번 요청의 쪽 크기(``limit``). 행 수가 이 값과 같아야 꽉 찬 쪽이다.
+        scope: 이번 조회의 조건 지문 재료(``entity_cursor_scope``) — 다음 쪽에서 대조한다.
+        uid_first: 이번 조회에서 **맨 앞에 세운** 개체 집합(목록 질의에 준 것과 **같은 값**).
+            마지막 행의 우선 티어를 여기서 읽는다. 🔴 목록과 다른 집합을 주면 티어가 어긋나
+            다음 쪽이 엉뚱한 자리에서 이어진다 — 라우트가 한 값을 두 곳에 함께 넘긴다.
 
     Returns:
         다음 쪽을 요청할 커서 문자열. 마지막 쪽이면 ``None``.
@@ -289,8 +395,13 @@ def next_entity_cursor(rows: Sequence[Mapping[str, Any]], *, page_size: int) -> 
     if not rows or len(rows) != int(page_size):
         return None
     last = rows[-1]
+    # 우선 티어는 SQL 이 만든 값과 **같은 규칙**으로 되짚는다(집합에 들었으면 1, 아니면 0).
+    # 같은 집합을 두 곳이 보므로 갈라질 여지가 없다 — 코어 SQL 도 이 집합으로 티어를 만든다.
+    key = (str(last["entity_type"]), str(last["entity_uid"]))
+    tier = 1 if (uid_first and key in uid_first) else 0
     return encode_cursor(
-        ENTITY_CURSOR_SORT, [int(last["confirmed_count"]), str(last["entity_uid"])])
+        ENTITY_CURSOR_SORT,
+        [tier, int(last["confirmed_count"]), str(last["entity_uid"])], scope=scope)
 
 
 class EntitySearchUnavailable(RuntimeError):

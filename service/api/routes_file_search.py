@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -65,6 +66,72 @@ _SUGGEST_SORT: tuple[str, ...] = ("created_desc", "name_asc")
 _OS_CONN_ERRORS: tuple[type[BaseException], ...] = (
     (_infra.OSConnectionError,) if _infra.OSConnectionError is not None else ()
 )
+
+
+def _cursor_scope(
+    *, q: str, refine: str | None, filters: Any, applied_dates: tuple[str | None, str | None]
+) -> str:
+    """이번 **결과 집합을 정의하는 것 전부**를 문자열 하나로 모은다(커서 조건 지문 재료 · 099 G7).
+
+    왜 백엔드가 만드나: 코어는 화면 파라미터를 알면 안 된다(093 책무 경계). 무엇이 "이번 조회"를
+    정하는지는 화면이 늘리면 함께 늘어나는 목록이라, 그 목록을 아는 쪽이 모아서 넘긴다. 코어는 이
+    문자열의 **지문(해시)** 만 커서에 찍어 두었다가 다음 쪽에서 같은지 본다 — 책갈피에 책 제목 대신
+    도장을 찍어 두고, 다음에 꺼낼 때 도장이 같은지만 보는 것과 같다.
+
+    🔴 **무엇을 넣었나와 그 근거**(빠뜨리면 그만큼 검사가 헐거워진다):
+
+    | 재료 | 왜 |
+    |---|---|
+    | ``q`` | 결과 집합의 세 갈래(낱말·뜻·개체)를 모두 정한다. 실측 결함 A 의 직접 원인 |
+    | ``refine`` | 099 G3 부터 **엔진 질의 절**이라 집합을 줄인다(쪽 안 거르기가 아니다) |
+    | 칩 필터 5종(주제·하위주제·태그·종류·확장자) | 전부 ``filter`` 절이라 집합을 바꾼다 |
+    | 기간(적용값) | 같은 이유. 원문이 아니라 **실제 적용값**을 쓴다 — 원문은 공백·시각을 포함할 수 있는데 적용은 날짜까지라, 원문을 쓰면 같은 조건이 다른 지문이 된다 |
+
+    **일부러 뺀 것과 근거**:
+
+    - ``sort`` — 코어 커서가 **이미 따로** 대조한다(``expect_sort``). 넣으면 같은 검사를 두 겹으로
+      하게 되고, 오류 문구가 "정렬이 다르다" 대신 "조건이 다르다"로 뭉개져 원인을 가린다.
+    - ``limit``/``offset`` — 한 번에 몇 줄 볼지는 결과 집합을 바꾸지 않는다. 넣으면 쪽 크기를 바꾼
+      멀쩡한 순회가 400 으로 끊긴다(과잉 거부도 결함이다).
+    - 사용자 등급(권한 가리기) — 집합은 엔진이 정하고 가리기는 **응답 직전**에 걸린다. 지문에 넣어도
+      막을 수 있는 사고가 없다. ⚠️ 가리기가 엔진 조건으로 내려가는 날에는 재료로 올려야 한다.
+
+    ⚠️ **필터를 늘리면 여기도 늘려야 한다.** 빠뜨리면 그 조건만 바뀐 커서가 조용히 통과해 자료가
+    빠진다 — 그것이 099 G7 이 고친 바로 그 결함이다.
+
+    Args:
+        q: 검색어 원문(앞뒤 공백은 결과를 바꾸지 않으므로 떼고 쓴다).
+        refine: 결과 내 재검색어. ``None``·공백뿐이면 "좁히지 않음"과 같은 값으로 접는다.
+        filters: ``parse_search_filters`` 가 만든 선필터(``None`` 이면 조건 없음).
+        applied_dates: 실제 적용된 ``(생성일 하한, 상한)`` — 응답에 되돌리는 값과 **같은 계산**.
+
+    Returns:
+        같은 조건이면 언제나 같은 문자열(헌법 3조). 목록형 조건은 **정렬해** 담는다 — 같은 칸에서
+        고른 칩들은 「또는」이라 순서가 결과를 바꾸지 않기 때문이다(순서만 다른 요청을 끊지 않는다).
+    """
+    def _sorted(values: Any) -> list[str]:
+        """반복 조건을 정렬된 문자열 목록으로(순서 차이를 흡수한다).
+
+        Args:
+            values: 필터 튜플(``None`` 가능).
+
+        Returns:
+            정렬된 문자열 목록.
+        """
+        return sorted(str(v) for v in (values or ()))
+
+    material = {
+        "q": q.strip(),
+        "refine": (refine or "").strip(),
+        "topic": _sorted(getattr(filters, "topics", ())),
+        "subtopic": _sorted(getattr(filters, "subtopics", ())),
+        "tag": _sorted(getattr(filters, "tags", ())),
+        "modality": _sorted(getattr(filters, "modalities", ())),
+        "file_ext": _sorted(getattr(filters, "file_exts", ())),
+        "created_from": applied_dates[0],
+        "created_to": applied_dates[1],
+    }
+    return json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _ext_of(file_name: str) -> str:
@@ -118,7 +185,8 @@ def file_search(
             "결과 내 재검색(좁히기). 공백으로 쪼갠 낱말이 **모두** 든 자산만 남긴다."
             " 🔴 **결과 집합 전체**에 걸린다(099) — 몇 쪽에 있든 걸리며 total 도 함께 줄어든다."
             " 🔴 **낱말 단위**다: `치찌` 로 `김치찌개` 는 걸리지 않고, `김치를` 은 `김치` 에 걸린다."
-            " refine 을 바꾸면 집합이 바뀌므로 cursor 는 버리고 처음부터 받아야 한다"
+            " refine 을 바꾸면 집합이 바뀌므로 cursor 는 버리고 처음부터 받아야 한다 —"
+            " 099 G7 부터 **서버가 강제한다**(조건이 바뀐 커서는 400)"
         ),
     ),
     sort: str = Query(
@@ -158,6 +226,8 @@ def file_search(
         offset: 페이지 시작 위치(얕은 페이지용). cursor 와 함께 주면 400.
         cursor: 이어 읽기 표식. 직전 응답의 ``next_cursor`` 를 그대로 넘긴다 — offset 과 달리 1만 건
             벽이 없다. relevance 정렬에는 줄 수 없다(이어받을 점수 기준값이 없다 · 400).
+            🔴 **조건이 하나라도 바뀌면 400** 이다(099 G7) — 커서에 조건 지문이 함께 들어 있다.
+            종전에는 막지 못해, 전체 훑기 커서를 ``modality=text`` 에 쓰면 첫 건이 통째로 빠졌다.
         limit: 이 페이지의 행 수.
         principal: 인증 주체.
 
@@ -284,13 +354,18 @@ def file_search(
             _infra._LOG.warning("질의 임베딩 실패: %s", exc, exc_info=True)
             raise HTTPException(status_code=503, detail="임베딩 서버에 연결할 수 없습니다") from exc
 
+    # 커서에 실을 **조건 지문 재료**(099 G7). 여기서 한 번 만들어 코어에 넘기면, 코어가 다음 쪽에서
+    #   같은 조건인지 대조한다 — 조건이 바뀐 커서로 이어 읽으면 오류 없이 자료가 빠지기 때문이다
+    #   (실측 2026-09-17: 전체 훑기 커서를 modality=text 에 쓰자 첫 건이 통째로 누락).
+    scope = _cursor_scope(q=q, refine=refine, filters=filters,
+                          applied_dates=applied_date_bounds(filters))
     try:
         if use_cursor:
             found = browse_files(
                 get_client(), get_current_settings().opensearch.index,
                 query=q, query_vector=query_vector, filters=filters,
                 sort=sort, cursor=cursor, size=limit, facet_size=FACET_SIZE_DEFAULT,
-                refine=refine,
+                refine=refine, scope=scope,
             )
         else:
             found = search_files(
@@ -345,6 +420,8 @@ def file_search(
     refine_applied = bool(refine and refine.strip())
 
     # 기간 되돌림은 코어가 검색 절에 넣는 값과 **같은 계산**으로(원문이 아니라 적용값).
+    #   🔴 위 지문 재료와 **같은 함수**를 쓴다 — 갈라지면 "화면에 보이는 조건"과 "커서가 기억하는
+    #   조건"이 어긋나 멀쩡한 순회가 400 으로 끊긴다.
     applied_dates = applied_date_bounds(filters)
     body: dict[str, Any] = {
         "query": q,

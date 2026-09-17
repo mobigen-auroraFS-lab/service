@@ -116,8 +116,9 @@ def list_mm_meta(
         description=(
             "이어 읽기 표식(책갈피 · 099). 직전 응답의 next_cursor 를 그대로 넘기면 그 다음부터 잇는다."
             " 검색어(q)·재검색(refine)과 함께 써도 된다 — 정렬이 언제나 구성 자산 수라 이어받을 자리가 있다."
-            " 🔴 다만 q·refine 을 고치면 결과 집합 자체가 달라지므로 화면은 **커서를 버리고 처음부터**"
-            " 받아야 한다(서버는 옛 커서인지 알 수 없어 막지 못한다)"
+            " 🔴 조건(q·refine·종류·갈래)을 하나라도 고치면 **커서는 무효**이며 서버가 400 으로 끊는다"
+            " — 처음부터 다시 받아야 한다. 종전에는 막지 못해 조건이 바뀐 커서가 통과했고 자료가"
+            " 조용히 빠졌다(099 G7)"
         ),
     ),
     limit: int = Query(
@@ -140,9 +141,13 @@ def list_mm_meta(
     무관하게 성립**한다. refine 은 질의를 바꾸지 않으므로(집합 필터) 좁힌 결과는 언제나 좁히기 전의
     부분집합이다 — 좁혔는데 없던 개체가 나타나는 일이 없다.
 
-    ⚠️ **프론트 계약**: ``q``·``refine`` 이 바뀌면 결과 집합이 통째로 달라지므로 화면은 **커서를
-    버리고 처음부터** 받아야 한다. 서버는 그 커서가 어떤 질의에서 나온 것인지 알 수 없어 막지 못한다
-    (커서에는 정렬 자리만 들어 있다).
+    🔴 **프론트 계약**: ``q``·``refine``·종류·갈래가 바뀌면 결과 집합이 통째로 달라지므로 화면은
+    **커서를 버리고 처음부터** 받아야 한다. 099 G7 부터 **서버가 강제한다** — 커서에 조건 지문이
+    함께 들어 있어, 조건이 바뀐 커서는 **400** 이다(종전에는 200 으로 이어 주어 자료가 조용히 빠졌다).
+
+    🔴 **이름을 정확히 친 개체는 맨 앞**에 온다(099 G7). 종전에는 구성 자산 수 순뿐이라 `숭례문` 이
+    7위, `경포대` 가 15위였다 — 이름을 아는 사람에게 큰 개체부터 보여 준 셈이다. 부분 일치는
+    앞세우지 않는다(순위가 뒤집힌 이유를 설명할 수 없게 된다).
 
     Args:
         q: 검색어. 앞뒤 공백은 무시하고 빈 문자열은 미지정과 같다.
@@ -165,18 +170,28 @@ def list_mm_meta(
         깨진다. 검색이 없는 목록 응답에는 이 키가 **없다**(걸린 이유 자체가 없다).
 
     Raises:
-        HTTPException: 커서가 깨졌거나 정렬이 어긋나면 400 · 집합 판정에 실패하면 503
+        HTTPException: 커서가 깨졌거나 정렬·**조건**이 어긋나면 400 · 집합 판정에 실패하면 503
             (엔진·임베딩 연결 실패 · 되돌림 백엔드). 🔴 **전체 목록으로 되돌리지 않는다**.
     """
+    picked_areas = _parse_names(areas)
+    # 커서에 실을 **조건 지문 재료**(099 G7) — 이번 결과 집합을 정의하는 것 전부를 한 문자열로.
+    #   같은 값을 되읽기와 다음 커서 발급에 함께 쓴다(두 곳이 갈라지면 서버가 준 커서를 서버가
+    #   거부한다). 무엇이 재료이고 무엇을 뺐는지는 `mm_meta.entity_cursor_scope` 주석에 있다.
+    scope_material = mm_meta.entity_cursor_scope(
+        q=q, refine=refine, entity_type=entity_type, areas=picked_areas,
+        min_bundle_size=_MIN_BUNDLE_SIZE)
+    after_tier: int | None = None
     after_count: int | None = None
     after_uid: str | None = None
     if cursor is not None:
         try:
-            after_count, after_uid = mm_meta.decode_entity_cursor(cursor)
+            after_tier, after_count, after_uid = mm_meta.decode_entity_cursor(
+                cursor, scope=scope_material)
         except CursorError as exc:
             # 입력 오류이지 서버 오류가 아니다 — **조용히 다른 자리에서 이어 주지 않는다**.
+            #   조건이 바뀐 커서도 여기서 끊긴다(실측 2026-09-17: q 를 바꾼 채 이어 읽자 1쪽에
+            #   있던 개체들이 통째로 빠졌다 — 오류가 없어 화면은 그것을 알 수 없었다).
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-    picked_areas = _parse_names(areas)
     # 🔴 집합 판정이 **DB 읽기보다 먼저**다 — 화이트리스트를 SQL 에 얹어야 상한 밖 개체도 검색·좁히기로
     #    닿는다(2026-09-15 실측: 「숭례문」이 색인에 있는데 상위 200 을 먼저 자르는 바람에 0건이었다).
     #    엔진 왕복이라 DB 트랜잭션 **밖**에서 한다(커넥션을 쥔 채 네트워크를 기다리지 않게).
@@ -186,6 +201,11 @@ def list_mm_meta(
         # ⛔ 여기서 "필터 없음"으로 되돌리면 검색했는데 전량이 나가고, 빈 집합으로 접으면 "자료가 없다"와
         #    "검색이 죽었다"가 같아진다. 둘 다 사용자를 속이므로 끊는다(파일 검색과 같은 규율).
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    # **이름을 정확히 친 개체**는 맨 앞에 세운다(099 G7 · 결함 B). 실측에서 `숭례문` 은 7위,
+    #   `경포대` 는 15위였다 — 정렬이 구성 자산 수뿐이라 큰 개체가 늘 위로 왔기 때문이다.
+    #   🔴 판정은 여기(화면 정책)서 하고, 순서를 만드는 것은 코어 SQL 이다(093 경계).
+    uid_first = mm_meta.name_first_keys(q=q, refine=refine, keys=scope.uid_allow)
 
     def _read(conn: Any) -> tuple[list[dict[str, Any]], int, int]:
         """이 쪽의 행과 두 모수를 **한 트랜잭션**에서 읽는다(세 값이 서로 다른 시점을 말하지 않게).
@@ -199,7 +219,8 @@ def list_mm_meta(
         page = mm_meta.fetch_list(
             conn, entity_type=entity_type, areas=picked_areas,
             min_bundle_size=_MIN_BUNDLE_SIZE, limit=limit,
-            after_count=after_count, after_uid=after_uid, uid_allow=scope.uid_allow,
+            after_tier=after_tier, after_count=after_count, after_uid=after_uid,
+            uid_allow=scope.uid_allow, uid_first=uid_first,
         )
         after = mm_meta.fetch_total(
             conn, entity_type=entity_type, areas=picked_areas,
@@ -221,7 +242,8 @@ def list_mm_meta(
         "items": mm_meta.attach_match_reason(rows, scope=scope),
         "total": total,
         "scope_total": scope_total,
-        "next_cursor": mm_meta.next_entity_cursor(rows, page_size=limit),
+        "next_cursor": mm_meta.next_entity_cursor(
+            rows, page_size=limit, scope=scope_material, uid_first=uid_first),
     }
     if scope.refined:
         body["refine"] = refine

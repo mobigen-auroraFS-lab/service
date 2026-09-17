@@ -74,11 +74,16 @@ def _fake_fetch_list(
     areas: list[str] | None = None,
     min_bundle_size: int = 0,
     limit: int = 200,
+    after_tier: int | None = None,
     after_count: int | None = None,
     after_uid: str | None = None,
     uid_allow: set[tuple[str, str]] | None = None,
+    uid_first: set[tuple[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """코어 keyset 목록 대역 — 실제 SQL 과 **같은 조건**으로 이어 읽는다.
+
+    099 G7 로 정렬이 3단(우선 티어 → 구성 자산 수 → 표기 키)이 되어 책갈피도 세 값이다.
+    이 파일의 시험은 우선 대상을 쓰지 않으므로 티어는 늘 0 이고, 결과는 종전과 같다(회귀).
 
     Args:
         _conn: 커넥션 자리(쓰지 않는다).
@@ -86,25 +91,45 @@ def _fake_fetch_list(
         areas: 갈래 필터(대역은 쓰지 않는다).
         min_bundle_size: 노출 임계(대역은 쓰지 않는다).
         limit: 이 쪽의 행 수.
+        after_tier: 직전 쪽 마지막 개체의 우선 티어(099 G7).
         after_count: 직전 쪽 마지막 개체의 구성 자산 수.
         after_uid: 직전 쪽 마지막 개체의 표기 키.
         uid_allow: 찾아오기·좁히기가 정한 개체 화이트리스트(099 G5).
+        uid_first: 맨 앞에 세울 개체 집합(099 G7 · 순서만 바꾼다).
 
     Returns:
-        정렬(수 내림차순 → 표기 키 오름차순) 기준 다음 ``limit`` 행.
+        정렬(티어 내림차순 → 수 내림차순 → 표기 키 오름차순) 기준 다음 ``limit`` 행.
 
     Raises:
-        ValueError: 책갈피를 반쪽만 준 경우(코어와 같은 계약).
+        ValueError: 책갈피를 일부만 준 경우(코어와 같은 계약).
     """
-    if (after_count is None) != (after_uid is None):
-        raise ValueError("이어읽기 책갈피는 after_count·after_uid 를 함께 줘야 한다")
-    rows = _allowed(uid_allow)
+    book = (after_tier, after_count, after_uid)
+    if any(v is not None for v in book) and any(v is None for v in book):
+        raise ValueError("이어읽기 책갈피는 세 값을 함께 줘야 한다")
+    first = uid_first or set()
+    rows = sorted(
+        _allowed(uid_allow),
+        key=lambda r: (-(1 if (r["entity_type"], r["entity_uid"]) in first else 0),
+                       -int(r["confirmed_count"]), str(r["entity_uid"])))
     if after_count is not None:
+        def _tier(row: dict[str, Any]) -> int:
+            """행의 우선 티어(1=앞세운 개체 · 0=나머지).
+
+            Args:
+                row: 목록 행.
+
+            Returns:
+                티어 값.
+            """
+            return 1 if (row["entity_type"], row["entity_uid"]) in first else 0
+
         rows = [
             r for r in rows
-            if int(r["confirmed_count"]) < int(after_count)
-            or (int(r["confirmed_count"]) == int(after_count)
-                and str(r["entity_uid"]) > str(after_uid))
+            if _tier(r) < int(after_tier)
+            or (_tier(r) == int(after_tier)
+                and (int(r["confirmed_count"]) < int(after_count)
+                     or (int(r["confirmed_count"]) == int(after_count)
+                         and str(r["entity_uid"]) > str(after_uid))))
         ]
     return [dict(r) for r in rows[: int(limit)]]
 
@@ -219,14 +244,25 @@ class TestCursorPaging(_RouteCase):
         resp = self.client.get("/mm-meta", params={"limit": 3, "cursor": "!!!깨짐!!!"})
         self.assertEqual(resp.status_code, 400, resp.text)
 
+    def _scope(self) -> str:
+        """조건 없는 목록 요청의 지문 재료(099 G7) — 위조 토큰도 여기까지는 맞춰야 한다.
+
+        Returns:
+            라우트가 만드는 것과 같은 지문 재료 문자열.
+        """
+        return routes_mm_meta.mm_meta.entity_cursor_scope(
+            q=None, refine=None, entity_type=None, areas=[],
+            min_bundle_size=routes_mm_meta._MIN_BUNDLE_SIZE)
+
     def test_다른_정렬로_만든_커서는_400_이다(self) -> None:
-        token = encode_cursor("name_asc", [1, "e00"])
+        token = encode_cursor("name_asc", [1, "e00"], scope=self._scope())
         resp = self.client.get("/mm-meta", params={"limit": 3, "cursor": token})
         self.assertEqual(resp.status_code, 400, resp.text)
 
     def test_정렬값_개수가_다른_커서는_400_이다(self) -> None:
         # 구버전·위조 토큰. 통과시키면 반쪽 책갈피가 되어 첫 쪽을 다시 읽는다(중복).
-        token = encode_cursor(routes_mm_meta.mm_meta.ENTITY_CURSOR_SORT, ["e00"])
+        token = encode_cursor(routes_mm_meta.mm_meta.ENTITY_CURSOR_SORT, ["e00"],
+                              scope=self._scope())
         resp = self.client.get("/mm-meta", params={"limit": 3, "cursor": token})
         self.assertEqual(resp.status_code, 400, resp.text)
 

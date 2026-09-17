@@ -79,9 +79,11 @@ def _fake_list_entities(
     limit: int = 200,
     statuses: list[str] | None = None,
     form_skill_codes: list[str] | None = None,
+    after_tier: int | None = None,
     after_count: int | None = None,
     after_uid: str | None = None,
     uid_allow: set[tuple[str, str]] | None = None,
+    uid_first: set[tuple[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """코어 ``list_entities`` 대역 — 화이트리스트·커서·상한을 **SQL 과 같은 규칙**으로 흉내 낸다.
 
@@ -93,25 +95,44 @@ def _fake_list_entities(
         limit: 이 쪽의 행 수.
         statuses: 소속 엣지 상태(대역은 쓰지 않는다).
         form_skill_codes: 형식 축 스킬(대역은 쓰지 않는다).
+        after_tier: 직전 쪽 마지막 개체의 우선 티어(099 G7 · 정렬 첫 키).
         after_count: 직전 쪽 마지막 개체의 구성 자산 수.
         after_uid: 직전 쪽 마지막 개체의 표기 키.
         uid_allow: 개체 화이트리스트. 🔴 ``None`` 이면 조건 없음 · 빈 집합이면 **0건**이다.
+        uid_first: 맨 앞에 세울 개체 집합(099 G7 · 순서만 바꾸고 거르지 않는다).
 
     Returns:
-        정렬 기준 다음 ``limit`` 행.
+        정렬(티어 ↓ → 구성 자산 수 ↓ → 표기 키 ↑) 기준 다음 ``limit`` 행.
 
     Raises:
-        ValueError: 책갈피를 반쪽만 준 경우(코어와 같은 계약).
+        ValueError: 책갈피를 일부만 준 경우(코어와 같은 계약).
     """
-    rows = _rows_of(uid_allow)
-    if (after_count is None) != (after_uid is None):
-        raise ValueError("이어읽기 책갈피는 after_count·after_uid 를 함께 줘야 한다")
+    first = uid_first or set()
+
+    def _tier(row: dict[str, Any]) -> int:
+        """행의 우선 티어(1=앞세운 개체 · 0=나머지).
+
+        Args:
+            row: 목록 행.
+
+        Returns:
+            티어 값.
+        """
+        return 1 if (row["entity_type"], row["entity_uid"]) in first else 0
+
+    rows = sorted(_rows_of(uid_allow),
+                  key=lambda r: (-_tier(r), -int(r["confirmed_count"]), str(r["entity_uid"])))
+    book = (after_tier, after_count, after_uid)
+    if any(v is not None for v in book) and any(v is None for v in book):
+        raise ValueError("이어읽기 책갈피는 세 값을 함께 줘야 한다")
     if after_count is not None:
         rows = [
             r for r in rows
-            if int(r["confirmed_count"]) < int(after_count)
-            or (int(r["confirmed_count"]) == int(after_count)
-                and str(r["entity_uid"]) > str(after_uid))
+            if _tier(r) < int(after_tier)
+            or (_tier(r) == int(after_tier)
+                and (int(r["confirmed_count"]) < int(after_count)
+                     or (int(r["confirmed_count"]) == int(after_count)
+                         and str(r["entity_uid"]) > str(after_uid))))
         ]
     return [dict(r) for r in rows[: int(limit)]]
 
