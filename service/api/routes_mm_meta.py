@@ -26,6 +26,7 @@ from service.portal import mm_meta
 from service.portal.auth import Principal, require_principal
 from service.portal.download import build_bundle_zip_stream
 from src.mm_meta.rules import MIN_BUNDLE_SIZE
+from src.search.cursor import CursorError
 
 router = APIRouter()
 
@@ -106,7 +107,22 @@ def list_mm_meta(
             "(이름·근거 키워드·설명 대상). 서버에 다시 묻지 않고 **이번 결과 안에서만** 좁힌다."
         ),
     ),
-    limit: int = Query(200, ge=1, le=500, description="집계 상한(구성 자산 수 상위). 검색·좁히기 전에 적용"),
+    cursor: str | None = Query(
+        None,
+        description=(
+            "이어 읽기 표식(책갈피 · 099). 직전 응답의 next_cursor 를 그대로 넘기면 그 다음부터 잇는다."
+            " 🔴 검색어(q)와는 함께 줄 수 없다 — 개체 검색은 아직 상위 몇 개를 고르는 순위 경로라"
+            " 이어받을 자리가 없다"
+        ),
+    ),
+    limit: int = Query(
+        200, ge=1, le=500,
+        description=(
+            "한 쪽에 담을 개체 수(구성 자산 수 상위). 더 보려면 next_cursor 로 다음 쪽을 받는다 —"
+            " 상한을 키워 전량을 한 번에 받을 이유가 없다."
+            " 검색어(q)가 있을 때만 옛 뜻 그대로 **찾은 뒤 자르는 상한**이다"
+        ),
+    ),
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
     """개체 목록 — 구성 자산 수 내림차순.
@@ -120,33 +136,89 @@ def list_mm_meta(
         entity_type: 종류 필터.
         areas: 갈래 이름들(쉼표 구분 · AND).
         refine: 결과 내 재검색 글자.
-        limit: 집계 상한.
+        limit: 한 쪽에 보일 개체 수.
+        cursor: 이어 읽기 표식(직전 응답의 ``next_cursor``). ``q`` 와 함께 주면 400.
         principal: 인증 주체.
 
     Returns:
-        ``{items, total}``. ``refine`` 을 준 요청에만 ``scope_total``·``refine`` 이 더 실린다 — 화면이
-        결과가 0건일 때 "지우면 N건"을 띄우는 재료다. 각 항목의 ``confirmed_count`` 는 화면에서
-        **"확인된 N건"** 으로 표기한다(완전성을 약속하지 않는다).
+        ``{items, total, scope_total, next_cursor}``. ``refine`` 을 준 요청에만 ``refine`` 이 더
+        실린다. 목록 경로(``q`` 없음)의 ``total``·``scope_total`` 은 **모수**다 — 돌려준 개수가 아니라
+        조건에 맞는 전부(화면의 "N건 중 M건"). ``next_cursor`` 가 ``None`` 이면 마지막 쪽이다(더 없다).
+        각 항목의 ``confirmed_count`` 는 화면에서 **"확인된 N건"** 으로 표기한다(완전성을 약속하지 않는다).
+
+    Raises:
+        HTTPException: 커서가 깨졌거나 정렬이 어긋나면 400 · ``cursor`` 와 ``q`` 를 함께 주면 400.
     """
+    has_query = bool(q and q.strip())
+    # 🔴 커서와 검색어를 함께 받지 않는다. 개체 검색은 아직 **순위**(상위 몇 개)라 "그 다음부터"를
+    #    가리킬 자리가 없다 — 조용히 무시하면 화면이 같은 쪽을 계속 받으며 끝나지 않는다.
+    #    검색을 집합 판정으로 바꾼 뒤에 열린다(099 G4).
+    if cursor is not None and has_query:
+        raise HTTPException(
+            status_code=400,
+            detail="cursor 와 q 는 함께 줄 수 없습니다 — 개체 검색은 아직 이어 읽기를 지원하지 않습니다",
+        )
+    after_count: int | None = None
+    after_uid: str | None = None
+    if cursor is not None:
+        try:
+            after_count, after_uid = mm_meta.decode_entity_cursor(cursor)
+        except CursorError as exc:
+            # 입력 오류이지 서버 오류가 아니다 — **조용히 다른 자리에서 이어 주지 않는다**.
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     picked_areas = _parse_names(areas)
     # 🔴 검색어가 있으면 **상한 밖까지** 모수를 가져온다 — 먼저 잘라 놓고 그 안에서 찾으면
     #    상위 N 밖의 개체는 검색으로도 닿을 수 없다(2026-09-15 실측: 「숭례문」이 색인에 있는데 0건).
     #    상한은 `search_and_refine` 이 **찾은 뒤에** 적용한다. 모수 자체는 노출 임계
     #    (`_MIN_BUNDLE_SIZE`)가 이미 줄여 놓아 무거워지지 않는다.
-    scope = _SEARCH_SCOPE_MAX if (q and q.strip()) else limit
-    items = _infra._run_in_db(
-        lambda conn: mm_meta.fetch_list(
+    scope = _SEARCH_SCOPE_MAX if has_query else limit
+
+    def _read(conn: Any) -> tuple[list[dict[str, Any]], int | None]:
+        """이 쪽의 행과 모수를 **한 트랜잭션**에서 읽는다(두 값이 서로 다른 시점을 말하지 않게).
+
+        Args:
+            conn: DB 커넥션(``_run_in_db`` 가 넘긴다).
+
+        Returns:
+            ``(이 쪽의 목록, 모수)``. 검색 경로에서는 모수를 세지 않으므로 뒤 값이 ``None`` 이다.
+        """
+        page = mm_meta.fetch_list(
             conn, entity_type=entity_type, areas=picked_areas,
             min_bundle_size=_MIN_BUNDLE_SIZE, limit=scope,
+            after_count=after_count, after_uid=after_uid,
         )
-    )
+        # ⛔ 검색 경로는 모수를 세지 않는다 — 개체 검색이 아직 **순위**(상위 몇 개)라 "조건에 맞는
+        #    전부"가 몇 개인지 셀 방법이 없다. 목록과 다른 수를 내보내면 화면이 거짓말을 한다(099 G4).
+        parent = None if has_query else mm_meta.fetch_total(
+            conn, entity_type=entity_type, areas=picked_areas,
+            min_bundle_size=_MIN_BUNDLE_SIZE,
+        )
+        return page, parent
+
+    rows, parent_total = _infra._run_in_db(_read)  # type: ignore[misc]
+    # 🔴 다음 책갈피는 **DB 가 준 쪽 그대로**에서 만든다 — 글자 좁히기로 걸러낸 뒤의 행으로 만들면
+    #    걸러진 꼬리를 다음 쪽이 건너뛴다(누락). 검색 경로는 아직 커서가 없어 언제나 None 이다.
+    next_cursor = None if has_query else mm_meta.next_entity_cursor(rows, page_size=limit)
     items, scope_total = mm_meta.search_and_refine(
-        items, q=q, refine=refine, run_in_db=_infra._run_in_db,  # type: ignore[arg-type]
+        rows, q=q, refine=refine, run_in_db=_infra._run_in_db,  # type: ignore[arg-type]
         limit=limit,
     )
-    body: dict[str, Any] = {"items": items, "total": len(items)}
-    if refine and refine.strip():
-        body["scope_total"] = scope_total
+    refined = bool(refine and refine.strip())
+    # 건수의 뜻(plan 099 §1-⑥): `scope_total` = 좁히기 **이전** 집합 크기 · `total` = 좁히기 **이후**.
+    #   - 목록 경로는 둘 다 **모수**다. 한 쪽만 돌려줘도 "전체 몇 건"을 정확히 말한다.
+    #   - ⚠️ 좁히기(`refine`)가 걸린 목록의 `total` 은 아직 **이 쪽 안에서 좁힌 수**다. 좁히기가
+    #     파이썬에서 쪽 단위로 돌기 때문이며, 서버 질의로 옮기는 것은 099 G5 다. 그때 모수가 된다.
+    #   - 검색 경로(`q`)는 **현행 그대로** — `total` 은 돌려준 개수, `scope_total` 은 상한으로 자른 뒤
+    #     좁히기 전 개수다(모수 아님 · G4 에서 집합 판정으로 바뀌면 모수가 된다).
+    if parent_total is not None:
+        scope_total = parent_total
+        total = len(items) if refined else parent_total
+    else:
+        total = len(items)
+    body: dict[str, Any] = {
+        "items": items, "total": total, "scope_total": scope_total, "next_cursor": next_cursor,
+    }
+    if refined:
         body["refine"] = refine
     return body
 

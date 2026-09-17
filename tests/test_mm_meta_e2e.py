@@ -258,17 +258,73 @@ class TestMmMetaE2E(unittest.TestCase):
                 self.assertEqual(a.text, b.text)
 
     def test_좁히기는_결과를_줄이고_지우면_돌아온다(self) -> None:
-        items = self._list(limit=50)
+        plain = self.client.get("/mm-meta", params={"limit": 50}).json()
+        items = plain["items"]
         if not items:
             self.skipTest("노출 개체가 없다")
         token = items[0]["name"][:2]
         body = self.client.get("/mm-meta", params={"limit": 50, "refine": token}).json()
         self.assertLessEqual(body["total"], body["scope_total"])
-        self.assertEqual(body["scope_total"], len(items))
+        # 🔴 099 — ``scope_total`` 은 쪽 크기가 아니라 **모수**다("지우면 N건"). 종전에는 돌려준
+        #    개수(50)와 같았고, 그래서 화면에 "50건"이 찍혔다.
+        self.assertEqual(body["scope_total"], plain["total"])
+        self.assertGreaterEqual(body["scope_total"], len(items))
         self.assertEqual(body["refine"], token)
         for i in body["items"]:
             haystack = " ".join([i["name"], i["description"] or "", *i["keywords"]])
             self.assertIn(token, haystack)
+
+    # ── ⑧ 커서 순회(099 SC-001) ──────────────────────────────────────────────
+    def _drain(self, page: int) -> list[tuple[str, str]]:
+        """커서를 따라 끝까지 훑어 개체 키를 순서대로 모은다(쪽 크기 ``page``).
+
+        Args:
+            page: 한 쪽에 받을 개체 수.
+
+        Returns:
+            ``(entity_type, entity_uid)`` 목록 — 받은 순서 그대로.
+        """
+        keys: list[tuple[str, str]] = []
+        cursor: str | None = None
+        for _ in range(200):  # 무한 루프 방지(822건 / 쪽 크기 최소 50 이면 넉넉하다)
+            params: dict[str, object] = {"limit": page}
+            if cursor:
+                params["cursor"] = cursor
+            resp = self.client.get("/mm-meta", params=params)
+            self.assertEqual(resp.status_code, 200, resp.text)
+            body = resp.json()
+            keys.extend((i["entity_type"], i["entity_uid"]) for i in body["items"])
+            cursor = body["next_cursor"]
+            if cursor is None:
+                return keys
+        self.fail("커서가 끝나지 않는다 — 마지막 쪽에서 next_cursor 가 None 이어야 한다")
+        return keys
+
+    def test_커서로_완주하면_중복도_누락도_없다(self) -> None:
+        """SC-001 — 노출 개체 전량을 커서로 완주한다(중복 0·누락 0 · 쪽 크기 무관 · 2회 동일)."""
+        head = self.client.get("/mm-meta", params={"limit": 1}).json()
+        total = int(head["total"])
+        if total == 0:
+            self.skipTest("노출 개체가 없다")
+        walked = self._drain(200)
+        self.assertEqual(len(walked), total, "완주 건수가 모수와 같아야 한다(누락 0)")
+        self.assertEqual(len(set(walked)), len(walked), "같은 개체를 두 번 받지 않는다(중복 0)")
+        # 쪽 크기를 바꿔도·두 번 돌려도 **같은 순서**여야 한다(헌법 3조 결정 재현성).
+        self.assertEqual(self._drain(137), walked)
+        self.assertEqual(self._drain(200), walked)
+
+    def test_총계는_쪽_크기가_아니라_모수다(self) -> None:
+        """099 FR-006 — 한 쪽만 받아도 ``total`` 은 조건에 맞는 전부를 말한다."""
+        small = self.client.get("/mm-meta", params={"limit": 1}).json()
+        if small["total"] == 0:
+            self.skipTest("노출 개체가 없다")
+        big = self.client.get("/mm-meta", params={"limit": _LIST_MAX}).json()
+        self.assertEqual(small["total"], big["total"], "쪽 크기가 총계를 바꾸면 안 된다")
+        self.assertGreaterEqual(small["total"], len(small["items"]))
+
+    def test_깨진_커서는_400_이고_500_이_아니다(self) -> None:
+        resp = self.client.get("/mm-meta", params={"limit": 10, "cursor": "!!!깨짐!!!"})
+        self.assertEqual(resp.status_code, 400, resp.text)
 
     def test_타입_별칭이_칩_응답의_부분과_같다(self) -> None:
         alias = self.client.get("/mm-meta/types")

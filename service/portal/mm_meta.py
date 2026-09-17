@@ -40,11 +40,13 @@ from src.mm_meta.entity_search import (
 )
 from src.relations.graph_query import (
     assets_of_entities,
+    count_entities,
     count_entities_by_area,
     count_entities_by_type,
     list_entities,
     mm_meta_bundle,
 )
+from src.search.cursor import CursorError, decode_cursor, encode_cursor
 from src.search.entity_search_os import search_entities_hybrid
 from src.search.facets import aggregate_facets
 from src.search.query_embed import embed_query_for_media_search
@@ -71,6 +73,14 @@ SEMANTIC_TOP_N = 3
 # 이라 상위권만 주면 배경이 상위권 평균이 되어 신호가 죽는다. 노출 개체 전량이 담기는 여유값이다.
 # ⚠️ 개체가 이 수를 넘기면 표본이 잘려 임계의 근거가 흔들린다 — 그때는 다시 측정한다.
 SEMANTIC_GATE_SAMPLE = 500
+
+# 개체 목록 커서(책갈피)의 **정렬 이름**. 097 파일 커서와 같은 토큰 규약(`src/search/cursor.py`)을 쓰되
+# 이름이 달라야 한다 — 파일 목록에서 받은 책갈피를 개체 목록에 쓰면 엉뚱한 자리에서 조용히 이어진다.
+# 값은 실제 정렬(`confirmed_count DESC, entity_uid ASC`)을 그대로 읽은 것이다.
+ENTITY_CURSOR_SORT = "confirmed_count_desc"
+# 그 정렬이 쓰는 **정렬값 개수** — `(confirmed_count, entity_uid)` 둘이다. 구버전·위조 토큰이 반쪽
+# 책갈피로 들어오면 첫 쪽을 다시 읽어 **중복**이 나는데 오류가 없어 화면은 그것을 알 수 없다.
+ENTITY_CURSOR_ARITY = 2
 
 # 카드 한 장을 zip 으로 내보낼 때의 자산 수 상한. 묶음이 커도 응답이 무한정 커지지 않게 막는다.
 CARD_BUNDLE_MAX_ASSETS = 200
@@ -146,15 +156,20 @@ def fetch_list(
     areas: Sequence[str] | None,
     min_bundle_size: int,
     limit: int,
+    after_count: int | None = None,
+    after_uid: str | None = None,
 ) -> list[dict[str, Any]]:
-    """노출 개체 목록을 읽어 화면 항목으로 정형한다.
+    """노출 개체 목록을 읽어 화면 항목으로 정형한다(선택: 책갈피부터 이어 읽기).
 
     Args:
         conn: DB 커넥션.
         entity_type: 종류 필터. ``None`` 이면 전체.
         areas: 갈래 이름들 — 모두 가진 개체만(AND). ``None``·빈 목록이면 필터 없음.
         min_bundle_size: 노출 임계(구성 자산 수 하한).
-        limit: 최대 개체 수. 검색·좁히기 **전** 집계 상한이다.
+        limit: 이 쪽에서 읽을 최대 개체 수. 검색·좁히기 **전** 집계 상한이다.
+        after_count: 이어읽기 책갈피 — 직전 쪽 마지막 개체의 ``confirmed_count``. ``None`` 이면 첫 쪽.
+        after_uid: 이어읽기 책갈피의 ``entity_uid``(동점 무더기를 가르는 유일 키).
+            ``after_count`` 와 **둘 다** 주거나 둘 다 생략한다(반쪽이면 코어가 ``ValueError``).
 
     Returns:
         정형된 목록(구성 자산 수 내림차순 → 표기 키 오름차순).
@@ -166,8 +181,98 @@ def fetch_list(
         min_bundle_size=min_bundle_size,
         limit=limit,
         form_skill_codes=list(form_skill_codes()),
+        after_count=after_count,
+        after_uid=after_uid,
     )
     return [shape_list_item(r) for r in rows]
+
+
+def fetch_total(
+    conn: Connection[Any],
+    *,
+    entity_type: str | None,
+    areas: Sequence[str] | None,
+    min_bundle_size: int,
+) -> int:
+    """지금 걸린 조건으로 **노출 개체가 모두 몇 개인지** 센다 — 화면의 "N건 중 M건"에서 N.
+
+    🔴 목록(``fetch_list``)이 돌려준 개수를 세면 모수가 아니라 **쪽 크기**가 나온다. 200개만 받아 놓고
+    "200건"이라 적던 것이 그 오해였다(실측 노출 대상 822개). 서랍에서 서류 200장을 꺼내 놓고
+    "서랍에 200장 있다"고 말하는 셈이다 — 서랍은 따로 세어야 한다.
+
+    ⚠️ 조건은 목록과 **같게** 줘야 한다. 다르면 "822건 중 200건"의 822 가 목록과 다른 모수를 말한다.
+
+    Args:
+        conn: DB 커넥션.
+        entity_type: 종류 필터. ``None`` 이면 전체(목록과 같은 값).
+        areas: 갈래 이름들 — 모두 가진 개체만(AND). ``None``·빈 목록이면 필터 없음(목록과 같은 값).
+        min_bundle_size: 노출 임계(구성 자산 수 하한 · 목록과 같은 값).
+
+    Returns:
+        개체 수(0 이상). 상한·쪽 크기에 걸리지 않는 모수다.
+    """
+    return count_entities(
+        conn,
+        entity_type=entity_type,
+        area_names=list(areas) if areas else None,
+        min_bundle_size=min_bundle_size,
+    )
+
+
+def decode_entity_cursor(token: str) -> tuple[int, str]:
+    """개체 목록 커서(책갈피)를 풀어 ``(구성 자산 수, 표기 키)`` 로 돌려준다.
+
+    풀이: 커서는 "여기까지 읽었다"를 적어 둔 **책갈피**다. 책 페이지 번호(offset)와 달리 앞쪽에 줄이
+    끼어들어도 자리가 밀리지 않는다 — 어느 줄 **다음**인지를 적어 두기 때문이다.
+
+    🔴 정렬 이름·정렬값 개수를 코어가 함께 검사한다(``expect_sort``·``expect_arity``). 검사를 빼면
+    파일 목록에서 받은 책갈피나 구버전 토큰이 조용히 통과해 **엉뚱한 자리에서 이어진다** — 사용자는
+    목록이 틀린 줄 모르고 나중에 "그 개체가 왜 없지"로 나타난다.
+
+    Args:
+        token: 직전 응답의 ``next_cursor`` 문자열.
+
+    Returns:
+        ``(after_count, after_uid)`` — ``fetch_list`` 에 그대로 넘길 책갈피 두 값.
+
+    Raises:
+        CursorError: 토큰이 깨졌거나 · 정렬이 어긋나거나 · 정렬값 개수·타입이 다를 때
+            (호출부가 **400** 으로 바꾼다 — 서버 오류가 아니라 입력 오류다).
+    """
+    values = decode_cursor(token, expect_sort=ENTITY_CURSOR_SORT, expect_arity=ENTITY_CURSOR_ARITY)
+    raw_count, raw_uid = values[0], values[1]
+    try:
+        # 수가 아닌 값(위조 토큰의 ``"abc"``·``None``)이 그대로 SQL 로 흘러가면 DB 오류 → HTTP 500 이
+        # 된다. 문 앞에서 CursorError 로 바꿔 400 으로 나가게 한다.
+        after_count = int(raw_count)
+    except (TypeError, ValueError) as exc:
+        raise CursorError(f"커서의 구성 자산 수가 숫자가 아니다: {raw_count!r}") from exc
+    if not isinstance(raw_uid, str) or not raw_uid:
+        raise CursorError(f"커서의 표기 키가 비었거나 문자열이 아니다: {raw_uid!r}")
+    return after_count, raw_uid
+
+
+def next_entity_cursor(rows: Sequence[Mapping[str, Any]], *, page_size: int) -> str | None:
+    """이번 쪽의 마지막 행으로 **다음 책갈피**를 만든다(마지막 쪽이면 ``None``).
+
+    🔴 **이번 쪽이 꽉 찼을 때만** 준다 — 덜 찼으면 더 없다는 뜻이라 ``None`` 을 준다. 그래야 화면이
+    빈 쪽을 한 번 더 받으러 가지 않는다(097 파일 목록과 같은 규율).
+
+    ⚠️ 여기 넘기는 것은 **DB 가 준 쪽 그대로**여야 한다. 글자 좁히기(``refine``)로 걸러낸 뒤의 행으로
+    만들면, 걸러진 꼬리 행들을 다음 쪽이 건너뛴다(누락).
+
+    Args:
+        rows: 이번 쪽의 목록 행들(정형 전후 무관 · ``confirmed_count``·``entity_uid`` 만 읽는다).
+        page_size: 이번 요청의 쪽 크기(``limit``). 행 수가 이 값과 같아야 꽉 찬 쪽이다.
+
+    Returns:
+        다음 쪽을 요청할 커서 문자열. 마지막 쪽이면 ``None``.
+    """
+    if not rows or len(rows) != int(page_size):
+        return None
+    last = rows[-1]
+    return encode_cursor(
+        ENTITY_CURSOR_SORT, [int(last["confirmed_count"]), str(last["entity_uid"])])
 
 
 def search_and_refine(

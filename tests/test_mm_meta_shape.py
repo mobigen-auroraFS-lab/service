@@ -57,6 +57,7 @@ class TestWiring(unittest.TestCase):
         self.assertIs(mm_meta.aggregate_facets, core_aggregate_facets)
         self.assertIs(mm_meta.label_names_of_assets, core_label_names)
         self.assertIs(mm_meta.list_entities, gq.list_entities)
+        self.assertIs(mm_meta.count_entities, gq.count_entities)
         self.assertIs(mm_meta.count_entities_by_type, gq.count_entities_by_type)
         self.assertIs(mm_meta.count_entities_by_area, gq.count_entities_by_area)
         self.assertIs(mm_meta.assets_of_entities, gq.assets_of_entities)
@@ -427,7 +428,8 @@ class TestRouteSearchScope(unittest.TestCase):
             patch.object(mod.mm_meta, "search_and_refine", lambda items, **kw: ([], 0)),
         ):
             mod.list_mm_meta(q="숭례문", entity_type=None, areas=None, refine=None,
-                             limit=200, principal=SimpleNamespace(clearance="authorized"))
+                             cursor=None, limit=200,
+                             principal=SimpleNamespace(clearance="authorized"))
         self.assertEqual(seen["limit"], mod._SEARCH_SCOPE_MAX,
                          "검색어가 있으면 목록 상한이 아니라 검색 모수를 가져온다")
 
@@ -442,8 +444,11 @@ class TestRouteSearchScope(unittest.TestCase):
         with (
             patch.object(mod._infra, "_run_in_db", lambda fn: fn(object())),
             patch.object(mod.mm_meta, "fetch_list", fake_fetch),
+            # 목록 경로는 모수도 함께 센다(099 T011) — 여기서 보는 것은 **조회 범위**뿐이라 대역만 세운다.
+            patch.object(mod.mm_meta, "fetch_total", lambda _conn, **kw: 0),
             patch.object(mod.mm_meta, "search_and_refine", lambda items, **kw: ([], 0)),
         ):
             mod.list_mm_meta(q=None, entity_type=None, areas=None, refine=None,
-                             limit=200, principal=SimpleNamespace(clearance="authorized"))
+                             cursor=None, limit=200,
+                             principal=SimpleNamespace(clearance="authorized"))
         self.assertEqual(seen["limit"], 200)
