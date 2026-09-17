@@ -26,6 +26,7 @@ from service.portal import mm_meta
 from src.mm_classify.read import label_names_of_assets as core_label_names
 from src.mm_meta.rules import MIN_BUNDLE_SIZE
 from src.relations import graph_query as gq
+from src.search.entity_search_os import EntityMatchSet
 from src.search.entity_search_os import match_entity_keys as core_match_entity_keys
 from src.search.facets import aggregate_facets as core_aggregate_facets
 
@@ -40,6 +41,20 @@ def _row(**over) -> dict:
     }
     base.update(over)
     return base
+
+
+def _as_match(keys) -> EntityMatchSet:
+    """개체 키 집합을 코어 반환 모양으로 감싼다(대역용 · 갈래는 전부 글자로 둔다).
+
+    Args:
+        keys: 매칭된 개체 키들.
+
+    Returns:
+        ``EntityMatchSet`` — ``keys`` 와 ``text_keys`` 가 같고 의미 갈래는 비어 있다.
+    """
+    frozen = frozenset(keys)
+    return EntityMatchSet(keys=frozen, text_keys=frozen, semantic_keys=frozenset(),
+                          semantic_gate_passed=False)
 
 
 def _cfg(backend: str = "opensearch") -> SimpleNamespace:
@@ -151,7 +166,7 @@ class TestSetJudgement(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self.engine = MagicMock(return_value={("장소", "제주도")})
+        self.engine = MagicMock(return_value=_as_match({("장소", "제주도")}))
         for target, repl in (
             ("service.portal.mm_meta.match_entity_keys", self.engine),
             ("service.portal.mm_meta.embed_query_for_media_search", lambda *_a, **_k: [0.0]),
@@ -188,7 +203,7 @@ class TestSetJudgement(unittest.TestCase):
         self.assertTrue(scope.refined)
 
     def test_둘_다_있으면_교집합이다(self) -> None:
-        self.engine.side_effect = lambda *_a, **kw: (
+        self.engine.side_effect = lambda *_a, **kw: _as_match(
             {("장소", "제주도"), ("장소", "서울특별시")} if kw["query"] == "섬"
             else {("장소", "제주도"), ("인물", "해녀")}
         )
@@ -198,7 +213,7 @@ class TestSetJudgement(unittest.TestCase):
         self.assertTrue(scope.refined)
 
     def test_매칭이_없으면_빈_집합이다(self) -> None:
-        self.engine.return_value = set()
+        self.engine.return_value = _as_match(set())
         scope = mm_meta.search_and_refine(q="없는낱말", refine=None)
         self.assertEqual(scope.uid_allow, set())
         self.assertIsNotNone(scope.uid_allow, "🔴 None 으로 접으면 전체가 나간다")

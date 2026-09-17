@@ -32,6 +32,7 @@ from fastapi.testclient import TestClient
 
 from service.api import app, routes_mm_meta
 from service.portal import mm_meta
+from src.search.entity_search_os import EntityMatchSet
 
 _AUTH_DISABLED_ENV = {"PORTAL_AUTH_DISABLED": "1", "PORTAL_JWT_SECRET": "test-secret"}
 
@@ -138,6 +139,23 @@ def _cfg(backend: str = "opensearch") -> SimpleNamespace:
     )
 
 
+def _as_match(keys: set[tuple[str, str]]) -> EntityMatchSet:
+    """개체 키 집합을 코어 반환 모양으로 감싼다(대역용).
+
+    이 파일이 보는 것은 **집합이 어디에 쓰이는가**라, 갈래는 "전부 글자로 걸렸다"로 둔다
+    (「걸린 이유」 자체는 `test_mm_meta_match_reason.py` 가 따로 본다).
+
+    Args:
+        keys: 매칭된 개체 키들.
+
+    Returns:
+        ``EntityMatchSet`` — ``keys`` 와 ``text_keys`` 가 같고 의미 갈래는 비어 있다.
+    """
+    frozen = frozenset(keys)
+    return EntityMatchSet(keys=frozen, text_keys=frozen, semantic_keys=frozenset(),
+                          semantic_gate_passed=False)
+
+
 class _Engine:
     """``match_entity_keys`` 대역 — 질의별 답을 미리 정해 두고 호출을 기록한다."""
 
@@ -146,7 +164,7 @@ class _Engine:
         self.error: BaseException | None = None
         self.calls: list[dict[str, Any]] = []
 
-    def __call__(self, client: object, index: str, **kwargs: Any) -> set[tuple[str, str]]:
+    def __call__(self, client: object, index: str, **kwargs: Any) -> EntityMatchSet:
         """질의 하나에 대한 개체 키 집합을 돌려준다(또는 정해 둔 예외를 던진다).
 
         Args:
@@ -155,7 +173,7 @@ class _Engine:
             **kwargs: 코어와 같은 키워드(``query``·``query_vector`` 등) — 그대로 기록한다.
 
         Returns:
-            미리 정해 둔 키 집합(없으면 빈 집합).
+            미리 정해 둔 키 집합을 담은 ``EntityMatchSet``(없으면 빈 집합).
 
         Raises:
             BaseException: ``error`` 를 세워 둔 경우 그 예외.
@@ -163,7 +181,7 @@ class _Engine:
         self.calls.append({"index": index, **kwargs})
         if self.error is not None:
             raise self.error
-        return set(self.answers.get(str(kwargs.get("query")), set()))
+        return _as_match(self.answers.get(str(kwargs.get("query")), set()))
 
     def calls_for(self, query: str) -> list[dict[str, Any]]:
         """특정 질의로 들어온 호출만 골라 돌려준다."""
@@ -288,17 +306,19 @@ class TestUnifiedSetStructure(_SetCase):
         self._get(q="발효", limit=10)
         self.assertEqual(self.engine.calls[0]["query_vector"], [0.0])
 
-    def test_항목_키가_경로와_무관하게_같다(self) -> None:
-        # 🔴 프론트 계약 변경: 검색 경로에만 실리던 ``match_reason``·``by_text``·``by_semantic`` 이
-        #    없어졌다(집합 판정에는 순위도 per-건 근거도 없다 — 순서는 DB 가 정한다). 그 대신 화면이
-        #    경로마다 다른 모양을 다룰 필요가 없어졌다.
+    def test_검색_경로에만_걸린_이유_세_키가_더_실린다(self) -> None:
+        # 🔴 **정책 개정(2026-09-17 사용자 결정)** — 099 G5 는 "항목 키를 경로와 무관하게 통일"했으나
+        #    그러면 뜻(kNN)으로 걸린 결과를 화면이 설명할 수 없다. `왕실 무덤` 으로 `영릉` 이 나오는데
+        #    카드 어디에도 그 글자가 없어 "검색이 고장났나"가 된다(089·090·092 가 세운 설명 가능성).
+        #    → 검색 경로에만 ``by_text``·``by_semantic``·``match_reason`` 을 되살린다.
+        # 이 단언은 종전보다 **강하다**: 목록 키 집합을 그대로 못 박고(전과 동일), 검색 경로가 더 싣는
+        # 키가 **정확히 그 셋**임을 함께 못 박는다 — 넷째 키가 몰래 끼어드는 것도 잡힌다.
         self.engine.answers = {"김치": {_key(1)}}
         listed = set(self._get(limit=1)["items"][0])
         searched = set(self._get(q="김치", limit=1)["items"][0])
-        self.assertEqual(listed, searched)
-        self.assertEqual(searched, set(mm_meta.shape_list_item(_TABLE[0])))
-        for gone in ("match_reason", "by_text", "by_semantic"):
-            self.assertNotIn(gone, searched)
+        self.assertEqual(listed, set(mm_meta.shape_list_item(_TABLE[0])))
+        self.assertEqual(searched - listed, {"by_text", "by_semantic", "match_reason"})
+        self.assertEqual(listed - searched, set(), "검색 경로가 목록 키를 잃으면 안 된다")
 
 
 class TestFacetsUntouched(_SetCase):

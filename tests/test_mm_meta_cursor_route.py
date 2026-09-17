@@ -29,6 +29,7 @@ from fastapi.testclient import TestClient
 
 from service.api import app, routes_mm_meta
 from src.search.cursor import encode_cursor
+from src.search.entity_search_os import EntityMatchSet
 
 _AUTH_DISABLED_ENV = {"PORTAL_AUTH_DISABLED": "1", "PORTAL_JWT_SECRET": "test-secret"}
 
@@ -139,7 +140,7 @@ class _RouteCase(unittest.TestCase):
             allow = kw.get("uid_allow")
             return _TOTAL if allow is None else len(_allowed(allow))
 
-        def _fake_match(_client: object, _index: str, **kw: Any) -> set[tuple[str, str]]:
+        def _fake_match(_client: object, _index: str, **kw: Any) -> EntityMatchSet:
             """엔진 집합 판정 대역 — 표기 키에 질의 글자가 든 개체를 돌려준다(099 G5).
 
             실제 판정은 형태소(낱말) 단위이지만, 여기서 보는 것은 **집합이 어디에 쓰이는가**라
@@ -147,7 +148,12 @@ class _RouteCase(unittest.TestCase):
             """
             q = str(kw.get("query") or "")
             self.engine_calls.append(q)
-            return {(r["entity_type"], r["entity_uid"]) for r in _TABLE if q in r["entity_uid"]}
+            keys = frozenset((r["entity_type"], r["entity_uid"])
+                             for r in _TABLE if q in r["entity_uid"])
+            # 대역도 코어와 **같은 모양**을 돌려준다 — 갈래는 "전부 글자로 걸렸다"로 둔다
+            # (「걸린 이유」 자체는 `test_mm_meta_match_reason.py` 가 본다).
+            return EntityMatchSet(keys=keys, text_keys=keys, semantic_keys=frozenset(),
+                                  semantic_gate_passed=False)
 
         for target, repl in (
             ("service.api._infra._run_in_db", lambda fn: fn(object())),

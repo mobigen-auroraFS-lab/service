@@ -29,6 +29,11 @@ from src.config import search_constants
 from src.config.filename_util import display_file_name
 from src.config.settings import active_embed_channel, get_current_settings
 from src.mm_classify.read import label_names_of_assets
+
+# 「걸린 이유」 문구는 **코어 상수 그대로** 쓴다 — 백엔드가 문구를 새로 만들면 같은 사실이 화면마다
+# 다르게 적힌다. 089·092 가 고른 말이고, 그 선택 근거(왜 "근거 키워드 일치"라고 쓰지 않는가)는
+# 코어 상수 주석에 있다.
+from src.mm_meta.entity_search import REASON_SEMANTIC, REASON_TEXT_MATCH
 from src.relations.graph_query import (
     assets_of_entities,
     count_entities,
@@ -38,7 +43,7 @@ from src.relations.graph_query import (
     mm_meta_bundle,
 )
 from src.search.cursor import CursorError, decode_cursor, encode_cursor
-from src.search.entity_search_os import match_entity_keys
+from src.search.entity_search_os import EntityMatchSet, match_entity_keys
 from src.search.facets import aggregate_facets
 from src.search.query_embed import embed_query_for_media_search
 
@@ -311,11 +316,20 @@ class EntityScope(NamedTuple):
             만든다 — 반드시 ``is None`` 으로 가른다.
         scope_allow: 좁히기 **이전** 집합 ``A``(= ``q`` 만 적용). ``q`` 가 없으면 ``None``(전체).
         refined: 좁히기(refine)가 걸렸는지. 걸리지 않았으면 두 집합이 같은 값이라 총계를 한 번만 센다.
+        text_keys: **글자로** 걸린 개체 키들 — 항목의 ``by_text`` 재료. 질의가 둘이면 **교집합**이다
+            (합침 규칙과 근거는 ``search_and_refine`` 주석).
+        semantic_keys: **뜻으로** 걸린 개체 키들 — 항목의 ``by_semantic`` 재료. 질의가 둘이면
+            **합집합**이다. 아무것도 묻지 않았으면 둘 다 빈 집합이다(걸린 이유 자체가 없다).
     """
 
     uid_allow: set[tuple[str, str]] | None
     scope_allow: set[tuple[str, str]] | None
     refined: bool
+    # 기본값을 둔 이유: 이 둘은 **화면 표시용 부가 정보**라, 집합만 필요한 호출부(총계·테스트 대역)가
+    # 세 값만으로 그대로 만들 수 있어야 한다. 비어 있으면 "근거를 모른다"가 되고, 그때 항목의
+    # ``match_reason`` 은 ``None`` 이 된다(``attach_match_reason``) — 거짓 문구를 적지 않는다.
+    text_keys: frozenset[tuple[str, str]] = frozenset()
+    semantic_keys: frozenset[tuple[str, str]] = frozenset()
 
 
 def search_and_refine(*, q: str | None, refine: str | None) -> EntityScope:
@@ -339,30 +353,125 @@ def search_and_refine(*, q: str | None, refine: str | None) -> EntityScope:
     ⚠️ **집합이 바뀌면 커서(책갈피)는 뜻을 잃는다.** ``q``·refine 을 고치면 화면은 커서를 버리고
     처음부터 받아야 한다 — 서버는 옛 커서인지 알 방법이 없어 강제하지 못한다(계약으로만 정한다).
 
+    **「걸린 이유」도 함께 싣는다**(2026-09-17 사용자 결정). 코어 판정이 낱말·의미 **두 갈래**를
+    따로 계산해 돌려주므로(``EntityMatchSet``) 버리지 않고 나른다 — 뜻으로 걸린 개체는 카드에
+    검색어가 한 자도 없어서(`왕실 무덤`→`영릉`) 근거가 없으면 사용자가 검색을 의심한다.
+
+    🔴 **질의가 둘일 때의 합침은 보수적이다**:
+
+    - ``text_keys`` = 질의들의 **교집합** — "글자 일치"라고 적으려면 **모든** 질의의 낱말이 실제로
+      그 개체에 적혀 있어야 한다. 한 질의라도 뜻으로만 걸렸다면 그 낱말은 카드에 없다.
+    - ``semantic_keys`` = 질의들의 **합집합** — **어느 한쪽에서든** 뜻으로 걸렸으면 설명이 필요하다.
+      놓치는 쪽(설명을 안 보임)보다 더 보이는 쪽이 안전하다.
+
+    이 규칙에서 결과 집합의 개체는 **언제나 둘 중 하나 이상이 참**이다: 결과가 두 갈래의 합집합이라
+    어느 쪽에도 없으면 애초에 결과에 없다. 질의가 하나면 둘 다 그 질의의 갈래 그대로다.
+
     Args:
         q: 찾아오기 검색어. ``None``·공백뿐이면 "안 물어봤다"(집합을 만들지 않는다).
         refine: 결과 내 재검색 낱말들. ``None``·공백뿐이면 좁히지 않는다.
 
     Returns:
-        ``EntityScope`` — 목록·총계 질의에 그대로 넘길 화이트리스트 두 개와 좁히기 여부.
+        ``EntityScope`` — 목록·총계 질의에 그대로 넘길 화이트리스트 두 개, 좁히기 여부,
+        그리고 항목 표시용 갈래 두 개.
 
     Raises:
         EntitySearchUnavailable: 집합을 만들 수 없을 때(엔진·임베딩 연결 실패 · 되돌림 백엔드).
             🔴 **전체로도 빈 결과로도 되돌리지 않는다** — 위 클래스 설명 참조.
     """
-    q_keys = _matching_keys(q) if (q and q.strip()) else None
-    refine_keys = _matching_keys(refine) if (refine and refine.strip()) else None
-    if refine_keys is None:
+    q_match = _matching_keys(q) if (q and q.strip()) else None
+    refine_match = _matching_keys(refine) if (refine and refine.strip()) else None
+    text_keys, semantic_keys = _merge_match_reasons(q_match, refine_match)
+    if refine_match is None:
         # 좁히기가 없으면 결과 집합과 좁히기 이전 집합이 **같은 값**이다(총계도 한 번만 센다).
-        return EntityScope(uid_allow=q_keys, scope_allow=q_keys, refined=False)
-    if q_keys is None:
+        keys = None if q_match is None else set(q_match.keys)
+        return EntityScope(uid_allow=keys, scope_allow=keys, refined=False,
+                           text_keys=text_keys, semantic_keys=semantic_keys)
+    if q_match is None:
         # 찾아온 적이 없으니 "지우면 몇 건"의 답은 조건 없는 목록 전체다 → scope 는 None(전체).
-        return EntityScope(uid_allow=refine_keys, scope_allow=None, refined=True)
-    return EntityScope(uid_allow=q_keys & refine_keys, scope_allow=q_keys, refined=True)
+        return EntityScope(uid_allow=set(refine_match.keys), scope_allow=None, refined=True,
+                           text_keys=text_keys, semantic_keys=semantic_keys)
+    return EntityScope(uid_allow=set(q_match.keys & refine_match.keys),
+                       scope_allow=set(q_match.keys), refined=True,
+                       text_keys=text_keys, semantic_keys=semantic_keys)
 
 
-def _matching_keys(query: str) -> set[tuple[str, str]]:
-    """낱말 하나 묶음을 엔진에 던져 **매칭 개체 키 집합**을 받는다(순위 아님).
+def _merge_match_reasons(
+    q_match: EntityMatchSet | None, refine_match: EntityMatchSet | None
+) -> tuple[frozenset[tuple[str, str]], frozenset[tuple[str, str]]]:
+    """질의 둘의 「걸린 이유」 갈래를 항목 표시용 한 쌍으로 합친다(순수 · 보수적).
+
+    규칙과 근거는 ``search_and_refine`` docstring 에 있다 — 글자는 **교집합**(모든 질의에서
+    글자로 걸려야 "글자 일치"가 참말이다), 뜻은 **합집합**(한 질의라도 뜻이면 설명이 필요하다).
+
+    Args:
+        q_match: 찾아오기(``q``)의 코어 판정 결과. 묻지 않았으면 ``None``.
+        refine_match: 좁히기(``refine``)의 코어 판정 결과. 묻지 않았으면 ``None``.
+
+    Returns:
+        ``(글자로 걸린 키들, 뜻으로 걸린 키들)``. 둘 다 묻지 않았으면 빈 집합 둘(근거 없음).
+    """
+    parts = [m for m in (q_match, refine_match) if m is not None]
+    if not parts:
+        return frozenset(), frozenset()
+    text = parts[0].text_keys
+    for part in parts[1:]:
+        text &= part.text_keys
+    semantic = frozenset().union(*(part.semantic_keys for part in parts))
+    return text, semantic
+
+
+def attach_match_reason(
+    items: Sequence[Mapping[str, Any]], *, scope: EntityScope
+) -> list[dict[str, Any]]:
+    """검색 결과 항목에 **왜 걸렸는지**를 얹는다(순수 · 검색 경로 전용 · 2026-09-17 결정).
+
+    왜 필요한가: **뜻(kNN)으로 걸린 결과는 화면 어디에도 검색어가 보이지 않는다.** `왕실 무덤` 으로
+    찾으면 `영릉` 이 나오는데 그 카드에는 "왕실 무덤" 이라는 글자가 한 자도 없다 — 근거를 같이
+    보여 주지 않으면 사용자는 "왜 이게 나오지, 검색이 고장났나"로 읽는다. 089·090·092 가 공들여
+    만든 설명 가능성이고, G5 가 집합 판정으로 갈아타며 잃었던 것을 되살리는 자리다.
+
+    🔴 **불린이 실질이고 문구는 표시용**이다. 화면은 ``by_text``·``by_semantic`` 으로 갈라 보고
+    ``match_reason`` 은 그대로 찍기만 한다 — 문구를 파싱해 층을 가르면 문구를 고칠 때 조용히
+    깨진다. 문구 자체는 **코어 상수**(``REASON_TEXT_MATCH``·``REASON_SEMANTIC``)를 그대로 쓴다.
+
+    ⚠️ **검색 경로 전용**이다. 검색어도 좁히기도 없는 목록(``scope.uid_allow is None``)에는 이 키를
+    싣지 않는다 — 걸린 이유 자체가 없는데 "글자 일치"라고 적을 수는 없다.
+
+    Args:
+        items: 정형된 목록 항목들(``shape_list_item`` 결과). 원본을 바꾸지 않는다.
+        scope: 이번 요청의 집합 판정 결과(``search_and_refine``). 갈래 두 집합을 여기서 읽는다.
+
+    Returns:
+        새 dict 목록. 검색 경로면 항목마다 ``by_text``·``by_semantic``·``match_reason`` 이 늘고,
+        목록 경로면 들어온 그대로다. 🔴 근거를 모르는 항목(갈래 어디에도 없음)은 불린 둘이 거짓이고
+        ``match_reason`` 이 ``None`` 이다 — **거짓 문구를 적지 않는다**. 판정이 정상이면 결과 집합의
+        개체는 반드시 한 갈래 이상에 들어 있으므로 이 상태는 나오지 않는다(나오면 경고 로그).
+    """
+    out = [dict(item) for item in items]
+    if scope.uid_allow is None:
+        return out
+    unexplained = 0
+    for item in out:
+        key = (str(item.get("entity_type") or ""), str(item.get("entity_uid") or ""))
+        by_text = key in scope.text_keys
+        by_semantic = key in scope.semantic_keys
+        if not (by_text or by_semantic):
+            unexplained += 1
+        item["by_text"] = by_text
+        item["by_semantic"] = by_semantic
+        # 둘 다면 **글자를 앞세운다** — 더 확실한 근거이고, 사용자가 화면에서 그 글자를 눈으로
+        # 확인할 수 있다(뜻 매칭은 확인할 길이 없어 문구가 유일한 설명이다).
+        item["match_reason"] = (REASON_TEXT_MATCH if by_text
+                                else REASON_SEMANTIC if by_semantic else None)
+    if unexplained:
+        _LOG.warning("검색 결과 %d건의 걸린 이유를 알 수 없다 — 판정 갈래가 항목까지 오지 않았다",
+                     unexplained)
+    return out
+
+
+def _matching_keys(query: str) -> EntityMatchSet:
+    """낱말 하나 묶음을 엔진에 던져 **매칭 개체 키 집합 + 걸린 갈래**를 받는다(순위 아님).
 
     판정은 전부 코어(`match_entity_keys`)가 한다 — 낱말끼리 AND·필드끼리 OR, 그리고 게이트를 넘긴
     의미(kNN) 결과와의 합집합이다. 여기서 하는 일은 셋뿐이다: 되돌림 백엔드 차단, 질의 임베딩,
@@ -373,7 +482,9 @@ def _matching_keys(query: str) -> set[tuple[str, str]]:
             로 막는다("0건"과 "안 물어봤다"가 섞이지 않게).
 
     Returns:
-        ``{(entity_type, entity_uid), …}``. 매칭이 없으면 **빈 집합**(= 0건이며 전체가 아니다).
+        ``EntityMatchSet`` — 결과 집합(``keys``)과 갈래 둘(글자·뜻). 매칭이 없으면 ``keys`` 가
+        **빈 집합**(= 0건이며 전체가 아니다). 갈래는 화면의 「걸린 이유」 재료이며, 코어가 이미
+        따로 계산해 둔 값이라 **엔진 왕복이 늘지 않는다**.
 
     Raises:
         EntitySearchUnavailable: 되돌림 백엔드이거나 임베딩·엔진에 닿지 못했을 때.

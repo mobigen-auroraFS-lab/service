@@ -157,9 +157,12 @@ def list_mm_meta(
         ``{items, total, scope_total, next_cursor}``. ``refine`` 을 준 요청에만 ``refine`` 이 더
         실린다. ``total``(좁히기 **이후**)·``scope_total``(좁히기 **이전** · "지우면 N건")은 경로와
         무관하게 **모수**다 — 돌려준 개수가 아니라 조건에 맞는 전부. ``next_cursor`` 가 ``None``
-        이면 마지막 쪽이다. 각 항목의 키는 **경로와 무관하게 같다**(목록·검색 모두
-        ``shape_list_item`` 한 모양) — 099 전까지 검색 경로에만 실리던 ``match_reason``·``by_text``·
-        ``by_semantic`` 은 없어졌다. 집합 판정에는 순위·per-건 근거가 없기 때문이다(순서는 DB 정렬).
+        이면 마지막 쪽이다. **검색 경로**(``q``·``refine`` 중 하나라도 준 요청)의 항목에는
+        ``by_text``·``by_semantic``·``match_reason`` 이 **더** 실린다(2026-09-17 결정) — 뜻(kNN)으로
+        걸린 개체는 카드에 검색어가 한 자도 없어서(`왕실 무덤`→`영릉`) 근거를 못 보이면 사용자가
+        "검색이 고장났나"로 읽기 때문이다(089·090·092 가 만든 설명 가능성). 🔴 **불린이 실질이고
+        문구는 표시용**이다 — 화면이 ``match_reason`` 을 파싱해 층을 가르면 문구를 고칠 때 조용히
+        깨진다. 검색이 없는 목록 응답에는 이 키가 **없다**(걸린 이유 자체가 없다).
 
     Raises:
         HTTPException: 커서가 깨졌거나 정렬이 어긋나면 400 · 집합 판정에 실패하면 503
@@ -213,7 +216,9 @@ def list_mm_meta(
     # 다음 책갈피는 **DB 가 준 쪽 그대로**에서 만든다. 좁히기는 이미 SQL 이 적용했으므로 여기서 행이
     # 더 줄어들 일이 없다(파이썬이 다시 거르면 걸러진 꼬리를 다음 쪽이 건너뛰어 누락이 났다).
     body: dict[str, Any] = {
-        "items": rows,
+        # 「걸린 이유」는 **쪽을 다 고른 뒤** 얹는다 — 행을 더하거나 빼지 않는 표시용 정보라 위
+        # ``next_cursor`` 재료(DB 가 준 쪽 그대로)에 영향을 주지 않는다.
+        "items": mm_meta.attach_match_reason(rows, scope=scope),
         "total": total,
         "scope_total": scope_total,
         "next_cursor": mm_meta.next_entity_cursor(rows, page_size=limit),
