@@ -18,8 +18,8 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Callable, Mapping, Sequence
-from typing import Any
+from collections.abc import Mapping, Sequence
+from typing import Any, NamedTuple
 
 from psycopg import Connection
 from psycopg.rows import dict_row
@@ -29,15 +29,6 @@ from src.config import search_constants
 from src.config.filename_util import display_file_name
 from src.config.settings import active_embed_channel, get_current_settings
 from src.mm_classify.read import label_names_of_assets
-from src.mm_meta.entity_embedding import find_similar_entities
-from src.mm_meta.entity_search import (
-    REASON_SEMANTIC,
-    REASON_TEXT_MATCH,
-    entity_refine_fields,
-    fuse_entity_results,
-    gate_semantic_hits,
-    narrow_entities,
-)
 from src.relations.graph_query import (
     assets_of_entities,
     count_entities,
@@ -47,10 +38,9 @@ from src.relations.graph_query import (
     mm_meta_bundle,
 )
 from src.search.cursor import CursorError, decode_cursor, encode_cursor
-from src.search.entity_search_os import search_entities_hybrid
+from src.search.entity_search_os import match_entity_keys
 from src.search.facets import aggregate_facets
 from src.search.query_embed import embed_query_for_media_search
-from src.search.refine import refine_rows
 
 # ── 화면 정책 상수 ────────────────────────────────────────────────────────────
 
@@ -63,16 +53,11 @@ KEYWORD_TOP_N = 6
 DEFAULT_FORM_SKILL_CODES: tuple[str, ...] = ("content_form",)
 FORM_SKILLS_ENV = "PORTAL_MM_META_FORM_SKILLS"
 
-# 의미 검색으로 더할 개체 수(spec 090). **되돌림 경로(`MM_META_SEARCH_BACKEND=pg`) 전용**이다.
-# 3 은 측정으로 정한 값이다 — 5 로 늘리면 재현율은 그대로이고 노이즈만 두 배, 1 로 줄이면 재현율이
-# 절반으로 떨어졌다. 코어 기본값(5)과 다른 것은 의도된 차이다: 그 값은 OpenSearch 융합 경로에서
-# 정답이 4~5위에 있다는 실측으로 정한 것이라 이 경로에는 근거가 없다.
-SEMANTIC_TOP_N = 3
-
-# 게이트가 볼 표본 크기(090 후속). **상위 몇 개만 넘기면 안 된다** — 게이트의 기준선이 "하위 절반 평균"
-# 이라 상위권만 주면 배경이 상위권 평균이 되어 신호가 죽는다. 노출 개체 전량이 담기는 여유값이다.
-# ⚠️ 개체가 이 수를 넘기면 표본이 잘려 임계의 근거가 흔들린다 — 그때는 다시 측정한다.
-SEMANTIC_GATE_SAMPLE = 500
+# 개체 검색·좁히기가 **반드시 거쳐야 하는 백엔드**. 099 G5 부터 두 일이 한 구조로 접혀(spec §3-2a)
+# 엔진에 낱말을 던져 **개체 키 집합**을 얻는 경로 하나만 남았다. 되돌림 값(`pg`)은 090 의 PG 벡터
+# 경로였는데, 그 경로는 "상위 몇 개"(순위)만 낼 수 있어 집합을 만들지 못한다 — 설정이 그 값이면
+# 조용히 엔진으로 가지도(설정 무시), 전체를 주지도(검색했는데 전부) 않고 **503 으로 끊는다**.
+ENTITY_SEARCH_BACKEND = "opensearch"
 
 # 개체 목록 커서(책갈피)의 **정렬 이름**. 097 파일 커서와 같은 토큰 규약(`src/search/cursor.py`)을 쓰되
 # 이름이 달라야 한다 — 파일 목록에서 받은 책갈피를 개체 목록에 쓰면 엉뚱한 자리에서 조용히 이어진다.
@@ -91,6 +76,19 @@ CARD_BUNDLE_MAX_ASSETS = 200
 ENTITIES_BUNDLE_MAX_BYTES = 500 * 1024 * 1024
 
 _LOG = logging.getLogger(__name__)
+
+# 검색 엔진 **연결** 실패로 볼 예외들. 라우트(`routes_file_search.py`)와 같은 방어적 import 를 쓴다 —
+# 클라이언트가 안 깔린 환경(순수 단위 테스트)에서는 빈 튜플이라 ``except ()`` 가 아무것도 잡지 않는다.
+# 🔴 연결 실패만 골라 잡는다. 나머지 예외(코드 결함)까지 삼키면 결함이 "엔진 장애"로 둔갑해 운영자가
+#    엉뚱한 곳을 본다(2026-09-09 리뷰에서 파일 검색이 같은 이유로 정리됐다).
+try:
+    from opensearchpy.exceptions import ConnectionError as _OSConnectionError
+except ImportError:  # pragma: no cover - 라이브러리 미설치 환경 방어
+    _OSConnectionError = None  # type: ignore[assignment,misc]
+
+_OS_CONN_ERRORS: tuple[type[BaseException], ...] = (
+    (_OSConnectionError,) if _OSConnectionError is not None else ()
+)
 
 # 타입 어휘 머리(이름·판) + 정의문. **화면용 단순 조회라 여기 둔다**(093 규칙 ④) — 그래프를 읽지 않고,
 # 파이프는 이 값을 쓰지 않는다. 🔴 **어휘 행이 없으면 빈 목록**이며 코드 프리셋으로 채우지 않는다.
@@ -158,18 +156,22 @@ def fetch_list(
     limit: int,
     after_count: int | None = None,
     after_uid: str | None = None,
+    uid_allow: set[tuple[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
-    """노출 개체 목록을 읽어 화면 항목으로 정형한다(선택: 책갈피부터 이어 읽기).
+    """노출 개체 목록을 읽어 화면 항목으로 정형한다(선택: 책갈피부터 이어 읽기 · 검색 집합 안에서만).
 
     Args:
         conn: DB 커넥션.
         entity_type: 종류 필터. ``None`` 이면 전체.
         areas: 갈래 이름들 — 모두 가진 개체만(AND). ``None``·빈 목록이면 필터 없음.
         min_bundle_size: 노출 임계(구성 자산 수 하한).
-        limit: 이 쪽에서 읽을 최대 개체 수. 검색·좁히기 **전** 집계 상한이다.
+        limit: 이 **쪽**에 담을 개체 수(커서가 생긴 뒤의 뜻 — 전체 상한이 아니다).
         after_count: 이어읽기 책갈피 — 직전 쪽 마지막 개체의 ``confirmed_count``. ``None`` 이면 첫 쪽.
         after_uid: 이어읽기 책갈피의 ``entity_uid``(동점 무더기를 가르는 유일 키).
             ``after_count`` 와 **둘 다** 주거나 둘 다 생략한다(반쪽이면 코어가 ``ValueError``).
+        uid_allow: 찾아오기·좁히기가 정한 개체 화이트리스트(``search_and_refine`` 의 결과).
+            🔴 ``None`` = **필터 없음(전체)** · 빈 집합 = **0건**. 둘을 섞으면 "검색했는데 전체가
+            나오는" 조용한 오류가 된다.
 
     Returns:
         정형된 목록(구성 자산 수 내림차순 → 표기 키 오름차순).
@@ -183,6 +185,7 @@ def fetch_list(
         form_skill_codes=list(form_skill_codes()),
         after_count=after_count,
         after_uid=after_uid,
+        uid_allow=uid_allow,
     )
     return [shape_list_item(r) for r in rows]
 
@@ -193,6 +196,7 @@ def fetch_total(
     entity_type: str | None,
     areas: Sequence[str] | None,
     min_bundle_size: int,
+    uid_allow: set[tuple[str, str]] | None = None,
 ) -> int:
     """지금 걸린 조건으로 **노출 개체가 모두 몇 개인지** 센다 — 화면의 "N건 중 M건"에서 N.
 
@@ -207,6 +211,10 @@ def fetch_total(
         entity_type: 종류 필터. ``None`` 이면 전체(목록과 같은 값).
         areas: 갈래 이름들 — 모두 가진 개체만(AND). ``None``·빈 목록이면 필터 없음(목록과 같은 값).
         min_bundle_size: 노출 임계(구성 자산 수 하한 · 목록과 같은 값).
+        uid_allow: 개체 화이트리스트 — **목록과 같은 값**을 줘야 한다(다르면 "822건 중 3건"의 822 가
+            목록과 다른 모수를 말한다). 🔴 ``None`` = 필터 없음 · 빈 집합 = 0건.
+            ``scope_total``(좁히기 이전)을 셀 때는 ``EntityScope.scope_allow`` 를, ``total``
+            (좁히기 이후)을 셀 때는 ``EntityScope.uid_allow`` 를 준다.
 
     Returns:
         개체 수(0 이상). 상한·쪽 크기에 걸리지 않는 모수다.
@@ -216,6 +224,7 @@ def fetch_total(
         entity_type=entity_type,
         area_names=list(areas) if areas else None,
         min_bundle_size=min_bundle_size,
+        uid_allow=uid_allow,
     )
 
 
@@ -258,8 +267,12 @@ def next_entity_cursor(rows: Sequence[Mapping[str, Any]], *, page_size: int) -> 
     🔴 **이번 쪽이 꽉 찼을 때만** 준다 — 덜 찼으면 더 없다는 뜻이라 ``None`` 을 준다. 그래야 화면이
     빈 쪽을 한 번 더 받으러 가지 않는다(097 파일 목록과 같은 규율).
 
-    ⚠️ 여기 넘기는 것은 **DB 가 준 쪽 그대로**여야 한다. 글자 좁히기(``refine``)로 걸러낸 뒤의 행으로
-    만들면, 걸러진 꼬리 행들을 다음 쪽이 건너뛴다(누락).
+    ⚠️ 여기 넘기는 것은 **DB 가 준 쪽 그대로**여야 한다. 응답 직전에 파이썬이 한 번 더 거른 행으로
+    만들면, 걸러진 꼬리 행들을 다음 쪽이 건너뛴다(누락). 099 G5 부터 찾아오기·좁히기는 **SQL 이**
+    하므로(화이트리스트) 이 쪽은 이미 걸러진 결과이고, 파이썬이 다시 거를 일이 없다.
+
+    ⚠️ 커서는 **정렬 자리**(구성 자산 수·표기 키)만 담는다 — 어떤 질의에서 나온 책갈피인지는 모른다.
+    그래서 ``q``·``refine`` 이 바뀌면 화면이 커서를 버려야 하고, 서버는 그것을 강제하지 못한다.
 
     Args:
         rows: 이번 쪽의 목록 행들(정형 전후 무관 · ``confirmed_count``·``entity_uid`` 만 읽는다).
@@ -275,173 +288,123 @@ def next_entity_cursor(rows: Sequence[Mapping[str, Any]], *, page_size: int) -> 
         ENTITY_CURSOR_SORT, [int(last["confirmed_count"]), str(last["entity_uid"])])
 
 
-def search_and_refine(
-    items: list[dict[str, Any]],
-    *,
-    q: str | None,
-    refine: str | None,
-    run_in_db: Callable[[Callable[[Any], Any]], Any],
-    limit: int | None = None,
-) -> tuple[list[dict[str, Any]], int]:
-    """목록을 검색어로 좁히고(선택) 결과 안에서 글자로 한 번 더 좁힌다.
+class EntitySearchUnavailable(RuntimeError):
+    """개체 **집합 판정**을 할 수 없다 — 호출부(라우트)가 503 으로 바꾼다.
 
-    검색 **판단은 전부 코어 함수**가 한다(문자열 매칭·융합·게이트·좁히기). 이 함수가 하는 일은 셋이다 —
-    설정에 따라 어느 경로를 탈지 고르고, 그 경로가 실패하면 되돌리고, 좁히기를 마지막에 얹는다.
+    🔴 이 예외가 필요한 이유가 이번 설계의 핵심이다. 종전 구조는 엔진이 죽으면 문자열 결과로
+    **되돌렸다**. 새 구조에서 같은 되돌림을 하면 화이트리스트가 ``None``(=필터 없음)이 되어
+    **"검색했는데 전체 822개가 나온다"** 가 된다. 반대로 빈 집합으로 접으면 "자료가 없다"와
+    "검색이 죽었다"가 같아진다. 둘 다 사용자를 속이므로 **끊는 쪽**을 고른다 —
+    파일 검색이 엔진 연결 실패를 503 으로 내는 것과 같은 규율(`routes_file_search.py`).
+    """
 
-    경로가 둘인 이유(spec 092): OpenSearch 경로는 형태소 BM25 와 벡터 kNN 을 융합해 **문자열 매칭을
-    대체**한다. 두 방식을 겹쳐 쓰면 같은 개체가 두 근거로 두 번 올라온다. 되돌림 경로(``pg``)는 089 의
-    부분 문자열 매칭 위에 의미 결과를 **얹기만** 한다.
 
-    🔴 **실패하면 문자열 결과로 되돌린다.** 임베딩 서버나 검색 엔진이 죽었을 때 개체 검색 전체가 오류가
-    되면, 문자열로 이미 되던 것까지 못 쓰게 된다.
+class EntityScope(NamedTuple):
+    """이번 요청이 볼 **개체 집합**(찾아오기·좁히기 판정 결과 · spec 099 §3-2a).
 
-    ⚠️ 좁히기는 **융합 뒤**에 한다 — 문자열·의미로 모인 결과 전체가 좁히기 대상이다. 의미로 걸린 개체는
-    그 글자가 없어서 들어온 것이라 여기서 반드시 떨어진다(정상 동작 — 글자로 골라내기).
+    책 찾기에 비유하면, ``scope_allow`` 는 "요리 책장"(찾아온 범위)이고 ``uid_allow`` 는 그 책장에서
+    "표지에 배추가 있는 책"(좁힌 결과)이다. 화면의 "N건 중 M건"에서 N 이 앞의 것, M 이 뒤의 것이다.
+
+    Attributes:
+        uid_allow: 결과 집합 ``A ∩ B`` 의 개체 키들. 🔴 ``None`` = **필터 없음(전체)** ·
+            빈 집합 = **0건**. 파이썬에서는 둘 다 거짓값이라 ``if not uid_allow`` 한 줄이 사고를
+            만든다 — 반드시 ``is None`` 으로 가른다.
+        scope_allow: 좁히기 **이전** 집합 ``A``(= ``q`` 만 적용). ``q`` 가 없으면 ``None``(전체).
+        refined: 좁히기(refine)가 걸렸는지. 걸리지 않았으면 두 집합이 같은 값이라 총계를 한 번만 센다.
+    """
+
+    uid_allow: set[tuple[str, str]] | None
+    scope_allow: set[tuple[str, str]] | None
+    refined: bool
+
+
+def search_and_refine(*, q: str | None, refine: str | None) -> EntityScope:
+    """찾아오기(``q``)와 좁히기(``refine``)를 **한 구조**로 판정해 볼 개체 집합을 정한다(099 G5).
+
+    ```
+    q 있으면      → 엔진 집합 판정 → 개체 키 집합 A
+    refine 있으면 → 엔진 집합 판정 → 개체 키 집합 B
+    결과 집합     = A ∩ B (한쪽만 있으면 그것만 · 둘 다 없으면 None = 전체)
+    ```
+
+    **왜 둘이 한 경로인가**(spec §3-2a): 개체 좁히기도 낱말 단위로 맞추기로 하면서(2026-09-17 결정)
+    ``q`` 와 refine 이 **같은 일**(엔진에 낱말을 던져 매칭 개체 집합을 얻기)이 됐다. 한 경로로 접으면
+    한쪽만 고쳐지는 사고가 원리상 사라지고, 정렬이 언제나 DB(구성 자산 수)라 커서가 ``q`` 유무와
+    무관하게 성립한다.
+
+    🔴 **refine 은 질의가 아니라 집합 필터다**(spec §3-1 · FR-002). ``A`` 는 refine 과 무관하게 한 번만
+    판정하므로 kNN 게이트가 다시 돌지 않고, 좁힌 결과는 언제나 좁히기 전 결과의 **부분집합**이다
+    (없던 개체가 나타나지 않는다 — 091 이 서버 재질의를 거부했던 근거 ③의 해소).
+
+    ⚠️ **집합이 바뀌면 커서(책갈피)는 뜻을 잃는다.** ``q``·refine 을 고치면 화면은 커서를 버리고
+    처음부터 받아야 한다 — 서버는 옛 커서인지 알 방법이 없어 강제하지 못한다(계약으로만 정한다).
 
     Args:
-        items: 정형된 목록 전체.
-        q: 검색어. 없거나 공백뿐이면 좁히지 않는다(전체 목록).
-        refine: 결과 내 재검색 글자. 공백으로 쪼갠 낱말이 **모두** 있는 행만 남는다.
-        run_in_db: DB 작업을 트랜잭션 안에서 돌려 주는 호출자의 함수(라우트가 넘긴다). 되돌림 경로의
-            의미 검색이 커넥션을 필요로 해 주입받는다 — 이 모듈이 인프라를 직접 잡지 않게.
-        limit: 화면에 보일 최대 개체 수. 🔴 **찾은 뒤에** 적용한다 — 먼저 자르면 상위 N 밖의 개체는
-            검색으로도 닿을 수 없다. ``None`` 이면 자르지 않는다(호출자가 이미 잘라 온 경우).
+        q: 찾아오기 검색어. ``None``·공백뿐이면 "안 물어봤다"(집합을 만들지 않는다).
+        refine: 결과 내 재검색 낱말들. ``None``·공백뿐이면 좁히지 않는다.
 
     Returns:
-        ``(좁혀진 목록, 좁히기 전 건수)``. 뒤 값은 화면이 "지우면 N건"을 띄우는 재료다.
+        ``EntityScope`` — 목록·총계 질의에 그대로 넘길 화이트리스트 두 개와 좁히기 여부.
+
+    Raises:
+        EntitySearchUnavailable: 집합을 만들 수 없을 때(엔진·임베딩 연결 실패 · 되돌림 백엔드).
+            🔴 **전체로도 빈 결과로도 되돌리지 않는다** — 위 클래스 설명 참조.
     """
-    # 순서가 계약이다(2026-09-15 실측 — 「숭례문」이 색인에 있는데 화면에서 0건이었다):
-    #   ① 찾아오기(q)는 모수 전체를 본다 → ② 상한(limit)은 찾은 결과에 적용 →
-    #   ③ 골라내기(refine)는 이번 결과 안에서만. ①과 ③은 다른 일이다.
-    # 매칭은 코어 한 곳에 있다 — 표기 정규화 규칙이 두 벌이 되면 표기 해석이 갈린다.
-    string_hits = narrow_entities(items, q)
-    has_query = bool(q and q.strip())
+    q_keys = _matching_keys(q) if (q and q.strip()) else None
+    refine_keys = _matching_keys(refine) if (refine and refine.strip()) else None
+    if refine_keys is None:
+        # 좁히기가 없으면 결과 집합과 좁히기 이전 집합이 **같은 값**이다(총계도 한 번만 센다).
+        return EntityScope(uid_allow=q_keys, scope_allow=q_keys, refined=False)
+    if q_keys is None:
+        # 찾아온 적이 없으니 "지우면 몇 건"의 답은 조건 없는 목록 전체다 → scope 는 None(전체).
+        return EntityScope(uid_allow=refine_keys, scope_allow=None, refined=True)
+    return EntityScope(uid_allow=q_keys & refine_keys, scope_allow=q_keys, refined=True)
+
+
+def _matching_keys(query: str) -> set[tuple[str, str]]:
+    """낱말 하나 묶음을 엔진에 던져 **매칭 개체 키 집합**을 받는다(순위 아님).
+
+    판정은 전부 코어(`match_entity_keys`)가 한다 — 낱말끼리 AND·필드끼리 OR, 그리고 게이트를 넘긴
+    의미(kNN) 결과와의 합집합이다. 여기서 하는 일은 셋뿐이다: 되돌림 백엔드 차단, 질의 임베딩,
+    그리고 **연결 실패를 뜻이 분명한 예외로 바꾸기**.
+
+    Args:
+        query: 낱말들(공백 구분). 빈 값은 호출부가 이미 걸렀다 — 코어는 빈 질의를 ``ValueError``
+            로 막는다("0건"과 "안 물어봤다"가 섞이지 않게).
+
+    Returns:
+        ``{(entity_type, entity_uid), …}``. 매칭이 없으면 **빈 집합**(= 0건이며 전체가 아니다).
+
+    Raises:
+        EntitySearchUnavailable: 되돌림 백엔드이거나 임베딩·엔진에 닿지 못했을 때.
+    """
     backend = get_current_settings().mm_meta.search_backend
+    if backend != ENTITY_SEARCH_BACKEND:
+        _LOG.warning("개체 집합 판정 불가 — 되돌림 백엔드(search_backend=%r)에는 집합 경로가 없다",
+                     backend)
+        raise EntitySearchUnavailable(
+            f"개체 검색을 쓸 수 없습니다 — 되돌림 백엔드(MM_META_SEARCH_BACKEND={backend})는"
+            " 집합 판정을 지원하지 않습니다")
 
-    if backend == "opensearch" and has_query:
-        items = _fuse_via_opensearch(items, string_hits, q or "")
-    elif has_query and backend != "opensearch":
-        items = _overlay_semantic(items, string_hits, q or "", run_in_db)
-    else:
-        items = string_hits
-
-    if limit is not None:
-        items = items[:limit]
-    # 자른 뒤의 수여야 한다 — 화면은 이 값으로 "지우면 N건"을 띄운다.
-    scope_total = len(items)
-    if refine and refine.strip():
-        items = refine_rows(items, refine, fields_of=entity_refine_fields)
-    return items, scope_total
-
-
-def _fuse_via_opensearch(
-    items: Sequence[Mapping[str, Any]],
-    string_hits: list[dict[str, Any]],
-    q: str,
-) -> list[dict[str, Any]]:
-    """OpenSearch 융합 결과로 목록을 갈아치운다(실패 시 문자열 결과 반환).
-
-    Args:
-        items: 정형된 목록 전체. 융합 결과는 키만 주므로 화면에 보일 행을 여기서 되살린다.
-        string_hits: 문자열 매칭 결과(되돌림용).
-        q: 검색어.
-
-    Returns:
-        융합 목록, 또는 실패 시 ``string_hits``.
-    """
+    # 🔴 채널을 반드시 넘긴다. 개체 벡터는 배치가 활성 채널로 만들었다 — 다른 모델의 벡터를 견주면
+    #    유사도가 뜻을 잃는다(실측: 채널을 빼면 `발효`→훈민정음 0.09 처럼 무관한 결과가 나왔다).
     try:
-        from src.search.opensearch_sync import get_client
+        query_vector = embed_query_for_media_search(query, channel=active_embed_channel())
+    except (RuntimeError, ValueError) as exc:
+        # 임베딩 서버 장애와 엔진 장애는 **다른 원인**이라 문구를 나눈다(뭉개면 운영자가 엉뚱한 곳을 본다).
+        _LOG.warning("개체 질의 임베딩 실패: %s", exc, exc_info=True)
+        raise EntitySearchUnavailable("임베딩 서버에 연결할 수 없습니다") from exc
 
-        channel = active_embed_channel()
-        query_vector = embed_query_for_media_search(q, channel=channel)
-        hits = search_entities_hybrid(
-            get_client(),
-            search_constants.ENTITY_INDEX_DEFAULT,
-            query=q,
-            query_vector=query_vector,
-        )
-    except Exception:  # noqa: BLE001
-        _LOG.warning("개체 검색(OpenSearch) 실패 — 문자열 결과로 되돌린다", exc_info=True)
-        return string_hits
+    from src.search.opensearch_sync import get_client
 
-    by_key = {(it["entity_type"], it["entity_uid"]): it for it in items}
-    fused: list[dict[str, Any]] = []
-    for hit in hits:
-        row = by_key.get((str(hit.get("entity_type")), str(hit.get("entity_uid"))))
-        if row is None:
-            continue  # 목록에 없는 개체(임계 아래거나 색인이 낡음) — 목록이 정본이다
-        fused.append({**dict(row), **_reason_of(hit)})
-    return fused
-
-
-def _reason_of(hit: Mapping[str, Any]) -> dict[str, Any]:
-    """융합 결과 한 건의 "왜 걸렸나"를 응답 필드로 만든다.
-
-    문구는 **코어 상수를 그대로** 쓴다(백엔드가 문구를 새로 만들지 않는다). 함께 싣는 불린이 실질이다 —
-    화면이 "글자로 걸린 것 / 뜻으로 걸린 것"을 가르려고 문구를 파싱하면 문구를 고칠 때 조용히 깨진다.
-    둘 다 맞으면 글자를 앞세운다(더 확실한 근거).
-
-    Args:
-        hit: ``search_entities_hybrid`` 결과 한 건(``by_text``·``by_semantic``·``cosine``).
-
-    Returns:
-        ``{match_reason, by_text, by_semantic}``.
-    """
-    by_text = bool(hit.get("by_text"))
-    if by_text:
-        reason = REASON_TEXT_MATCH
-    else:
-        cosine = hit.get("cosine")
-        reason = (f"{REASON_SEMANTIC} ({float(cosine):.2f})"
-                  if isinstance(cosine, (int, float)) else REASON_SEMANTIC)
-    return {"match_reason": reason, "by_text": by_text,
-            "by_semantic": bool(hit.get("by_semantic"))}
-
-
-def _overlay_semantic(
-    items: Sequence[Mapping[str, Any]],
-    string_hits: list[dict[str, Any]],
-    q: str,
-    run_in_db: Callable[[Callable[[Any], Any]], Any],
-) -> list[dict[str, Any]]:
-    """되돌림 경로 — 문자열 결과 **위에** 의미 결과를 얹는다(실패 시 문자열 결과).
-
-    🔴 **채널을 반드시 넘긴다.** 개체 벡터는 배치가 활성 채널로 만들었다. 다른 모델의 벡터를 견주면
-    유사도가 뜻을 잃는다(실측: 채널을 빼면 `발효`→훈민정음 0.09 처럼 무관한 결과가 나왔다).
-
-    Args:
-        items: 정형된 목록 전체.
-        string_hits: 문자열 매칭 결과.
-        q: 검색어.
-        run_in_db: DB 작업 실행 함수.
-
-    Returns:
-        융합 목록, 또는 실패 시 ``string_hits``.
-    """
     try:
-        cfg = get_current_settings()
-        channel = active_embed_channel()
-        query_vector = embed_query_for_media_search(q, channel=channel)
-        ranked = run_in_db(
-            lambda conn: find_similar_entities(
-                conn, query_vector=query_vector, top_n=SEMANTIC_GATE_SAMPLE,
-                model_name=cfg.embed.api_model)
+        return match_entity_keys(
+            get_client(), search_constants.ENTITY_INDEX_DEFAULT,
+            query=query, query_vector=query_vector,
         )
-        # 정답이 없으면 아무것도 얹지 않는다 — 게이트 없이는 무관한 질의에도 상위 몇 건이 나간다.
-        semantic_hits = gate_semantic_hits(
-            ranked, eps=cfg.mm_meta.semantic_gate_eps, top_n=SEMANTIC_TOP_N,
-            enabled=cfg.mm_meta.semantic_gate_enabled)
-        fused = fuse_entity_results(items, string_hits, semantic_hits)
-    except Exception:  # noqa: BLE001
-        _LOG.warning("개체 의미 검색 실패 — 문자열 결과만 돌려준다", exc_info=True)
-        return string_hits
-    # 두 경로가 같은 계약을 내보내게 불린을 채운다. 문자열 결과가 항상 위에 오는 계층이라(090 설계)
-    # 이유 문구로 층을 가를 수 있다.
-    for row in fused:
-        is_semantic = str(row.get("match_reason") or "").startswith(REASON_SEMANTIC)
-        row["by_semantic"] = is_semantic
-        row["by_text"] = not is_semantic
-    return fused
+    except _OS_CONN_ERRORS as exc:
+        _LOG.warning("개체 집합 판정 — 검색 엔진 연결 실패: %s", exc, exc_info=True)
+        raise EntitySearchUnavailable("검색 엔진에 연결할 수 없습니다") from exc
 
 
 # ── 카드 ─────────────────────────────────────────────────────────────────────

@@ -38,10 +38,6 @@ _STREAM_CHUNK = 64 * 1024
 #    숫자를 믿지 않게 된다("적힌 숫자 = 누르면 나오는 수" 원칙 · 2026-09-08 판정으로 통일).
 #    값 자체는 코어에서 읽는다 — 판정 배치가 대상을 고를 때 같은 값을 써야 판정과 노출이 안 어긋난다.
 _MIN_BUNDLE_SIZE = MIN_BUNDLE_SIZE
-# 검색어가 있을 때 훑는 모수의 상한. 목록 상한(`limit`)과 다른 값이다 — 저쪽은 **화면에 몇 개를
-#   보일까**이고 이쪽은 **어디까지 뒤져 볼까**다. 코어 `list_entities` 가 상한을 필수로 받으므로
-#   무제한 대신 넉넉한 값을 준다(노출 임계가 모수를 이미 크게 줄여 실제 행은 훨씬 적다).
-_SEARCH_SCOPE_MAX = 10_000
 
 
 def _parse_names(raw: str | None) -> list[str]:
@@ -91,7 +87,13 @@ def _zip_response(
 
 @router.get("/mm-meta")
 def list_mm_meta(
-    q: str | None = Query(None, description="검색어 — 이름·근거 키워드·설명을 본다(미지정=전체 목록)"),
+    q: str | None = Query(
+        None,
+        description=(
+            "검색어(낱말 단위) — 이름·근거 키워드·설명·구성 자료를 본다. 글자가 겹치지 않아도"
+            " 뜻이 가까우면 함께 걸린다(의미 검색 · 게이트를 넘겼을 때). 미지정이면 전체 목록"
+        ),
+    ),
     entity_type: str | None = Query(None, description="종류(타입) 필터. 미지정이면 전체"),
     areas: str | None = Query(
         None,
@@ -103,16 +105,19 @@ def list_mm_meta(
     refine: str | None = Query(
         None,
         description=(
-            "결과 내 재검색(글자 좁히기). 공백으로 쪼갠 낱말이 **모두** 들어 있는 개체만 남긴다"
-            "(이름·근거 키워드·설명 대상). 서버에 다시 묻지 않고 **이번 결과 안에서만** 좁힌다."
+            "결과 내 재검색(낱말 좁히기 · 099). 공백으로 쪼갠 낱말이 **모두** 걸린 개체만 남긴다"
+            "(이름·근거 키워드·설명·구성 자료 대상). 🔴 **이번 쪽이 아니라 결과 집합 전체**를 서버가"
+            " 다시 좁힌다 — 상위 200 밖 개체도 좁히기로 닿는다. 질의(q)는 바꾸지 않으므로 결과는"
+            " 언제나 좁히기 전 결과의 부분집합이다"
         ),
     ),
     cursor: str | None = Query(
         None,
         description=(
             "이어 읽기 표식(책갈피 · 099). 직전 응답의 next_cursor 를 그대로 넘기면 그 다음부터 잇는다."
-            " 🔴 검색어(q)와는 함께 줄 수 없다 — 개체 검색은 아직 상위 몇 개를 고르는 순위 경로라"
-            " 이어받을 자리가 없다"
+            " 검색어(q)·재검색(refine)과 함께 써도 된다 — 정렬이 언제나 구성 자산 수라 이어받을 자리가 있다."
+            " 🔴 다만 q·refine 을 고치면 결과 집합 자체가 달라지므로 화면은 **커서를 버리고 처음부터**"
+            " 받아야 한다(서버는 옛 커서인지 알 수 없어 막지 못한다)"
         ),
     ),
     limit: int = Query(
@@ -120,44 +125,46 @@ def list_mm_meta(
         description=(
             "한 쪽에 담을 개체 수(구성 자산 수 상위). 더 보려면 next_cursor 로 다음 쪽을 받는다 —"
             " 상한을 키워 전량을 한 번에 받을 이유가 없다."
-            " 검색어(q)가 있을 때만 옛 뜻 그대로 **찾은 뒤 자르는 상한**이다"
+            " 검색어(q)가 있어도 뜻이 같다 — 검색·재검색은 서버가 집합으로 좁히고 쪽은 그 안에서 센다"
         ),
     ),
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
-    """개체 목록 — 구성 자산 수 내림차순.
+    """개체 목록·검색 — 구성 자산 수 내림차순(언제나 DB 정렬).
 
-    화면의 카드 그리드가 쓴다. **검색은 서버가 한다** — 화면이 전량을 받아 브라우저에서 거르는 방식은
-    "목록 전체가 이미 손에 있다"를 전제하므로 규모가 커지면 성립하지 않는다. 찾는 범위는 셋이다:
-    이름·근거 키워드·설명. 이름만으로는 닿지 못하는 개체가 있어서다('해녀'로 제주도를 찾는 식).
+    화면의 카드 그리드가 쓴다. **검색도 좁히기도 서버가 한다** — 화면이 전량을 받아 브라우저에서
+    거르는 방식은 "목록 전체가 이미 손에 있다"를 전제하므로 규모가 커지면 성립하지 않는다.
+
+    **찾아오기(q)와 재검색(refine)은 한 구조다**(099 §3-2a): 둘 다 엔진에 낱말을 던져 **매칭 개체
+    집합**을 얻고, 결과는 그 교집합이다. 정렬은 언제나 DB(구성 자산 수)이므로 **커서가 q 유무와
+    무관하게 성립**한다. refine 은 질의를 바꾸지 않으므로(집합 필터) 좁힌 결과는 언제나 좁히기 전의
+    부분집합이다 — 좁혔는데 없던 개체가 나타나는 일이 없다.
+
+    ⚠️ **프론트 계약**: ``q``·``refine`` 이 바뀌면 결과 집합이 통째로 달라지므로 화면은 **커서를
+    버리고 처음부터** 받아야 한다. 서버는 그 커서가 어떤 질의에서 나온 것인지 알 수 없어 막지 못한다
+    (커서에는 정렬 자리만 들어 있다).
 
     Args:
         q: 검색어. 앞뒤 공백은 무시하고 빈 문자열은 미지정과 같다.
         entity_type: 종류 필터.
         areas: 갈래 이름들(쉼표 구분 · AND).
-        refine: 결과 내 재검색 글자.
+        refine: 결과 내 재검색 낱말들(결과 집합 **전체**에 적용).
         limit: 한 쪽에 보일 개체 수.
-        cursor: 이어 읽기 표식(직전 응답의 ``next_cursor``). ``q`` 와 함께 주면 400.
+        cursor: 이어 읽기 표식(직전 응답의 ``next_cursor``). ``q``·``refine`` 과 함께 쓸 수 있다.
         principal: 인증 주체.
 
     Returns:
         ``{items, total, scope_total, next_cursor}``. ``refine`` 을 준 요청에만 ``refine`` 이 더
-        실린다. 목록 경로(``q`` 없음)의 ``total``·``scope_total`` 은 **모수**다 — 돌려준 개수가 아니라
-        조건에 맞는 전부(화면의 "N건 중 M건"). ``next_cursor`` 가 ``None`` 이면 마지막 쪽이다(더 없다).
-        각 항목의 ``confirmed_count`` 는 화면에서 **"확인된 N건"** 으로 표기한다(완전성을 약속하지 않는다).
+        실린다. ``total``(좁히기 **이후**)·``scope_total``(좁히기 **이전** · "지우면 N건")은 경로와
+        무관하게 **모수**다 — 돌려준 개수가 아니라 조건에 맞는 전부. ``next_cursor`` 가 ``None``
+        이면 마지막 쪽이다. 각 항목의 키는 **경로와 무관하게 같다**(목록·검색 모두
+        ``shape_list_item`` 한 모양) — 099 전까지 검색 경로에만 실리던 ``match_reason``·``by_text``·
+        ``by_semantic`` 은 없어졌다. 집합 판정에는 순위·per-건 근거가 없기 때문이다(순서는 DB 정렬).
 
     Raises:
-        HTTPException: 커서가 깨졌거나 정렬이 어긋나면 400 · ``cursor`` 와 ``q`` 를 함께 주면 400.
+        HTTPException: 커서가 깨졌거나 정렬이 어긋나면 400 · 집합 판정에 실패하면 503
+            (엔진·임베딩 연결 실패 · 되돌림 백엔드). 🔴 **전체 목록으로 되돌리지 않는다**.
     """
-    has_query = bool(q and q.strip())
-    # 🔴 커서와 검색어를 함께 받지 않는다. 개체 검색은 아직 **순위**(상위 몇 개)라 "그 다음부터"를
-    #    가리킬 자리가 없다 — 조용히 무시하면 화면이 같은 쪽을 계속 받으며 끝나지 않는다.
-    #    검색을 집합 판정으로 바꾼 뒤에 열린다(099 G4).
-    if cursor is not None and has_query:
-        raise HTTPException(
-            status_code=400,
-            detail="cursor 와 q 는 함께 줄 수 없습니다 — 개체 검색은 아직 이어 읽기를 지원하지 않습니다",
-        )
     after_count: int | None = None
     after_uid: str | None = None
     if cursor is not None:
@@ -167,58 +174,51 @@ def list_mm_meta(
             # 입력 오류이지 서버 오류가 아니다 — **조용히 다른 자리에서 이어 주지 않는다**.
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     picked_areas = _parse_names(areas)
-    # 🔴 검색어가 있으면 **상한 밖까지** 모수를 가져온다 — 먼저 잘라 놓고 그 안에서 찾으면
-    #    상위 N 밖의 개체는 검색으로도 닿을 수 없다(2026-09-15 실측: 「숭례문」이 색인에 있는데 0건).
-    #    상한은 `search_and_refine` 이 **찾은 뒤에** 적용한다. 모수 자체는 노출 임계
-    #    (`_MIN_BUNDLE_SIZE`)가 이미 줄여 놓아 무거워지지 않는다.
-    scope = _SEARCH_SCOPE_MAX if has_query else limit
+    # 🔴 집합 판정이 **DB 읽기보다 먼저**다 — 화이트리스트를 SQL 에 얹어야 상한 밖 개체도 검색·좁히기로
+    #    닿는다(2026-09-15 실측: 「숭례문」이 색인에 있는데 상위 200 을 먼저 자르는 바람에 0건이었다).
+    #    엔진 왕복이라 DB 트랜잭션 **밖**에서 한다(커넥션을 쥔 채 네트워크를 기다리지 않게).
+    try:
+        scope = mm_meta.search_and_refine(q=q, refine=refine)
+    except mm_meta.EntitySearchUnavailable as exc:
+        # ⛔ 여기서 "필터 없음"으로 되돌리면 검색했는데 전량이 나가고, 빈 집합으로 접으면 "자료가 없다"와
+        #    "검색이 죽었다"가 같아진다. 둘 다 사용자를 속이므로 끊는다(파일 검색과 같은 규율).
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    def _read(conn: Any) -> tuple[list[dict[str, Any]], int | None]:
-        """이 쪽의 행과 모수를 **한 트랜잭션**에서 읽는다(두 값이 서로 다른 시점을 말하지 않게).
+    def _read(conn: Any) -> tuple[list[dict[str, Any]], int, int]:
+        """이 쪽의 행과 두 모수를 **한 트랜잭션**에서 읽는다(세 값이 서로 다른 시점을 말하지 않게).
 
         Args:
             conn: DB 커넥션(``_run_in_db`` 가 넘긴다).
 
         Returns:
-            ``(이 쪽의 목록, 모수)``. 검색 경로에서는 모수를 세지 않으므로 뒤 값이 ``None`` 이다.
+            ``(이 쪽의 목록, 좁히기 이후 모수, 좁히기 이전 모수)``.
         """
         page = mm_meta.fetch_list(
             conn, entity_type=entity_type, areas=picked_areas,
-            min_bundle_size=_MIN_BUNDLE_SIZE, limit=scope,
-            after_count=after_count, after_uid=after_uid,
+            min_bundle_size=_MIN_BUNDLE_SIZE, limit=limit,
+            after_count=after_count, after_uid=after_uid, uid_allow=scope.uid_allow,
         )
-        # ⛔ 검색 경로는 모수를 세지 않는다 — 개체 검색이 아직 **순위**(상위 몇 개)라 "조건에 맞는
-        #    전부"가 몇 개인지 셀 방법이 없다. 목록과 다른 수를 내보내면 화면이 거짓말을 한다(099 G4).
-        parent = None if has_query else mm_meta.fetch_total(
+        after = mm_meta.fetch_total(
             conn, entity_type=entity_type, areas=picked_areas,
-            min_bundle_size=_MIN_BUNDLE_SIZE,
+            min_bundle_size=_MIN_BUNDLE_SIZE, uid_allow=scope.uid_allow,
         )
-        return page, parent
+        # 좁히기가 없으면 두 모수가 **같은 값**이다 — 같은 수를 두 번 묻지 않는다.
+        before = after if not scope.refined else mm_meta.fetch_total(
+            conn, entity_type=entity_type, areas=picked_areas,
+            min_bundle_size=_MIN_BUNDLE_SIZE, uid_allow=scope.scope_allow,
+        )
+        return page, after, before
 
-    rows, parent_total = _infra._run_in_db(_read)  # type: ignore[misc]
-    # 🔴 다음 책갈피는 **DB 가 준 쪽 그대로**에서 만든다 — 글자 좁히기로 걸러낸 뒤의 행으로 만들면
-    #    걸러진 꼬리를 다음 쪽이 건너뛴다(누락). 검색 경로는 아직 커서가 없어 언제나 None 이다.
-    next_cursor = None if has_query else mm_meta.next_entity_cursor(rows, page_size=limit)
-    items, scope_total = mm_meta.search_and_refine(
-        rows, q=q, refine=refine, run_in_db=_infra._run_in_db,  # type: ignore[arg-type]
-        limit=limit,
-    )
-    refined = bool(refine and refine.strip())
-    # 건수의 뜻(plan 099 §1-⑥): `scope_total` = 좁히기 **이전** 집합 크기 · `total` = 좁히기 **이후**.
-    #   - 목록 경로는 둘 다 **모수**다. 한 쪽만 돌려줘도 "전체 몇 건"을 정확히 말한다.
-    #   - ⚠️ 좁히기(`refine`)가 걸린 목록의 `total` 은 아직 **이 쪽 안에서 좁힌 수**다. 좁히기가
-    #     파이썬에서 쪽 단위로 돌기 때문이며, 서버 질의로 옮기는 것은 099 G5 다. 그때 모수가 된다.
-    #   - 검색 경로(`q`)는 **현행 그대로** — `total` 은 돌려준 개수, `scope_total` 은 상한으로 자른 뒤
-    #     좁히기 전 개수다(모수 아님 · G4 에서 집합 판정으로 바뀌면 모수가 된다).
-    if parent_total is not None:
-        scope_total = parent_total
-        total = len(items) if refined else parent_total
-    else:
-        total = len(items)
+    rows, total, scope_total = _infra._run_in_db(_read)  # type: ignore[misc]
+    # 다음 책갈피는 **DB 가 준 쪽 그대로**에서 만든다. 좁히기는 이미 SQL 이 적용했으므로 여기서 행이
+    # 더 줄어들 일이 없다(파이썬이 다시 거르면 걸러진 꼬리를 다음 쪽이 건너뛰어 누락이 났다).
     body: dict[str, Any] = {
-        "items": items, "total": total, "scope_total": scope_total, "next_cursor": next_cursor,
+        "items": rows,
+        "total": total,
+        "scope_total": scope_total,
+        "next_cursor": mm_meta.next_entity_cursor(rows, page_size=limit),
     }
-    if refined:
+    if scope.refined:
         body["refine"] = refine
     return body
 

@@ -10,8 +10,10 @@
 ④ **``total``·``scope_total`` 은 모수**다 — 돌려준 개수가 아니다(200개만 받아 놓고 "200건"이라 적던 오해).
 ⑤ **커서 없는 기존 호출은 그대로** 동작한다(회귀).
 
-🔴 이번 범위(G2)는 **검색어 없는 목록 경로와 총계**뿐이다. ``q`` 가 있는 경로는 현행 그대로이며
-   그 사실 자체를 테스트로 못 박는다(G4 에서 열린다).
+⚠️ **099 G5 로 바뀐 것 둘**(G2 가 임시로 못 박았던 자리):
+   - ``cursor`` + ``q`` 400 제약이 **풀렸다** — 정렬이 언제나 DB(구성 자산 수)라 이어 읽을 자리가 있다.
+   - 좁히기(``refine``)가 **서버 질의**로 올라가 ``total`` 이 쪽 안의 수가 아니라 **모수**가 됐다.
+   통합 집합 구조 자체(교집합·건수·엔진 실패)는 `test_mm_meta_set_search.py` 가 본다.
 """
 
 from __future__ import annotations
@@ -50,6 +52,20 @@ _TABLE: list[dict[str, Any]] = sorted(
 )
 
 
+def _allowed(uid_allow: set[tuple[str, str]] | None) -> list[dict[str, Any]]:
+    """화이트리스트를 적용한 행들(정렬 순서 유지 · SQL 과 같은 규칙).
+
+    Args:
+        uid_allow: 개체 화이트리스트. 🔴 ``None`` = 조건 없음(전체) · 빈 집합 = **0건**.
+
+    Returns:
+        조건에 맞는 행 목록.
+    """
+    if uid_allow is None:
+        return _TABLE
+    return [r for r in _TABLE if (r["entity_type"], r["entity_uid"]) in uid_allow]
+
+
 def _fake_fetch_list(
     _conn: object,
     *,
@@ -59,6 +75,7 @@ def _fake_fetch_list(
     limit: int = 200,
     after_count: int | None = None,
     after_uid: str | None = None,
+    uid_allow: set[tuple[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """코어 keyset 목록 대역 — 실제 SQL 과 **같은 조건**으로 이어 읽는다.
 
@@ -70,6 +87,7 @@ def _fake_fetch_list(
         limit: 이 쪽의 행 수.
         after_count: 직전 쪽 마지막 개체의 구성 자산 수.
         after_uid: 직전 쪽 마지막 개체의 표기 키.
+        uid_allow: 찾아오기·좁히기가 정한 개체 화이트리스트(099 G5).
 
     Returns:
         정렬(수 내림차순 → 표기 키 오름차순) 기준 다음 ``limit`` 행.
@@ -79,7 +97,7 @@ def _fake_fetch_list(
     """
     if (after_count is None) != (after_uid is None):
         raise ValueError("이어읽기 책갈피는 after_count·after_uid 를 함께 줘야 한다")
-    rows = _TABLE
+    rows = _allowed(uid_allow)
     if after_count is not None:
         rows = [
             r for r in rows
@@ -108,19 +126,39 @@ class _RouteCase(unittest.TestCase):
         self.addCleanup(env.stop)
         self.total_kwargs: dict[str, Any] = {}
         self.total_calls = 0
+        self.engine_calls: list[str] = []
 
         def _fake_fetch_total(_conn: object, **kw: Any) -> int:
-            """노출 개체 **모수** 대역 — 목록이 한 쪽만 줘도 이 값이 총계다."""
+            """노출 개체 **모수** 대역 — 목록이 한 쪽만 줘도 이 값이 총계다.
+
+            화이트리스트가 걸리면 그 안에서 센다(목록과 같은 조건이어야 "N건 중 M건"이 참말이 된다).
+            대역 표는 10건뿐이라, 조건 없는 모수만 실측값(822)으로 흉내 낸다.
+            """
             self.total_calls += 1
             self.total_kwargs.update(kw)
-            return _TOTAL
+            allow = kw.get("uid_allow")
+            return _TOTAL if allow is None else len(_allowed(allow))
+
+        def _fake_match(_client: object, _index: str, **kw: Any) -> set[tuple[str, str]]:
+            """엔진 집합 판정 대역 — 표기 키에 질의 글자가 든 개체를 돌려준다(099 G5).
+
+            실제 판정은 형태소(낱말) 단위이지만, 여기서 보는 것은 **집합이 어디에 쓰이는가**라
+            대역은 단순 포함으로 충분하다. 매칭 규칙 자체는 코어 단위가 본다.
+            """
+            q = str(kw.get("query") or "")
+            self.engine_calls.append(q)
+            return {(r["entity_type"], r["entity_uid"]) for r in _TABLE if q in r["entity_uid"]}
 
         for target, repl in (
             ("service.api._infra._run_in_db", lambda fn: fn(object())),
             ("service.api.routes_mm_meta.mm_meta.fetch_total", _fake_fetch_total),
             ("service.portal.access_project.fetch_access_tiers", lambda *_a, **_k: {}),
             ("service.api.routes_mm_meta.mm_meta.fetch_list", _fake_fetch_list),
+            ("service.portal.mm_meta.match_entity_keys", _fake_match),
+            ("service.portal.mm_meta.embed_query_for_media_search", lambda *_a, **_k: [0.0]),
+            ("service.portal.mm_meta.active_embed_channel", lambda: "st_api"),
             ("service.portal.mm_meta.get_current_settings", _cfg),
+            ("src.search.opensearch_sync.get_client", lambda: object()),
         ):
             p = patch(target, repl)
             p.start()
@@ -186,12 +224,13 @@ class TestCursorPaging(_RouteCase):
         resp = self.client.get("/mm-meta", params={"limit": 3, "cursor": token})
         self.assertEqual(resp.status_code, 400, resp.text)
 
-    def test_커서와_검색어를_함께_주면_400_이다(self) -> None:
-        # 개체 검색은 아직 순위(top_n)라 이어 읽을 자리가 없다 — G4 뒤에 열린다.
-        first = self._get(limit=3)
-        resp = self.client.get(
-            "/mm-meta", params={"limit": 3, "q": "제주", "cursor": first["next_cursor"]})
-        self.assertEqual(resp.status_code, 400, resp.text)
+    def test_커서와_검색어를_함께_줄_수_있다(self) -> None:
+        # 099 G5(T022a) — G2 가 임시로 막아 둔 제약을 푼다. 검색이 **집합 판정**이 되어 정렬이 언제나
+        # DB(구성 자산 수)라, "그 다음부터"를 가리킬 자리가 생겼다.
+        first = self._get(limit=3, q="e0")
+        self.assertEqual([i["entity_uid"] for i in first["items"]], ["e00", "e01", "e02"])
+        second = self._get(limit=3, q="e0", cursor=first["next_cursor"])
+        self.assertEqual([i["entity_uid"] for i in second["items"]], ["e03", "e04", "e05"])
 
 
 class TestParentTotals(_RouteCase):
@@ -220,26 +259,25 @@ class TestParentTotals(_RouteCase):
         self.assertEqual(second["total"], _TOTAL)
         self.assertEqual(second["scope_total"], _TOTAL)
 
-    def test_좁히기가_걸리면_모수가_scope_total_이고_total_은_줄어든다(self) -> None:
+    def test_좁히기가_걸리면_모수가_scope_total_이고_total_도_모수다(self) -> None:
         body = self._get(limit=10, refine="e00")
         self.assertEqual([i["entity_uid"] for i in body["items"]], ["e00"])
         self.assertEqual(body["scope_total"], _TOTAL, "지우면 몇 건인지가 scope_total 이다")
-        # ⚠️ 좁히기가 걸린 total 은 아직 **이 쪽 안에서 좁힌 수**다 — 좁히기가 파이썬에서 쪽 단위로
-        #    돌기 때문이고, 서버 질의로 옮기면(099 G5) 모수가 된다. 지금 뜻을 못 박아 둔다.
+        # 🔴 099 G5 — 좁히기가 서버 질의로 올라가 total 이 **모수**가 됐다(종전에는 이 쪽 안에서
+        #    좁힌 수라, 쪽을 넘기면 같은 좁히기인데 다른 수가 찍혔다).
         self.assertEqual(body["total"], 1)
         self.assertEqual(body["refine"], "e00")
 
-    def test_검색어가_있으면_현행대로_돌려준_개수를_센다(self) -> None:
-        # ⛔ 개체 검색은 아직 상위 몇 개를 고르는 순위 경로라 모수를 낼 수 없다(099 G4 에서 연다).
-        #    그때까지는 **모수 조회를 아예 하지 않는다** — 목록과 다른 수를 내보내면 화면이 거짓말을 한다.
-        with patch(
-            "service.api.routes_mm_meta.mm_meta.search_and_refine",
-            lambda rows, **kw: ([dict(rows[0])], 7),
-        ):
-            body = self._get(limit=3, q="제주")
-        self.assertEqual(body["total"], 1)
-        self.assertEqual(body["scope_total"], 7)
-        self.assertEqual(self.total_calls, 0, "검색 경로는 모수를 세지 않는다(G4 전)")
+    def test_검색어가_있어도_총계는_모수다(self) -> None:
+        # 🔴 099 G5 — 검색이 집합 판정이 되어 "조건에 맞는 전부"를 셀 수 있다(G2 까지는 돌려준
+        #    개수였다). 한 쪽만 받아도 total 은 찾은 전부를 말한다.
+        body = self._get(limit=3, q="e0")
+        self.assertEqual(len(body["items"]), 3)
+        self.assertEqual(body["total"], 10, "표기 키에 e0 가 든 개체 전부")
+        self.assertEqual(body["scope_total"], 10, "좁히기가 없으면 둘이 같다")
+        self.assertEqual(self.total_kwargs["uid_allow"],
+                         {("장소", f"e{i:02d}") for i in range(10)},
+                         "총계도 목록과 **같은 화이트리스트**로 센다")
 
 
 class TestDrainAndRegression(_RouteCase):
@@ -260,9 +298,10 @@ class TestDrainAndRegression(_RouteCase):
         self.assertEqual(self._drain(limit=3), self._drain(limit=3))
 
     def test_좁히기가_걸려도_꼬리_개체까지_닿는다(self) -> None:
-        # 🔴 다음 책갈피를 **좁힌 뒤**의 행으로 만들면 1쪽에서 0건이 되어 커서가 끊기고, 마지막 쪽에
-        #    있는 e09 에는 영영 닿지 못한다. DB 가 준 쪽 기준이어야 한다.
+        # 🔴 종전에는 좁히기가 파이썬이라 1쪽에서 0건이 되면 커서가 끊겨 마지막 쪽의 e09 에 영영
+        #    닿지 못했다. 이제는 SQL 이 좁히므로 첫 쪽에 바로 나온다(099 G5).
         self.assertEqual(self._drain(limit=2, refine="e09"), ["e09"])
+        self.assertEqual(self.engine_calls, ["e09"], "좁히기도 엔진 집합 판정을 거친다")
 
     def test_커서_없는_기존_호출이_그대로_동작한다(self) -> None:
         # 회귀 — 프론트가 종전처럼 limit 만 주고 부르는 경우.

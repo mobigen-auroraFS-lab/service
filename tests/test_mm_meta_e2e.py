@@ -258,21 +258,73 @@ class TestMmMetaE2E(unittest.TestCase):
                 self.assertEqual(a.text, b.text)
 
     def test_좁히기는_결과를_줄이고_지우면_돌아온다(self) -> None:
+        """좁히기 = 결과 집합 **전체**에 얹는 필터(099 G5) — 모수는 그대로고 결과만 준다.
+
+        ⚠️ **099 G5 로 확인 방법이 바뀌었다.** 좁히기가 파이썬 부분 문자열에서 **엔진 낱말 매칭**으로
+        바뀌면서 두 가지가 달라졌다: ① 두 글자 토막(`숭례`)은 더 이상 걸리지 않는다(낱말 단위) ·
+        ② 매칭 필드에 **구성 자료 요약**이 포함돼 응답에 실리지 않는 글자로도 걸릴 수 있다. 그래서
+        "모든 결과 행에 그 글자가 있다"를 단언할 수 없고, 대신 **이름 낱말로 좁히면 그 개체가 남는다**를
+        본다(단언의 힘은 같고, 참인 명제로 바꾼 것이다).
+        """
         plain = self.client.get("/mm-meta", params={"limit": 50}).json()
         items = plain["items"]
         if not items:
             self.skipTest("노출 개체가 없다")
-        token = items[0]["name"][:2]
+        target = items[0]
+        token = str(target["name"]).split()[0]
         body = self.client.get("/mm-meta", params={"limit": 50, "refine": token}).json()
         self.assertLessEqual(body["total"], body["scope_total"])
         # 🔴 099 — ``scope_total`` 은 쪽 크기가 아니라 **모수**다("지우면 N건"). 종전에는 돌려준
         #    개수(50)와 같았고, 그래서 화면에 "50건"이 찍혔다.
         self.assertEqual(body["scope_total"], plain["total"])
-        self.assertGreaterEqual(body["scope_total"], len(items))
+        self.assertGreaterEqual(body["scope_total"], body["total"])
         self.assertEqual(body["refine"], token)
-        for i in body["items"]:
-            haystack = " ".join([i["name"], i["description"] or "", *i["keywords"]])
-            self.assertIn(token, haystack)
+        self.assertIn((target["entity_type"], target["entity_uid"]),
+                      [(i["entity_type"], i["entity_uid"]) for i in body["items"]],
+                      "제 이름 낱말로 좁혔는데 자기 자신이 빠지면 매칭이 깨진 것이다")
+
+    def test_SC002_상위_200_밖_개체도_좁히기로_나온다(self) -> None:
+        """SC-002 — 201위 이후 개체를 그 이름 낱말로 좁혀 불러낸다(상한 밖 도달).
+
+        종전에는 좁히기가 **이번 쪽**만 봐서 상위 200 밖 개체에는 영영 닿지 못했다.
+        """
+        first = self.client.get("/mm-meta", params={"limit": 200}).json()
+        if first["next_cursor"] is None:
+            self.skipTest("노출 개체가 200건 이하라 '상한 밖'이 없다")
+        second = self.client.get(
+            "/mm-meta", params={"limit": 200, "cursor": first["next_cursor"]}).json()
+        if not second["items"]:
+            self.skipTest("둘째 쪽이 비었다")
+        target = second["items"][0]  # 201위
+        head = [(i["entity_type"], i["entity_uid"]) for i in first["items"]]
+        self.assertNotIn((target["entity_type"], target["entity_uid"]), head)
+
+        token = str(target["name"]).split()[0]
+        body = self.client.get("/mm-meta", params={"limit": 200, "refine": token}).json()
+        self.assertIn((target["entity_type"], target["entity_uid"]),
+                      [(i["entity_type"], i["entity_uid"]) for i in body["items"]],
+                      "상위 200 밖 개체가 좁히기로 나와야 한다(SC-002)")
+        self.assertEqual(body["scope_total"], first["total"], "지우면 전체 모수로 돌아간다")
+
+    def test_SC003_좁힌_결과는_좁히기_전의_부분집합이다(self) -> None:
+        """SC-003 — 같은 ``q`` 로 좁히기 유/무를 견준다(게이트 재판정 없음의 실측 증명)."""
+        seed = self.client.get("/mm-meta", params={"limit": 1}).json()["items"]
+        if not seed:
+            self.skipTest("노출 개체가 없다")
+        q = str(seed[0]["name"]).split()[0]
+        plain = self.client.get("/mm-meta", params={"limit": _LIST_MAX, "q": q}).json()
+        if not plain["items"]:
+            self.skipTest(f"질의 {q!r} 로 찾은 개체가 없다")
+        keywords = [k for i in plain["items"] for k in i["keywords"] if k and k != q]
+        if not keywords:
+            self.skipTest("좁힐 낱말을 고를 근거 키워드가 없다")
+        refined = self.client.get(
+            "/mm-meta", params={"limit": _LIST_MAX, "q": q, "refine": keywords[0]}).json()
+        before = {(i["entity_type"], i["entity_uid"]) for i in plain["items"]}
+        after = {(i["entity_type"], i["entity_uid"]) for i in refined["items"]}
+        self.assertTrue(after <= before, f"좁혔는데 없던 개체가 나타났다: {after - before}")
+        self.assertEqual(refined["scope_total"], plain["total"], "좁히기 이전 모수는 그대로다")
+        self.assertLessEqual(refined["total"], refined["scope_total"])
 
     # ── ⑧ 커서 순회(099 SC-001) ──────────────────────────────────────────────
     def _drain(self, page: int) -> list[tuple[str, str]]:
