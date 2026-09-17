@@ -47,7 +47,6 @@ from src.search.file_search import (
     search_files,
 )
 from src.search.query_embed import embed_query_for_media_search
-from src.search.refine import refine_rows
 from src.search.search_filters import applied_date_bounds, parse_search_filters
 
 router = APIRouter()
@@ -116,8 +115,10 @@ def file_search(
     refine: str | None = Query(
         None,
         description=(
-            "결과 내 재검색(글자 좁히기). 공백으로 쪼갠 낱말이 **모두** 든 행만 남긴다."
-            " 🔴 **이번 페이지 안에서만** 좁힌다 — 서버에 다시 묻지 않으므로 전체 개수는 그대로다"
+            "결과 내 재검색(좁히기). 공백으로 쪼갠 낱말이 **모두** 든 자산만 남긴다."
+            " 🔴 **결과 집합 전체**에 걸린다(099) — 몇 쪽에 있든 걸리며 total 도 함께 줄어든다."
+            " 🔴 **낱말 단위**다: `치찌` 로 `김치찌개` 는 걸리지 않고, `김치를` 은 `김치` 에 걸린다."
+            " refine 을 바꾸면 집합이 바뀌므로 cursor 는 버리고 처음부터 받아야 한다"
         ),
     ),
     sort: str = Query(
@@ -151,7 +152,7 @@ def file_search(
         file_ext: 확장자 필터.
         created_from: 생성일 하한.
         created_to: 생성일 상한.
-        refine: 이번 페이지를 글자로 좁힐 말.
+        refine: 결과 집합을 좁힐 말(낱말 단위 · 낱말끼리 「그리고」). 파일명·요약·태그를 본다.
         sort: 정렬 이름(닫힌 목록 · 모르는 값은 422). 어느 정렬이든 집합은 같고 순서만 바뀐다.
             훑기에서 relevance 면 created_desc 로 갈아 끼운다(관련도가 뜻이 없으므로).
         offset: 페이지 시작 위치(얕은 페이지용). cursor 와 함께 주면 400.
@@ -161,8 +162,10 @@ def file_search(
         principal: 인증 주체.
 
     Returns:
-        ``{query, items, total, total_capped, offset, limit, sort, next_cursor, applied, facets,
-        filters, refine?}``. ``applied`` 는 이번 조회에 쓰인 값 전부(재현성 기록).
+        ``{query, items, total, scope_total, total_capped, offset, limit, sort, next_cursor,
+        applied, facets, filters, refine?}``. ``applied`` 는 이번 조회에 쓰인 값 전부(재현성 기록).
+        ``total`` 은 좁히기 **이후**, ``scope_total`` 은 좁히기 **이전** 결과 집합 크기이며 **둘 다
+        모수**다(돌려준 개수가 아니다 · spec 099 §3-6). refine 이 없으면 둘이 같다.
         ``total_capped`` 가 참이면 ``total`` 은 "이 수 이상"이고, ``next_cursor`` 가 ``None`` 이면 더 없다.
         ``facets`` 는 ``{축: [{key, label, count}]}`` — ``key`` 를 되보내면 그 수만큼 나온다.
 
@@ -287,6 +290,7 @@ def file_search(
                 get_client(), get_current_settings().opensearch.index,
                 query=q, query_vector=query_vector, filters=filters,
                 sort=sort, cursor=cursor, size=limit, facet_size=FACET_SIZE_DEFAULT,
+                refine=refine,
             )
         else:
             found = search_files(
@@ -295,6 +299,7 @@ def file_search(
                 from_=page_from, size=page_size, sort=sort,
                 rank_depth=RANK_DEPTH_DEFAULT, total_cap=TOTAL_CAP_DEFAULT,
                 sort_depth=SORT_DEPTH_DEFAULT, facet_size=FACET_SIZE_DEFAULT,
+                refine=refine,
             )
     except CursorError as exc:
         # 커서가 깨졌거나 정렬이 어긋났다 — **조용히 다른 자리에서 이어 주지 않는다**(097 §2-3).
@@ -333,19 +338,23 @@ def file_search(
 
     items: list[dict[str, Any]] = _infra._run_in_db(_finish)  # type: ignore[assignment]
 
-    # 결과 내 재검색은 **이번 페이지 안에서만** 좁힌다(091 과 같은 규율 — 서버에 다시 묻지 않는다).
-    # 그래서 total 은 건드리지 않는다: "전체 340건 중 이 페이지에서 12건" 이 정확한 뜻이다.
-    page_total = len(items)
+    # 🔴 여기서 한 번 더 거르지 않는다(099 G3). 좁히기는 이미 **검색 엔진 질의 절**로 걸렸고,
+    #   엔진은 낱말(형태소) 단위로 맞춘다. 파이썬 부분 문자열로 다시 거르면 두 판정이 어긋나
+    #   엔진이 맞다고 한 행을 버린다 — 예를 들어 `김치를` 은 색인의 `김치` 에 맞지만(조사 제거)
+    #   요약 글자에는 `김치를` 이 없어 탈락한다. 판정은 **한 곳에서 한 번만** 한다.
     refine_applied = bool(refine and refine.strip())
-    if refine_applied:
-        items = refine_rows(items, refine, fields_of=_refine_fields)
 
     # 기간 되돌림은 코어가 검색 절에 넣는 값과 **같은 계산**으로(원문이 아니라 적용값).
     applied_dates = applied_date_bounds(filters)
     body: dict[str, Any] = {
         "query": q,
         "items": items,
+        # 🔴 두 건수 모두 **엔진이 센 모수**다(spec 099 §3-6) — 돌려준 개수가 아니다.
+        #   `scope_total` = 좁히기 이전("지우면 N건") · `total` = 좁히기 이후("좁히면 M건").
+        #   무한 스크롤에서는 "화면에 보이는 수"가 계속 늘어 고정 기준이 못 되므로, 091 이 쓰던
+        #   "이 페이지에서 몇 건" 대신 모수 두 개로 말한다.
         "total": found["total"],
+        "scope_total": found["scope_total"],
         "total_capped": found["total_capped"],
         # 커서 경로에는 "몇 번째부터"가 없다 — 그 자리에 책갈피를 준다.
         #   깊이 밖에서는 코어에 0 을 떠봤으므로 **요청한 자리**를 그대로 돌려준다.
@@ -392,30 +401,8 @@ def file_search(
         },
     }
     if refine_applied:
-        body["refine"] = {"q": refine, "page_total": page_total, "shown": len(items)}
+        # ``shown`` 은 **이 쪽에 실제로 실린 행 수**(권한 가리기 뒤)다 — 모수는 위 두 값이 말한다.
+        #   종전 ``page_total``(이번 페이지의 좁히기 전 행 수)은 모수가 아니라 없앴다.
+        body["refine"] = {"q": refine, "shown": len(items)}
     return body
 
-
-def _refine_fields(row: Any) -> list[str]:
-    """결과 내 재검색이 **글자를 찾아볼 필드** — 표에 보이는 값만 본다.
-
-    화면 카드·표에 실제로 보이는 것으로 걸러진다는 계약이 서면 사용자가 결과에 놀라지 않는다
-    (091 이 정한 규율 그대로).
-
-    Args:
-        row: 응답 행. 없거나 타입이 다른 축은 없는 것으로 본다.
-
-    Returns:
-        빈 값을 제외한 문자열 목록(파일명 → 요약 → 태그 순).
-    """
-    out: list[str] = []
-    name = row.get("file_name")
-    if isinstance(name, str) and name:
-        out.append(name)
-    summary = row.get("summary")
-    if isinstance(summary, str) and summary:
-        out.append(summary)
-    tags = row.get("tags")
-    if isinstance(tags, (list, tuple)):
-        out.extend(t for t in tags if isinstance(t, str) and t)
-    return out

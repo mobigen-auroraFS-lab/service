@@ -51,6 +51,8 @@ def _found(**over: Any) -> dict[str, Any]:
                   "tags": ["김치"], "topics": ["음식·요리"], "subtopics": ["한식"],
                   "topic_pairs": []}],
         "total": 3,
+        # 099 G3 — 코어가 좁히기 **이전** 모수를 함께 준다. refine 이 없으면 ``total`` 과 같다.
+        "scope_total": 3,
         "total_capped": False,
         "facets": {"topic": [{"key": "음식·요리", "label": "음식·요리", "count": 3}],
                    "subtopic": [], "tag": [], "modality": []},
