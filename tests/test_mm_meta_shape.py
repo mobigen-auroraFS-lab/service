@@ -3,9 +3,15 @@
 무엇을 봉인하나:
 ① 판단은 전부 코어 함수를 **그대로** 참조한다(서비스가 사본을 만들지 않는다 · 093 규칙).
 ② 화면 정책은 여기 있다 — 근거 키워드 상위 몇 개·짧은 것부터, 응답 키 이름, 상한·파일명.
-③ 검색 경로 분기와 **되돌림**: 검색 엔진·임베딩이 실패해도 문자열 결과는 나간다.
+③ 찾아오기·좁히기의 **집합 판정**(099 G5): 둘 다 엔진을 거쳐 개체 키 집합이 되고, 판정하지 못하면
+   **되돌리지 않고 끊는다**(전체도 빈 결과도 아니다).
 ④ 좁히기 칩의 세는 범위가 축마다 다르다(종류는 조건 없음 · 갈래는 종류+고른 갈래 적용).
 ⑤ 카드는 "없는 개체"(None→404)와 "빈 개체"(total 0)를 가른다.
+
+⚠️ **③ 은 099 G5 에서 뒤집힌 계약이다.** 종전에는 엔진이 죽으면 파이썬 문자열 매칭 결과로 되돌렸다
+(`narrow_entities`·`refine_rows`). 새 구조에서 같은 되돌림은 화이트리스트가 ``None``(=필터 없음)이
+되어 "검색했는데 전체가 나온다"가 되므로 금지다 — 라우트 계약은 `test_mm_meta_set_search.py` 가,
+정형 계층 함수 계약은 이 파일이 본다.
 """
 
 from __future__ import annotations
@@ -18,12 +24,11 @@ from unittest.mock import MagicMock, patch
 from service.api import routes_assets, routes_mm_meta
 from service.portal import mm_meta
 from src.mm_classify.read import label_names_of_assets as core_label_names
-from src.mm_meta.entity_search import entity_refine_fields as core_refine_fields
-from src.mm_meta.entity_search import narrow_entities as core_narrow
 from src.mm_meta.rules import MIN_BUNDLE_SIZE
 from src.relations import graph_query as gq
+from src.search.entity_search_os import EntityMatchSet
+from src.search.entity_search_os import match_entity_keys as core_match_entity_keys
 from src.search.facets import aggregate_facets as core_aggregate_facets
-from src.search.refine import refine_rows as core_refine_rows
 
 
 def _row(**over) -> dict:
@@ -36,6 +41,20 @@ def _row(**over) -> dict:
     }
     base.update(over)
     return base
+
+
+def _as_match(keys) -> EntityMatchSet:
+    """개체 키 집합을 코어 반환 모양으로 감싼다(대역용 · 갈래는 전부 글자로 둔다).
+
+    Args:
+        keys: 매칭된 개체 키들.
+
+    Returns:
+        ``EntityMatchSet`` — ``keys`` 와 ``text_keys`` 가 같고 의미 갈래는 비어 있다.
+    """
+    frozen = frozenset(keys)
+    return EntityMatchSet(keys=frozen, text_keys=frozen, semantic_keys=frozenset(),
+                          semantic_gate_passed=False)
 
 
 def _cfg(backend: str = "opensearch") -> SimpleNamespace:
@@ -51,12 +70,12 @@ class TestWiring(unittest.TestCase):
     """판단은 코어 함수를 그대로 쓴다 — 서비스에 사본이 없다."""
 
     def test_core_functions_are_referenced_as_is(self) -> None:
-        self.assertIs(mm_meta.narrow_entities, core_narrow)
-        self.assertIs(mm_meta.refine_rows, core_refine_rows)
-        self.assertIs(mm_meta.entity_refine_fields, core_refine_fields)
+        # 찾아오기·좁히기 판정은 코어 집합 함수 하나가 한다(099 G5 — 두 일이 한 경로로 접혔다).
+        self.assertIs(mm_meta.match_entity_keys, core_match_entity_keys)
         self.assertIs(mm_meta.aggregate_facets, core_aggregate_facets)
         self.assertIs(mm_meta.label_names_of_assets, core_label_names)
         self.assertIs(mm_meta.list_entities, gq.list_entities)
+        self.assertIs(mm_meta.count_entities, gq.count_entities)
         self.assertIs(mm_meta.count_entities_by_type, gq.count_entities_by_type)
         self.assertIs(mm_meta.count_entities_by_area, gq.count_entities_by_area)
         self.assertIs(mm_meta.assets_of_entities, gq.assets_of_entities)
@@ -138,77 +157,105 @@ class TestFormCounts(unittest.TestCase):
         self.assertEqual(mm_meta._form_counts({}), [])
 
 
-class TestSearchPaths(unittest.TestCase):
-    """검색 경로 분기와 되돌림."""
+class TestSetJudgement(unittest.TestCase):
+    """099 G5 — 찾아오기(q)·좁히기(refine)의 **집합 판정**(정형 계층 함수 계약).
+
+    🔴 여기서 보는 것은 "무엇을 돌려주나"가 아니라 **무엇으로 돌려주나**다. ``None``(필터 없음)과
+    빈 집합(0건)을 섞으면 "검색했는데 전체가 나온다"가 되기 때문이다 — 파이썬에서는 둘 다 거짓값이라
+    ``if not keys`` 한 줄이 그 사고를 만든다.
+    """
 
     def setUp(self) -> None:
-        self.items = [dict(_row()), dict(_row(entity_uid="서울특별시", name="서울특별시",
-                                              keywords=["서울"], confirmed_count=10))]
-
-    def test_no_query_returns_all_with_reason_key(self) -> None:
-        with patch.object(mm_meta, "get_current_settings", return_value=_cfg()):
-            out, scope = mm_meta.search_and_refine(
-                self.items, q=None, refine=None, run_in_db=lambda fn: fn(object()))
-        self.assertEqual(len(out), 2)
-        self.assertEqual(scope, 2)
-        self.assertTrue(all("match_reason" in r for r in out))  # 응답 모양은 한 가지
-
-    def test_opensearch_failure_falls_back_to_string_hits(self) -> None:
-        # 엔진이 죽어도 문자열로 되던 것은 나간다.
-        with (
-            patch.object(mm_meta, "get_current_settings", return_value=_cfg("opensearch")),
-            patch.object(mm_meta, "active_embed_channel", side_effect=RuntimeError("죽음")),
+        self.engine = MagicMock(return_value=_as_match({("장소", "제주도")}))
+        for target, repl in (
+            ("service.portal.mm_meta.match_entity_keys", self.engine),
+            ("service.portal.mm_meta.embed_query_for_media_search", lambda *_a, **_k: [0.0]),
+            ("service.portal.mm_meta.active_embed_channel", lambda: "st_api"),
+            ("service.portal.mm_meta.get_current_settings", _cfg),
+            ("src.search.opensearch_sync.get_client", lambda: object()),
         ):
-            out, _scope = mm_meta.search_and_refine(
-                self.items, q="제주", refine=None, run_in_db=lambda fn: fn(object()))
-        self.assertEqual([r["entity_uid"] for r in out], ["제주도"])
+            p = patch(target, repl)
+            p.start()
+            self.addCleanup(p.stop)
 
-    def test_semantic_failure_falls_back_to_string_hits(self) -> None:
-        with (
-            patch.object(mm_meta, "get_current_settings", return_value=_cfg("pg")),
-            patch.object(mm_meta, "active_embed_channel", side_effect=RuntimeError("죽음")),
-        ):
-            out, _scope = mm_meta.search_and_refine(
-                self.items, q="제주", refine=None, run_in_db=lambda fn: fn(object()))
-        self.assertEqual([r["entity_uid"] for r in out], ["제주도"])
+    def test_아무것도_안_물어보면_필터가_없다(self) -> None:
+        scope = mm_meta.search_and_refine(q=None, refine=None)
+        self.assertIsNone(scope.uid_allow, "빈 집합이면 첫 화면이 통째로 0건이 된다")
+        self.assertIsNone(scope.scope_allow)
+        self.assertFalse(scope.refined)
+        self.engine.assert_not_called()
 
-    def test_opensearch_hits_replace_list_and_carry_booleans(self) -> None:
-        hits = [{"entity_type": "장소", "entity_uid": "서울특별시", "by_text": False,
-                 "by_semantic": True, "cosine": 0.42}]
-        with (
-            patch.object(mm_meta, "get_current_settings", return_value=_cfg("opensearch")),
-            patch.object(mm_meta, "active_embed_channel", return_value="st_api"),
-            patch.object(mm_meta, "embed_query_for_media_search", return_value=[0.0]),
-            patch.object(mm_meta, "search_entities_hybrid", return_value=hits),
-            patch("src.search.opensearch_sync.get_client", return_value=object()),
-        ):
-            out, _scope = mm_meta.search_and_refine(
-                self.items, q="수도", refine=None, run_in_db=lambda fn: fn(object()))
-        self.assertEqual([r["entity_uid"] for r in out], ["서울특별시"])
-        self.assertIs(out[0]["by_semantic"], True)
-        self.assertIs(out[0]["by_text"], False)
-        self.assertIn("0.42", out[0]["match_reason"])
+    def test_공백뿐인_값은_안_물어본_것이다(self) -> None:
+        scope = mm_meta.search_and_refine(q="   ", refine="\t")
+        self.assertIsNone(scope.uid_allow)
+        self.engine.assert_not_called()
 
-    def test_unknown_entity_in_hits_is_dropped(self) -> None:
-        # 색인이 낡아 목록에 없는 개체가 오면 버린다 — 목록이 정본이다.
-        hits = [{"entity_type": "장소", "entity_uid": "없는곳", "by_text": True}]
-        with (
-            patch.object(mm_meta, "get_current_settings", return_value=_cfg("opensearch")),
-            patch.object(mm_meta, "active_embed_channel", return_value="st_api"),
-            patch.object(mm_meta, "embed_query_for_media_search", return_value=[0.0]),
-            patch.object(mm_meta, "search_entities_hybrid", return_value=hits),
-            patch("src.search.opensearch_sync.get_client", return_value=object()),
-        ):
-            out, _scope = mm_meta.search_and_refine(
-                self.items, q="x", refine=None, run_in_db=lambda fn: fn(object()))
-        self.assertEqual(out, [])
+    def test_q_만_있으면_그_집합이_둘_다다(self) -> None:
+        scope = mm_meta.search_and_refine(q="제주", refine=None)
+        self.assertEqual(scope.uid_allow, {("장소", "제주도")})
+        self.assertEqual(scope.scope_allow, {("장소", "제주도")}, "좁히기 이전 집합도 같은 값")
+        self.assertFalse(scope.refined)
 
-    def test_refine_narrows_after_search_and_reports_scope(self) -> None:
-        with patch.object(mm_meta, "get_current_settings", return_value=_cfg()):
-            out, scope = mm_meta.search_and_refine(
-                self.items, q=None, refine="서울", run_in_db=lambda fn: fn(object()))
-        self.assertEqual([r["entity_uid"] for r in out], ["서울특별시"])
-        self.assertEqual(scope, 2)  # 좁히기 전 건수 — 화면이 "지우면 N건" 에 쓴다
+    def test_refine_만_있으면_좁히기_이전은_전체다(self) -> None:
+        scope = mm_meta.search_and_refine(q=None, refine="해녀")
+        self.assertEqual(scope.uid_allow, {("장소", "제주도")})
+        self.assertIsNone(scope.scope_allow, "찾아온 적이 없으니 '지우면 N건'의 답은 전체다")
+        self.assertTrue(scope.refined)
+
+    def test_둘_다_있으면_교집합이다(self) -> None:
+        self.engine.side_effect = lambda *_a, **kw: _as_match(
+            {("장소", "제주도"), ("장소", "서울특별시")} if kw["query"] == "섬"
+            else {("장소", "제주도"), ("인물", "해녀")}
+        )
+        scope = mm_meta.search_and_refine(q="섬", refine="해녀")
+        self.assertEqual(scope.uid_allow, {("장소", "제주도")})
+        self.assertEqual(scope.scope_allow, {("장소", "제주도"), ("장소", "서울특별시")})
+        self.assertTrue(scope.refined)
+
+    def test_매칭이_없으면_빈_집합이다(self) -> None:
+        self.engine.return_value = _as_match(set())
+        scope = mm_meta.search_and_refine(q="없는낱말", refine=None)
+        self.assertEqual(scope.uid_allow, set())
+        self.assertIsNotNone(scope.uid_allow, "🔴 None 으로 접으면 전체가 나간다")
+
+    def test_질의마다_엔진을_한_번씩만_부른다(self) -> None:
+        mm_meta.search_and_refine(q="섬", refine="해녀")
+        self.assertEqual([c.kwargs["query"] for c in self.engine.call_args_list], ["섬", "해녀"])
+
+    def test_엔진_연결_실패는_되돌리지_않고_끊는다(self) -> None:
+        # 🔴 종전에는 문자열 결과로 되돌렸다 — 새 구조에서 그 되돌림은 '전체 노출'이 된다.
+        try:
+            from opensearchpy.exceptions import ConnectionError as OSConnectionError
+        except ImportError:  # pragma: no cover - 라이브러리 미설치 환경
+            self.skipTest("opensearchpy 미설치")
+        self.engine.side_effect = OSConnectionError("N/A", "conn refused", None)
+        with self.assertRaises(mm_meta.EntitySearchUnavailable):
+            mm_meta.search_and_refine(q="제주", refine=None)
+
+    def test_임베딩_실패도_끊고_문구가_다르다(self) -> None:
+        with patch("service.portal.mm_meta.embed_query_for_media_search",
+                   side_effect=RuntimeError("임베딩 API 호출 실패")):
+            with self.assertRaises(mm_meta.EntitySearchUnavailable) as caught:
+                mm_meta.search_and_refine(q="제주", refine=None)
+        self.assertIn("임베딩", str(caught.exception))
+
+    def test_코드_결함은_삼키지_않는다(self) -> None:
+        # 연결 실패만 골라 잡는다 — 결함까지 삼키면 "엔진 장애"로 둔갑해 운영자가 엉뚱한 곳을 본다.
+        self.engine.side_effect = KeyError("코드 결함 흉내")
+        with self.assertRaises(KeyError):
+            mm_meta.search_and_refine(q="제주", refine=None)
+
+    def test_되돌림_백엔드는_집합_판정을_하지_않는다(self) -> None:
+        with patch("service.portal.mm_meta.get_current_settings", lambda: _cfg("pg")):
+            with self.assertRaises(mm_meta.EntitySearchUnavailable) as caught:
+                mm_meta.search_and_refine(q="제주", refine=None)
+        self.assertIn("pg", str(caught.exception))
+        self.engine.assert_not_called()
+
+    def test_엔진_호출에_질의_벡터가_함께_간다(self) -> None:
+        # 🔴 벡터를 빠뜨리면 의미(kNN) 갈래가 조용히 사라진다(`발효`→김치를 못 찾는다).
+        mm_meta.search_and_refine(q="발효", refine=None)
+        self.assertEqual(self.engine.call_args.kwargs["query_vector"], [0.0])
 
 
 class TestFacetsShaping(unittest.TestCase):
@@ -363,87 +410,72 @@ class TestZipHelpers(unittest.TestCase):
         self.assertEqual(routes_mm_meta._parse_names(""), [])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
-class TestSearchBeforeLimit(unittest.TestCase):
-    """🔴 찾아오기(q)는 상한보다 **먼저**다 — 상한을 먼저 적용하면 상위 N 밖의 개체는 검색으로도 닿을 수 없다.
+class TestRouteReadScope(unittest.TestCase):
+    """🔴 찾아오기·좁히기는 **SQL 이 한다** — 라우트는 한 쪽만 읽는다(099 G5).
 
     2026-09-15 실측: 「숭례문」이 개체 색인에 있는데 화면에서 0건이었다. 목록 상한 200 을 먼저 자르고
-    그 안에서 찾았기 때문이다. 골라내기(refine)는 반대로 **이번 결과 안에서만** 좁히는 것이 맞다.
+    그 안에서 찾았기 때문이다. G5 전에는 그 상한을 10,000 으로 키워 우회했지만(모수를 통째로 읽고
+    파이썬이 골랐다), 이제는 **찾아온 개체 키 집합을 화이트리스트로 SQL 에 얹어** 한 쪽만 읽는다 —
+    꼬리 개체는 DB 가 고르므로 쪽 크기와 무관하게 닿는다(SC-002 는 `test_mm_meta_set_search.py`).
     """
 
-    def setUp(self) -> None:
-        # 구성 자산 수 내림차순 목록 — 뒤쪽은 상한 밖으로 밀려나는 꼬리 개체다.
-        self.items = [
-            dict(_row(entity_uid=f"흔한{i}", name=f"흔한{i}", keywords=[f"흔한{i}"],
-                      confirmed_count=100 - i))
-            for i in range(5)
-        ] + [dict(_row(entity_uid="숭례문", name="숭례문", keywords=["숭례문"], confirmed_count=1))]
+    def _call(self, **params):
+        """라우트를 부르고 ``fetch_list`` 가 받은 인자를 돌려준다.
 
-    def test_상한은_찾은_뒤에_적용된다(self) -> None:
-        with patch.object(mm_meta, "get_current_settings", return_value=_cfg()):
-            out, _scope = mm_meta.search_and_refine(
-                self.items, q="숭례문", refine=None, run_in_db=lambda fn: fn(object()), limit=3)
-        self.assertEqual([r["entity_uid"] for r in out], ["숭례문"],
+        Args:
+            **params: 라우트 파라미터(빠진 것은 기본값으로 채운다).
+
+        Returns:
+            ``(fetch_list 가 받은 kwargs, 응답 본문)``.
+        """
+        from service.api import routes_mm_meta as mod
+        seen: dict[str, object] = {}
+        # 꼬리 개체 하나만 든 대역 — 화이트리스트가 SQL 로 갔는지·쪽 크기가 얼마인지를 본다.
+        tail = mm_meta.shape_list_item(_row(entity_uid="숭례문", name="숭례문", confirmed_count=1))
+
+        def fake_fetch(_conn, **kw):
+            """목록 대역 — 인자를 기록하고 화이트리스트에 맞는 행만 돌려준다."""
+            seen.update(kw)
+            allow = kw.get("uid_allow")
+            if allow is None:
+                return [tail]
+            return [tail] if ("장소", "숭례문") in allow else []
+
+        args = {"q": None, "entity_type": None, "areas": None, "refine": None,
+                "cursor": None, "limit": 200, **params}
+        with (
+            patch.object(mod._infra, "_run_in_db", lambda fn: fn(object())),
+            patch.object(mod.mm_meta, "fetch_list", fake_fetch),
+            patch.object(mod.mm_meta, "fetch_total", lambda _conn, **kw: 1),
+            patch.object(mod.mm_meta, "search_and_refine",
+                         lambda **kw: mm_meta.EntityScope(
+                             uid_allow={("장소", "숭례문")} if (kw["q"] or kw["refine"]) else None,
+                             scope_allow={("장소", "숭례문")} if kw["q"] else None,
+                             refined=bool(kw["refine"]))),
+        ):
+            body = mod.list_mm_meta(**args, principal=SimpleNamespace(clearance="authorized"))
+        return seen, body
+
+    def test_검색어가_있어도_한_쪽만_읽는다(self) -> None:
+        seen, _body = self._call(q="숭례문", limit=200)
+        self.assertEqual(seen["limit"], 200, "모수를 통째로 읽던 우회(10,000)는 사라졌다")
+
+    def test_찾아온_집합이_화이트리스트로_SQL_에_간다(self) -> None:
+        seen, body = self._call(q="숭례문", limit=3)
+        self.assertEqual(seen["uid_allow"], {("장소", "숭례문")})
+        self.assertEqual([i["entity_uid"] for i in body["items"]], ["숭례문"],
                          "꼬리 개체라도 찾으면 나와야 한다")
 
-    def test_찾은_결과가_상한보다_많으면_자른다(self) -> None:
-        with patch.object(mm_meta, "get_current_settings", return_value=_cfg()):
-            out, _scope = mm_meta.search_and_refine(
-                self.items, q="흔한", refine=None, run_in_db=lambda fn: fn(object()), limit=3)
-        self.assertEqual(len(out), 3, "상한은 찾은 결과에 적용된다")
-
-    def test_scope_total_은_자른_뒤_기준이다(self) -> None:
-        """화면이 "지우면 N건"을 띄우는 재료다 — 자르기 전 수를 주면 화면이 거짓말을 한다."""
-        with patch.object(mm_meta, "get_current_settings", return_value=_cfg()):
-            _out, scope = mm_meta.search_and_refine(
-                self.items, q="흔한", refine="없는말", run_in_db=lambda fn: fn(object()), limit=3)
-        self.assertEqual(scope, 3)
-
-    def test_limit_을_안_주면_종전과_같다(self) -> None:
-        with patch.object(mm_meta, "get_current_settings", return_value=_cfg()):
-            out, scope = mm_meta.search_and_refine(
-                self.items, q="흔한", refine=None, run_in_db=lambda fn: fn(object()))
-        self.assertEqual(len(out), 5)
-        self.assertEqual(scope, 5)
-
-
-class TestRouteSearchScope(unittest.TestCase):
-    """라우트가 검색어 유무에 따라 **조회 범위**를 달리 잡는지."""
-
-    def test_검색어가_있으면_상한_없이_모수를_가져온다(self) -> None:
-        from service.api import routes_mm_meta as mod
-        seen: dict[str, object] = {}
-
-        def fake_fetch(_conn, **kw):
-            seen.update(kw)
-            return []
-
-        with (
-            patch.object(mod._infra, "_run_in_db", lambda fn: fn(object())),
-            patch.object(mod.mm_meta, "fetch_list", fake_fetch),
-            patch.object(mod.mm_meta, "search_and_refine", lambda items, **kw: ([], 0)),
-        ):
-            mod.list_mm_meta(q="숭례문", entity_type=None, areas=None, refine=None,
-                             limit=200, principal=SimpleNamespace(clearance="authorized"))
-        self.assertEqual(seen["limit"], mod._SEARCH_SCOPE_MAX,
-                         "검색어가 있으면 목록 상한이 아니라 검색 모수를 가져온다")
-
-    def test_검색어가_없으면_목록_상한을_그대로_쓴다(self) -> None:
-        from service.api import routes_mm_meta as mod
-        seen: dict[str, object] = {}
-
-        def fake_fetch(_conn, **kw):
-            seen.update(kw)
-            return []
-
-        with (
-            patch.object(mod._infra, "_run_in_db", lambda fn: fn(object())),
-            patch.object(mod.mm_meta, "fetch_list", fake_fetch),
-            patch.object(mod.mm_meta, "search_and_refine", lambda items, **kw: ([], 0)),
-        ):
-            mod.list_mm_meta(q=None, entity_type=None, areas=None, refine=None,
-                             limit=200, principal=SimpleNamespace(clearance="authorized"))
+    def test_검색어가_없으면_화이트리스트도_없다(self) -> None:
+        seen, _body = self._call(limit=200)
+        self.assertIsNone(seen["uid_allow"], "🔴 빈 집합이면 첫 화면이 0건이 된다")
         self.assertEqual(seen["limit"], 200)
+
+    def test_좁히기만_줘도_SQL_이_좁힌다(self) -> None:
+        seen, body = self._call(refine="숭례문", limit=3)
+        self.assertEqual(seen["uid_allow"], {("장소", "숭례문")})
+        self.assertEqual(body["refine"], "숭례문")
+
+
+if __name__ == "__main__":
+    unittest.main()
