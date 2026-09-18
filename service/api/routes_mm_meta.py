@@ -183,9 +183,10 @@ def list_mm_meta(
     after_tier: int | None = None
     after_count: int | None = None
     after_uid: str | None = None
+    after_type: str | None = None
     if cursor is not None:
         try:
-            after_tier, after_count, after_uid = mm_meta.decode_entity_cursor(
+            after_tier, after_count, after_uid, after_type = mm_meta.decode_entity_cursor(
                 cursor, scope=scope_material)
         except CursorError as exc:
             # 입력 오류이지 서버 오류가 아니다 — **조용히 다른 자리에서 이어 주지 않는다**.
@@ -219,7 +220,8 @@ def list_mm_meta(
         page = mm_meta.fetch_list(
             conn, entity_type=entity_type, areas=picked_areas,
             min_bundle_size=_MIN_BUNDLE_SIZE, limit=limit,
-            after_tier=after_tier, after_count=after_count, after_uid=after_uid,
+            after_tier=after_tier, after_count=after_count,
+            after_uid=after_uid, after_type=after_type,
             uid_allow=scope.uid_allow, uid_first=uid_first,
         )
         after = mm_meta.fetch_total(

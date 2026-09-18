@@ -82,6 +82,7 @@ def _fake_list_entities(
     after_tier: int | None = None,
     after_count: int | None = None,
     after_uid: str | None = None,
+    after_type: str | None = None,
     uid_allow: set[tuple[str, str]] | None = None,
     uid_first: set[tuple[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
@@ -98,6 +99,7 @@ def _fake_list_entities(
         after_tier: 직전 쪽 마지막 개체의 우선 티어(099 G7 · 정렬 첫 키).
         after_count: 직전 쪽 마지막 개체의 구성 자산 수.
         after_uid: 직전 쪽 마지막 개체의 표기 키.
+        after_type: 직전 쪽 마지막 개체의 종류(표기까지 같은 자리를 가른다 · 2026-09-18).
         uid_allow: 개체 화이트리스트. 🔴 ``None`` 이면 조건 없음 · 빈 집합이면 **0건**이다.
         uid_first: 맨 앞에 세울 개체 집합(099 G7 · 순서만 바꾸고 거르지 않는다).
 
@@ -121,10 +123,11 @@ def _fake_list_entities(
         return 1 if (row["entity_type"], row["entity_uid"]) in first else 0
 
     rows = sorted(_rows_of(uid_allow),
-                  key=lambda r: (-_tier(r), -int(r["confirmed_count"]), str(r["entity_uid"])))
-    book = (after_tier, after_count, after_uid)
+                  key=lambda r: (-_tier(r), -int(r["confirmed_count"]),
+                                 str(r["entity_uid"]), str(r["entity_type"])))
+    book = (after_tier, after_count, after_uid, after_type)
     if any(v is not None for v in book) and any(v is None for v in book):
-        raise ValueError("이어읽기 책갈피는 세 값을 함께 줘야 한다")
+        raise ValueError("이어읽기 책갈피는 네 값을 함께 줘야 한다")
     if after_count is not None:
         rows = [
             r for r in rows
@@ -132,7 +135,9 @@ def _fake_list_entities(
             or (_tier(r) == int(after_tier)
                 and (int(r["confirmed_count"]) < int(after_count)
                      or (int(r["confirmed_count"]) == int(after_count)
-                         and str(r["entity_uid"]) > str(after_uid))))
+                         and (str(r["entity_uid"]) > str(after_uid)
+                              or (str(r["entity_uid"]) == str(after_uid)
+                                  and str(r["entity_type"]) > str(after_type))))))
         ]
     return [dict(r) for r in rows[: int(limit)]]
 

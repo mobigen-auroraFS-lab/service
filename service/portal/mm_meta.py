@@ -77,7 +77,7 @@ ENTITY_CURSOR_SORT = "confirmed_count_desc"
 # 둘에서 늘었다 · 이름이 걸린 개체를 맨 앞에 세우는 티어가 정렬 첫 키가 됐다).
 # 🔴 **옛 2값 토큰은 여기서 400 으로 끊긴다 — 의도된 깨는 변경**이다. 통과시키면 반쪽 책갈피로
 # 엉뚱한 자리에서 이어져 목록에 구멍이 나는데, 오류가 없어 화면은 그것을 알 수 없다.
-ENTITY_CURSOR_ARITY = 3
+ENTITY_CURSOR_ARITY = 4
 
 # 카드 한 장을 zip 으로 내보낼 때의 자산 수 상한. 묶음이 커도 응답이 무한정 커지지 않게 막는다.
 CARD_BUNDLE_MAX_ASSETS = 200
@@ -169,6 +169,7 @@ def fetch_list(
     after_tier: int | None = None,
     after_count: int | None = None,
     after_uid: str | None = None,
+    after_type: str | None = None,
     uid_allow: set[tuple[str, str]] | None = None,
     uid_first: set[tuple[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
@@ -182,7 +183,9 @@ def fetch_list(
         limit: 이 **쪽**에 담을 개체 수(커서가 생긴 뒤의 뜻 — 전체 상한이 아니다).
         after_tier: 이어읽기 책갈피 ① — 직전 쪽 마지막 개체의 **우선 티어**(099 G7).
         after_count: 이어읽기 책갈피 ② — 직전 쪽 마지막 개체의 ``confirmed_count``. ``None`` 이면 첫 쪽.
-        after_uid: 이어읽기 책갈피 ③ — ``entity_uid``(동점 무더기를 가르는 유일 키).
+        after_uid: 이어읽기 책갈피 ③ — ``entity_uid``.
+        after_type: 이어읽기 책갈피 ④ — ``entity_type``. 자연키가 (종류, 표기) 둘이라 표기만으로는
+            자리가 하나로 정해지지 않는다.
             세 값은 **함께** 주거나 함께 생략한다(일부만 주면 코어가 ``ValueError``).
         uid_allow: 찾아오기·좁히기가 정한 개체 화이트리스트(``search_and_refine`` 의 결과).
             🔴 ``None`` = **필터 없음(전체)** · 빈 집합 = **0건**. 둘을 섞으면 "검색했는데 전체가
@@ -203,6 +206,7 @@ def fetch_list(
         after_tier=after_tier,
         after_count=after_count,
         after_uid=after_uid,
+        after_type=after_type,
         uid_allow=uid_allow,
         uid_first=uid_first,
     )
@@ -327,8 +331,8 @@ def name_first_keys(
     return {(etype, uid) for etype, uid in keys if uid in wanted}
 
 
-def decode_entity_cursor(token: str, *, scope: str) -> tuple[int, int, str]:
-    """개체 목록 커서(책갈피)를 풀어 ``(우선 티어, 구성 자산 수, 표기 키)`` 로 돌려준다.
+def decode_entity_cursor(token: str, *, scope: str) -> tuple[int, int, str, str]:
+    """개체 목록 커서(책갈피)를 풀어 ``(우선 티어, 구성 자산 수, 표기 키, 종류)`` 로 돌려준다.
 
     풀이: 커서는 "여기까지 읽었다"를 적어 둔 **책갈피**다. 책 페이지 번호(offset)와 달리 앞쪽에 줄이
     끼어들어도 자리가 밀리지 않는다 — 어느 줄 **다음**인지를 적어 두기 때문이다.
@@ -343,7 +347,7 @@ def decode_entity_cursor(token: str, *, scope: str) -> tuple[int, int, str]:
             이어야 한다 — 다르면 조건이 바뀐 것이므로 거부한다.
 
     Returns:
-        ``(after_tier, after_count, after_uid)`` — ``fetch_list`` 에 그대로 넘길 책갈피 세 값.
+        ``(after_tier, after_count, after_uid, after_type)`` — ``fetch_list`` 에 그대로 넘길 네 값.
 
     Raises:
         CursorError: 토큰이 깨졌거나 · 정렬이 어긋나거나 · 정렬값 개수·타입이 다르거나 ·
@@ -351,7 +355,7 @@ def decode_entity_cursor(token: str, *, scope: str) -> tuple[int, int, str]:
     """
     values = decode_cursor(token, expect_sort=ENTITY_CURSOR_SORT,
                            expect_arity=ENTITY_CURSOR_ARITY, expect_scope=scope)
-    raw_tier, raw_count, raw_uid = values[0], values[1], values[2]
+    raw_tier, raw_count, raw_uid, raw_type = values[0], values[1], values[2], values[3]
     try:
         # 수가 아닌 값(위조 토큰의 ``"abc"``·``None``)이 그대로 SQL 로 흘러가면 DB 오류 → HTTP 500 이
         # 된다. 문 앞에서 CursorError 로 바꿔 400 으로 나가게 한다.
@@ -360,7 +364,11 @@ def decode_entity_cursor(token: str, *, scope: str) -> tuple[int, int, str]:
         raise CursorError(f"커서의 정렬 자리가 숫자가 아니다: {(raw_tier, raw_count)!r}") from exc
     if not isinstance(raw_uid, str) or not raw_uid:
         raise CursorError(f"커서의 표기 키가 비었거나 문자열이 아니다: {raw_uid!r}")
-    return after_tier, after_count, raw_uid
+    # 🔴 종류도 같은 강도로 본다 — 빈 문자열이 SQL 로 가면 ``entity_type > ''`` 가 거의 늘 참이라
+    #    같은 쪽을 다시 낸다(중복). 표기 키와 같은 이유로 문 앞에서 막는다.
+    if not isinstance(raw_type, str) or not raw_type:
+        raise CursorError(f"커서의 종류가 비었거나 문자열이 아니다: {raw_type!r}")
+    return after_tier, after_count, raw_uid, raw_type
 
 
 def next_entity_cursor(
@@ -376,7 +384,9 @@ def next_entity_cursor(
     만들면, 걸러진 꼬리 행들을 다음 쪽이 건너뛴다(누락). 099 G5 부터 찾아오기·좁히기는 **SQL 이**
     하므로(화이트리스트) 이 쪽은 이미 걸러진 결과이고, 파이썬이 다시 거를 일이 없다.
 
-    🔴 커서에는 **정렬 자리 셋**(우선 티어·구성 자산 수·표기 키)과 **조건 지문**이 함께 담긴다
+    🔴 커서에는 **정렬 자리 넷**(우선 티어·구성 자산 수·표기 키·종류)과 조건 지문이 함께 담긴다.
+    종류까지 싣는 것은 자연키가 (종류, 표기) 둘이라, 표기만으로는 같은 자리를 가리키는 책갈피가
+    둘 생겨 한 개체를 건너뛰거나 두 번 내기 때문이다.
     (099 G7). 종전에는 정렬 자리만 담아 "어떤 질의에서 나온 책갈피인지"를 몰랐고, 그래서 조건이
     바뀐 커서가 조용히 통과해 자료가 빠졌다(실측: ``q=사찰`` 커서를 ``q=석탑`` 에 쓰자 석굴암 등이
     통째로 누락). 이제는 서버가 대조해 거부한다.
@@ -401,7 +411,8 @@ def next_entity_cursor(
     tier = 1 if (uid_first and key in uid_first) else 0
     return encode_cursor(
         ENTITY_CURSOR_SORT,
-        [tier, int(last["confirmed_count"]), str(last["entity_uid"])], scope=scope)
+        [tier, int(last["confirmed_count"]), str(last["entity_uid"]), str(last["entity_type"])],
+        scope=scope)
 
 
 class EntitySearchUnavailable(RuntimeError):

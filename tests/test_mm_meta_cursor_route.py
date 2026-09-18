@@ -77,13 +77,15 @@ def _fake_fetch_list(
     after_tier: int | None = None,
     after_count: int | None = None,
     after_uid: str | None = None,
+    after_type: str | None = None,
     uid_allow: set[tuple[str, str]] | None = None,
     uid_first: set[tuple[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """코어 keyset 목록 대역 — 실제 SQL 과 **같은 조건**으로 이어 읽는다.
 
-    099 G7 로 정렬이 3단(우선 티어 → 구성 자산 수 → 표기 키)이 되어 책갈피도 세 값이다.
-    이 파일의 시험은 우선 대상을 쓰지 않으므로 티어는 늘 0 이고, 결과는 종전과 같다(회귀).
+    정렬은 **4단**(우선 티어 → 구성 자산 수 → 표기 키 → 종류)이라 책갈피도 네 값이다.
+    마지막 단이 종류인 이유: 개체의 자연키가 (종류, 표기) 둘이라 표기만으로는 자리가 하나로
+    정해지지 않는다(2026-09-18). 이 파일의 시험은 우선 대상을 쓰지 않으므로 티어는 늘 0 이다.
 
     Args:
         _conn: 커넥션 자리(쓰지 않는다).
@@ -94,23 +96,25 @@ def _fake_fetch_list(
         after_tier: 직전 쪽 마지막 개체의 우선 티어(099 G7).
         after_count: 직전 쪽 마지막 개체의 구성 자산 수.
         after_uid: 직전 쪽 마지막 개체의 표기 키.
+        after_type: 직전 쪽 마지막 개체의 종류(표기까지 같은 자리를 가른다).
         uid_allow: 찾아오기·좁히기가 정한 개체 화이트리스트(099 G5).
         uid_first: 맨 앞에 세울 개체 집합(099 G7 · 순서만 바꾼다).
 
     Returns:
-        정렬(티어 내림차순 → 수 내림차순 → 표기 키 오름차순) 기준 다음 ``limit`` 행.
+        정렬(티어 ↓ → 수 ↓ → 표기 키 ↑ → 종류 ↑) 기준 다음 ``limit`` 행.
 
     Raises:
         ValueError: 책갈피를 일부만 준 경우(코어와 같은 계약).
     """
-    book = (after_tier, after_count, after_uid)
+    book = (after_tier, after_count, after_uid, after_type)
     if any(v is not None for v in book) and any(v is None for v in book):
-        raise ValueError("이어읽기 책갈피는 세 값을 함께 줘야 한다")
+        raise ValueError("이어읽기 책갈피는 네 값을 함께 줘야 한다")
     first = uid_first or set()
     rows = sorted(
         _allowed(uid_allow),
         key=lambda r: (-(1 if (r["entity_type"], r["entity_uid"]) in first else 0),
-                       -int(r["confirmed_count"]), str(r["entity_uid"])))
+                       -int(r["confirmed_count"]), str(r["entity_uid"]),
+                       str(r["entity_type"])))
     if after_count is not None:
         def _tier(row: dict[str, Any]) -> int:
             """행의 우선 티어(1=앞세운 개체 · 0=나머지).
@@ -129,7 +133,9 @@ def _fake_fetch_list(
             or (_tier(r) == int(after_tier)
                 and (int(r["confirmed_count"]) < int(after_count)
                      or (int(r["confirmed_count"]) == int(after_count)
-                         and str(r["entity_uid"]) > str(after_uid))))
+                         and (str(r["entity_uid"]) > str(after_uid)
+                              or (str(r["entity_uid"]) == str(after_uid)
+                                  and str(r["entity_type"]) > str(after_type))))))
         ]
     return [dict(r) for r in rows[: int(limit)]]
 

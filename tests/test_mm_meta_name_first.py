@@ -74,6 +74,7 @@ def _fake_fetch_list(
     after_tier: int | None = None,
     after_count: int | None = None,
     after_uid: str | None = None,
+    after_type: str | None = None,
     uid_allow: set[tuple[str, str]] | None = None,
     uid_first: set[tuple[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
@@ -88,6 +89,7 @@ def _fake_fetch_list(
         after_tier: 직전 쪽 마지막 개체의 우선 티어.
         after_count: 직전 쪽 마지막 개체의 구성 자산 수.
         after_uid: 직전 쪽 마지막 개체의 표기 키.
+        after_type: 직전 쪽 마지막 개체의 종류(표기까지 같은 자리를 가른다 · 2026-09-18).
         uid_allow: 검색이 정한 화이트리스트(``None`` = 전체 · 빈 집합 = 0건).
         uid_first: 맨 앞에 둘 개체 집합(순서만 바꾼다).
 
@@ -95,22 +97,25 @@ def _fake_fetch_list(
         정렬(우선 티어 ↓ → 구성 자산 수 ↓ → 표기 키 ↑) 기준 다음 ``limit`` 행.
 
     Raises:
-        ValueError: 책갈피 세 값을 함께 주지 않았을 때(코어와 같은 계약).
+        ValueError: 책갈피 네 값을 함께 주지 않았을 때(코어와 같은 계약).
     """
-    book = (after_tier, after_count, after_uid)
+    book = (after_tier, after_count, after_uid, after_type)
     if any(v is not None for v in book) and any(v is None for v in book):
-        raise ValueError("이어읽기 책갈피는 세 값을 함께 줘야 한다")
+        raise ValueError("이어읽기 책갈피는 네 값을 함께 줘야 한다")
     rows = [(t, u, c) for t, u, c in _TABLE
             if uid_allow is None or (t, u) in uid_allow]
     first = uid_first or set()
     ranked = sorted(((1 if (t, u) in first else 0, c, u, t) for t, u, c in rows),
-                    key=lambda r: (-r[0], -r[1], r[2]))
+                    key=lambda r: (-r[0], -r[1], r[2], r[3]))
     if after_tier is not None:
         ranked = [r for r in ranked
                   if r[0] < int(after_tier)
                   or (r[0] == int(after_tier)
                       and (r[1] < int(after_count)
-                           or (r[1] == int(after_count) and r[2] > str(after_uid))))]
+                           or (r[1] == int(after_count)
+                               and (r[2] > str(after_uid)
+                                    or (r[2] == str(after_uid)
+                                        and r[3] > str(after_type))))))]
     return [_item(t, u, c) for _tier, c, u, t in ranked[: int(limit)]]
 
 
