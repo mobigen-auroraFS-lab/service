@@ -67,6 +67,24 @@ def validated_interval(
 #    뜻이라, 클라이언트가 잘못 보낸 것과 구분되지 않는다.
 
 
+def cursor_or_none(cursor: str | None) -> str | None:
+    """빈 값·공백뿐인 커서는 **커서 없음**(첫 쪽)과 같다.
+
+    🔴 화면은 흔히 첫 쪽에도 ``cursor=`` 를 빈 값으로 붙여 보낸다(``cursor=${next ?? ''}``). 종전에는
+    한 창구 안에서도 판단이 갈렸다(실측 2026-09-21) — 훑기는 "없음"으로 봐 200 인데, 검색+offset 은
+    "있음"으로 봐 **400**(cursor·offset 동시), 검색+관련도 정렬도 400, 개체 목록은 "커서가 비었다" 400.
+    그래서 빈 커서를 단 검색 첫 쪽이 통째로 실패했다. 입구에서 한 번 정리해 뒤쪽 판단이 갈리지 않게 한다.
+
+    Args:
+        cursor: 쿼리로 받은 커서 원문.
+
+    Returns:
+        앞뒤 공백을 뗀 커서, 비어 있으면 ``None``.
+    """
+    text = (cursor or "").strip()
+    return text or None
+
+
 def preview(values: Sequence[object], *, max_items: int = 5, max_len: int = 60) -> str:
     """잘못된 값을 응답 문구에 실을 때 **줄여서** 싣는다.
 
