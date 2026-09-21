@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import Request
@@ -210,3 +211,39 @@ async def os_unavailable_handler(request: Request, exc: Exception) -> Response:
     _LOG.warning("OpenSearch 연결 실패(503 반환): %s %s — %s", request.method, request.url.path, exc)
     return envelope(503, "검색 엔진(OpenSearch) 연결 실패 — 잠시 후 다시 시도해 주세요.")
 
+
+# ── 입력 위생: NUL 바이트 ────────────────────────────────────────────────────────
+# 🔴 **PostgreSQL 은 text 에 NUL(0x00)을 못 넣는다** — 자유 문자열 파라미터가 그대로 SQL 로 내려가면
+#    ``psycopg.DataError`` 가 나고 그것이 **500** 으로 샜다(실측 2026-09-21: GET 창구 108개 조합 중
+#    33개). 닫힌 어휘·날짜·UUID 로 검증되는 칸은 앞에서 걸렸지만, 자유 문자열 칸은 막을 사람이
+#    없었다. 칸마다 검사를 붙이면 새 칸이 생길 때마다 빠뜨리므로 **입구 한 곳**에서 끊는다.
+#
+#    본문(JSON)은 대상이 아니다 — 쓰기 창구의 본문 칸은 UUID·닫힌 어휘 검증을 이미 거치므로
+#    NUL 이 SQL 까지 닿지 않는다(``params.uuid_list_or_400`` · ``REVIEW_STATUSES``).
+
+_NUL_DETAIL = (
+    "요청에 NUL(0x00) 바이트가 들어 있습니다 — 저장소가 받지 않는 문자입니다"
+    "(경로·쿼리에서 제거하고 다시 보내십시오)"
+)
+
+
+async def reject_nul_bytes(request: Request, call_next: Callable) -> Response:
+    """경로·쿼리에 NUL 바이트가 있으면 **DB 에 닿기 전에** 400 으로 끊는다.
+
+    검사는 두 번의 부분문자열 스캔뿐이라 정상 요청에 얹히는 비용이 사실상 없다.
+    경로는 ASGI 서버가 이미 퍼센트 디코딩해 주므로 날 바이트로, 쿼리는 원문이라 ``%00`` 으로 본다
+    (``%2500`` 은 문자열 ``%00`` 으로 풀리는 정상 입력이라 걸리지 않는다).
+
+    Args:
+        request: 들어온 요청.
+        call_next: 다음 처리 단계.
+
+    Returns:
+        NUL 이 없으면 아래 단계의 응답 그대로, 있으면 400 봉투.
+    """
+    path = request.scope.get("path") or ""
+    query = request.scope.get("query_string") or b""
+    if "\x00" in path or b"%00" in query or b"\x00" in query:
+        _LOG.warning("NUL 바이트 요청 차단(400): %s %s", request.method, path.replace("\x00", "\\0"))
+        return envelope(400, _NUL_DETAIL)
+    return await call_next(request)

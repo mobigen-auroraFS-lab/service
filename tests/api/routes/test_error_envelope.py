@@ -9,6 +9,7 @@ JSON 을 기대하고 ``detail`` 을 문자열로 읽던 화면은 뒤 둘에서
   · ``detail`` 은 **항상 문자열 하나** — 화면이 그대로 띄울 수 있다
   · 칸별 검증 실패에만 ``errors: [{loc, msg, type}]`` 가 붙는다(받은 값 ``input`` 은 싣지 않는다)
   · 프레임워크가 영어로 채우던 문구도 한국어다
+  · 경로·쿼리의 NUL(0x00)은 **DB 에 닿기 전에** 400 으로 끊긴다
 """
 
 from __future__ import annotations
@@ -24,6 +25,13 @@ from fastapi.testclient import TestClient  # noqa: E402
 from service.api import app, db  # noqa: E402
 
 AID = "01a08fa8-177e-7efa-85cf-45c52619f9bf"
+
+
+def _no_db():
+    """DB seam 두 개를 '부르면 실패'로 막는다 — 닿으면 테스트가 깨진다."""
+    def boom(*_a: object, **_k: object) -> None:
+        raise AssertionError("검사 전에 DB 를 호출했다")
+    return patch.object(db, "run_in_db", boom), patch.object(db, "run_in_db_write", boom)
 
 
 class TestEnvelopeShape(unittest.TestCase):
@@ -115,6 +123,53 @@ class TestEnvelopeShape(unittest.TestCase):
         self._assert_envelope(r, want_status=500, with_errors=False)
         self.assertNotIn(secret, r.text, "예외 내용이 응답으로 샜다")
         self.assertNotIn("Traceback", r.text)
+
+
+class TestNulBytesRejected(unittest.TestCase):
+    """NUL(0x00)은 DB 에 닿기 전에 끊는다 — PostgreSQL text 가 받지 않는 문자다."""
+
+    def setUp(self) -> None:
+        self.client = TestClient(app)
+
+    # (설명, 경로) — 고치기 전 500 이 나던 곳들에서 하나씩 골랐다.
+    CASES = [
+        ("경로(개체 상세)", "/mm-meta/person/a%00b"),
+        ("경로(주제)", "/topics/a%00b"),
+        ("경로(모달리티 통계)", "/admin/assets/modality/a%00b"),
+        ("쿼리(접근 이력 user)", "/admin/access-logs?user=a%00b"),
+        ("쿼리(관계 검색 q)", "/admin/relations?q=a%00b"),
+        ("쿼리(자산 목록 domain)", "/admin/assets?domain=a%00b"),
+        ("쿼리(개체 갈래)", "/mm-meta?areas=a%00b"),
+    ]
+
+    def test_rejected_before_db(self) -> None:
+        for desc, path in self.CASES:
+            with self.subTest(desc), _no_db()[0], _no_db()[1]:
+                r = self.client.get(path)
+                self.assertEqual(400, r.status_code, f"{desc}: {r.text}")
+                self.assertIn("NUL", r.json()["detail"], desc)
+                self.assertEqual({"detail"}, set(r.json()), desc)
+
+    def test_literal_percent_zero_zero_is_not_blocked(self) -> None:
+        """글자 그대로의 ``%00``(전송 시 ``%2500``)은 NUL 이 아니다 — 막으면 과잉 차단이다."""
+        self.assertTrue(self._reached_route("/topics/abc", params={"subtopic": "a%00b"}))
+
+    def test_normal_request_passes(self) -> None:
+        """검사가 정상 요청을 막지 않는다(한글·퍼센트 인코딩 포함)."""
+        self.assertTrue(self._reached_route("/topics/%EA%B5%90%ED%86%B5"))
+
+    def _reached_route(self, path: str, **kw: object) -> bool:
+        """차단되지 않고 라우트까지 갔는지 본다 — DB seam 이 불렸으면 통과한 것이다."""
+        called: list[bool] = []
+
+        def mark(*_a: object, **_k: object) -> None:
+            called.append(True)
+            raise RuntimeError("여기까지 왔으면 통과한 것이다")
+
+        client = TestClient(app, raise_server_exceptions=False)
+        with patch.object(db, "run_in_db", mark):
+            client.get(path, **kw)
+        return bool(called)
 
 
 if __name__ == "__main__":
