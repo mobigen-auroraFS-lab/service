@@ -84,7 +84,7 @@ class TestRefineGoesToTheEngine(unittest.TestCase):
         for target, repl in (
             ("service.api.db.run_in_db", _passthrough_db),
             ("service.portal.search.projection.fetch_access_tiers", lambda *_a, **_k: {}),
-            ("service.api.routes.file_search.fetch_file_meta", lambda *_a, **_k: {}),
+            ("service.portal.repositories.search_repo.fetch_file_meta", lambda *_a, **_k: {}),
             ("src.search.opensearch_sync.get_client", lambda *_a, **_k: object()),
             ("service.api.routes.file_search.get_current_settings",
              lambda: SimpleNamespace(opensearch=SimpleNamespace(index="assets"))),
@@ -152,7 +152,7 @@ class TestRefineCounts(unittest.TestCase):
         for target, repl in (
             ("service.api.db.run_in_db", _passthrough_db),
             ("service.portal.search.projection.fetch_access_tiers", lambda *_a, **_k: {}),
-            ("service.api.routes.file_search.fetch_file_meta", lambda *_a, **_k: {}),
+            ("service.portal.repositories.search_repo.fetch_file_meta", lambda *_a, **_k: {}),
             ("src.search.opensearch_sync.get_client", lambda *_a, **_k: object()),
             ("service.api.routes.file_search.get_current_settings",
              lambda: SimpleNamespace(opensearch=SimpleNamespace(index="assets"))),

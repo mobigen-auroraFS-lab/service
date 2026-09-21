@@ -12,9 +12,9 @@ from collections.abc import Callable
 from fastapi import Request
 from starlette.concurrency import run_in_threadpool
 
-from service.api import db
 from service.portal.auth import authenticate_token
-from service.portal.history.access_log import derive_access_action, record_access
+from service.portal.common.db_manager import DbManager
+from service.portal.history.access_log import derive_access_action
 
 _LOG = logging.getLogger("meta_extract.portal_api")
 
@@ -53,8 +53,8 @@ def record_access_safe(method: str, path: str, status_code: int, user_id: str) -
     if derived is None:
         return
     action, asset_id = derived
-    db.run_in_db_write(
-        lambda conn: record_access(conn, action=action, user_id=user_id, asset_id=asset_id)
+    DbManager.write(
+        lambda repo: repo.admin.record_access(action=action, user_id=user_id, asset_id=asset_id)
     )
 
 

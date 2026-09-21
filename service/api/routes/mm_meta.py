@@ -21,10 +21,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 
-from service.api import db, params
+from service.api import params
 from service.portal import mm_meta
 from service.portal.asset.download import build_bundle_zip_stream
 from service.portal.auth import require_principal
+from service.portal.common.db_manager import DbManager
 from src.mm_meta.rules import MIN_BUNDLE_SIZE
 from src.search.cursor import CursorError
 
@@ -222,34 +223,34 @@ def list_mm_meta(
     #   것이라 커서 계약은 그대로다(티어는 이미 커서에 실려 있다).
     uid_semantic = mm_meta.semantic_first_keys(scope.semantic_ranked)
 
-    def _read(conn: Any) -> tuple[list[dict[str, Any]], int, int]:
+    def _read(repo: Any) -> tuple[list[dict[str, Any]], int, int]:
         """이 쪽의 행과 두 모수를 **한 트랜잭션**에서 읽는다(세 값이 서로 다른 시점을 말하지 않게).
 
         Args:
-            conn: DB 커넥션(``db.run_in_db`` 가 넘긴다).
+            repo: 저장소 묶음(``DbManager.read`` 가 넘긴다 — 셋이 같은 커넥션을 쓴다).
 
         Returns:
             ``(이 쪽의 목록, 좁히기 이후 모수, 좁히기 이전 모수)``.
         """
-        page = mm_meta.fetch_list(
-            conn, entity_type=entity_type, areas=picked_areas,
+        page = repo.entity.page(
+            entity_type=entity_type, areas=picked_areas,
             min_bundle_size=_MIN_BUNDLE_SIZE, limit=limit,
             after_tier=after_tier, after_count=after_count,
             after_uid=after_uid, after_type=after_type,
             uid_allow=scope.uid_allow, uid_first=uid_first, uid_semantic=uid_semantic,
         )
-        after = mm_meta.fetch_total(
-            conn, entity_type=entity_type, areas=picked_areas,
+        after = repo.entity.total(
+            entity_type=entity_type, areas=picked_areas,
             min_bundle_size=_MIN_BUNDLE_SIZE, uid_allow=scope.uid_allow,
         )
         # 좁히기가 없으면 두 모수가 **같은 값**이다 — 같은 수를 두 번 묻지 않는다.
-        before = after if not scope.refined else mm_meta.fetch_total(
-            conn, entity_type=entity_type, areas=picked_areas,
+        before = after if not scope.refined else repo.entity.total(
+            entity_type=entity_type, areas=picked_areas,
             min_bundle_size=_MIN_BUNDLE_SIZE, uid_allow=scope.scope_allow,
         )
         return page, after, before
 
-    rows, total, scope_total = db.run_in_db(_read)  # type: ignore[misc]
+    rows, total, scope_total = DbManager.read(_read)
     # 다음 책갈피는 **DB 가 준 쪽 그대로**에서 만든다. 좁히기는 이미 SQL 이 적용했으므로 여기서 행이
     # 더 줄어들 일이 없다(파이썬이 다시 거르면 걸러진 꼬리를 다음 쪽이 건너뛰어 누락이 났다).
     body: dict[str, Any] = {
@@ -287,9 +288,9 @@ def mm_meta_facets(
     Returns:
         ``{vocab, types, areas, min_members, scoped_by}``.
     """
-    return db.run_in_db(  # type: ignore[return-value]
-        lambda conn: mm_meta.fetch_facets(
-            conn, entity_type=entity_type, areas=_parse_names(areas),
+    return DbManager.read(
+        lambda repo: repo.entity.facets(
+            entity_type=entity_type, areas=_parse_names(areas),
             min_bundle_size=_MIN_BUNDLE_SIZE,
         )
     )
@@ -300,16 +301,18 @@ def mm_meta_types() -> dict[str, Any]:
     """타입 어휘와 종류별 개체 수 — ``/mm-meta/facets`` 의 **부분 응답 별칭**.
 
     이 창구는 위 칩 창구에 흡수됐다(2026-09-08 판정). 프론트가 옮겨 갈 때까지 이름만 살려 둔다 —
-    옛 전화번호를 착신 전환해 두는 것과 같다. 기한은 정하지 않았다.
+    옛 전화번호를 착신 전환해 두는 것과 같다.
+
+    TODO: 폐기 기한이 없다 — 프론트가 옮겨 간 뒤 이 별칭(`/mm-meta/types` · 묶음의 `labels`)을 뺀다.
 
     Returns:
         ``{vocab, types}`` — 칩 창구 응답에서 갈래 축을 뺀 것. 어휘 행이 없으면 ``vocab`` 은 ``None``,
         ``types`` 는 빈 목록이다(코드 프리셋으로 채우지 않는다 — 화면이 폴백하면 "등록 안 했는데 왜
         보이나"를 조사하게 된다).
     """
-    facets = db.run_in_db(
-        lambda conn: mm_meta.fetch_facets(
-            conn, entity_type=None, areas=None, min_bundle_size=_MIN_BUNDLE_SIZE,
+    facets = DbManager.read(
+        lambda repo: repo.entity.facets(
+            entity_type=None, areas=None, min_bundle_size=_MIN_BUNDLE_SIZE,
         )
     )
     return {"vocab": facets["vocab"], "types": facets["types"]}  # type: ignore[index]
@@ -347,9 +350,9 @@ def download_entities_bundle(
         HTTPException: 좁힌 결과가 비면 404 · 용량 상한 초과면 413 · 경로를 아는 파일이 하나도 없으면 409.
     """
     picked = _parse_names(areas) or _parse_names(labels)
-    rows: list[dict[str, Any]] = db.run_in_db(  # type: ignore[assignment]
-        lambda conn: mm_meta.entities_zip_rows(
-            conn, entity_type=entity_type, areas=picked,
+    rows: list[dict[str, Any]] = DbManager.read(
+        lambda repo: repo.entity.zip_rows(
+            entity_type=entity_type, areas=picked,
             min_bundle_size=_MIN_BUNDLE_SIZE, exclude_video=exclude_video,
         )
     )
@@ -399,9 +402,8 @@ def mm_meta_card(
         HTTPException: 개체 자체가 없으면 404. **빈 개체는 404 가 아니다**(200·``total`` 0) —
             "등록했는데 안 보인다"와 "주소가 틀렸다"를 같은 응답으로 만들지 않는다.
     """
-    card = db.run_in_db(
-        lambda conn: mm_meta.fetch_card(conn, entity_type=entity_type, entity_uid=entity_uid)
-    )
+    card = DbManager.read(
+        lambda repo: repo.entity.card(entity_type=entity_type, entity_uid=entity_uid))
     if card is None:
         raise HTTPException(status_code=404, detail="해당 멀티모달 메타가 없다")
     return card  # type: ignore[return-value]
@@ -425,10 +427,9 @@ def download_card_bundle(
         HTTPException: 개체가 없으면 404 · 구성 자산이 없거나 전부 경로 미상이면 409(빈 zip 을 주면
             사용자가 "받았는데 비었다"를 오류로 오해한다).
     """
-    result = db.run_in_db(
-        lambda conn: mm_meta.card_zip_targets(
-            conn, entity_type=entity_type, entity_uid=entity_uid)
-    )
+    result = DbManager.read(
+        lambda repo: repo.entity.card_zip_targets(
+            entity_type=entity_type, entity_uid=entity_uid))
     if result is None:
         raise HTTPException(status_code=404, detail="해당 멀티모달 메타가 없다")
     targets, name, truncated = result  # type: ignore[misc]

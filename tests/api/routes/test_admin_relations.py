@@ -18,6 +18,8 @@ from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
 
 from service.api import app
+from service.portal.repositories import asset_repo
+from service.portal.repositories.review_repo import ReviewRepository
 
 # 경로에 쓰는 id 는 **실제와 같은 UUID** 여야 한다 — 라우트가 DB 에 묻기 전에 형식을 보고
 # 아니면 404/400 으로 끊는다(2026-09-21 · `tests/api/routes/test_bad_id.py`).
@@ -66,7 +68,7 @@ class TestRelationsList(unittest.TestCase):
         _enable_bypass(self)
         self.client = TestClient(app)
 
-    @patch("service.api.routes.admin.list_edges_for_review")
+    @patch("service.portal.repositories.admin_repo.list_edges_for_review")
     def test_list_passes_status_limit_offset(self, mock_list) -> None:
         mock_list.return_value = {"rows": [], "total": 0, "status": "proposed",
                                   "limit": 50, "offset": 0}
@@ -79,7 +81,7 @@ class TestRelationsList(unittest.TestCase):
         self.assertEqual(kwargs["offset"], 10)
         self.assertEqual(resp.json()["status"], "proposed")
 
-    @patch("service.api.routes.admin.list_edges_for_review")
+    @patch("service.portal.repositories.admin_repo.list_edges_for_review")
     def test_list_default_status_proposed(self, mock_list) -> None:
         mock_list.return_value = {"rows": [], "total": 0, "status": "proposed",
                                   "limit": 50, "offset": 0}
@@ -87,7 +89,7 @@ class TestRelationsList(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(mock_list.call_args[1]["status"], "proposed")
 
-    @patch("service.api.routes.admin.list_edges_for_review")
+    @patch("service.portal.repositories.admin_repo.list_edges_for_review")
     def test_list_bogus_status_400(self, mock_list) -> None:
         resp = self.client.get("/admin/relations", params={"status": "bogus"})
         self.assertEqual(resp.status_code, 400)
@@ -101,7 +103,7 @@ class TestRelationsListFilters(unittest.TestCase):
         _enable_bypass(self)
         self.client = TestClient(app)
 
-    @patch("service.api.routes.admin.list_edges_for_review")
+    @patch("service.portal.repositories.admin_repo.list_edges_for_review")
     def test_filters_passed_through(self, mock_list) -> None:
         mock_list.return_value = {"rows": [], "total": 0, "status": "active",
                                   "limit": 50, "offset": 0}
@@ -124,7 +126,7 @@ class TestRelationsListFilters(unittest.TestCase):
         self.assertIsNotNone(kw["since"])
         self.assertIsNotNone(kw["until"])
 
-    @patch("service.api.routes.admin.list_edges_for_review")
+    @patch("service.portal.repositories.admin_repo.list_edges_for_review")
     def test_no_filters_backward_compatible(self, mock_list) -> None:
         # SC-011 — 확장 파라미터 미지정 시 전부 None(현행 동작). date_col 은 status별 자동.
         mock_list.return_value = {"rows": [], "total": 0, "status": "proposed",
@@ -137,7 +139,7 @@ class TestRelationsListFilters(unittest.TestCase):
             self.assertIsNone(kw[key], key)
         self.assertEqual(kw["date_col"], "created_at")  # proposed → created_at
 
-    @patch("service.api.routes.admin.list_edges_for_review")
+    @patch("service.portal.repositories.admin_repo.list_edges_for_review")
     def test_date_col_auto_by_status(self, mock_list) -> None:
         # FR-752 — date_on 생략 시 active/rejected → reviewed_at.
         mock_list.return_value = {"rows": [], "total": 0, "status": "active",
@@ -146,7 +148,7 @@ class TestRelationsListFilters(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(mock_list.call_args[1]["date_col"], "reviewed_at")
 
-    @patch("service.api.routes.admin.list_edges_for_review")
+    @patch("service.portal.repositories.admin_repo.list_edges_for_review")
     def test_blank_q_ignored(self, mock_list) -> None:
         # 빈/공백 q → None(필터 비활성·팀 결정).
         mock_list.return_value = {"rows": [], "total": 0, "status": "proposed",
@@ -155,14 +157,14 @@ class TestRelationsListFilters(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIsNone(mock_list.call_args[1]["q"])
 
-    @patch("service.api.routes.admin.list_edges_for_review")
+    @patch("service.portal.repositories.admin_repo.list_edges_for_review")
     def test_min_greater_than_max_400(self, mock_list) -> None:
         resp = self.client.get("/admin/relations", params={
             "status": "proposed", "min_confidence": 0.9, "max_confidence": 0.1})
         self.assertEqual(resp.status_code, 400)
         mock_list.assert_not_called()
 
-    @patch("service.api.routes.admin.list_edges_for_review")
+    @patch("service.portal.repositories.admin_repo.list_edges_for_review")
     def test_confidence_out_of_range_400(self, mock_list) -> None:
         resp = self.client.get("/admin/relations", params={
             "status": "proposed", "min_confidence": 1.5})
@@ -172,14 +174,14 @@ class TestRelationsListFilters(unittest.TestCase):
         self.assertEqual(resp2.status_code, 400)
         mock_list.assert_not_called()
 
-    @patch("service.api.routes.admin.list_edges_for_review")
+    @patch("service.portal.repositories.admin_repo.list_edges_for_review")
     def test_bogus_date_on_400(self, mock_list) -> None:
         resp = self.client.get("/admin/relations", params={
             "status": "proposed", "date_on": "bogus"})
         self.assertEqual(resp.status_code, 400)
         mock_list.assert_not_called()
 
-    @patch("service.api.routes.admin.list_edges_for_review")
+    @patch("service.portal.repositories.admin_repo.list_edges_for_review")
     def test_bad_date_format_422(self, mock_list) -> None:
         # 013 ``params.parse_dt`` 관례 — 형식 오류는 422.
         resp = self.client.get("/admin/relations", params={
@@ -187,18 +189,19 @@ class TestRelationsListFilters(unittest.TestCase):
         self.assertEqual(resp.status_code, 422)
         mock_list.assert_not_called()
 
-    @patch("service.api.routes.admin.list_edges_for_review")
+    @patch("service.portal.repositories.admin_repo.list_edges_for_review")
     def test_from_after_to_400(self, mock_list) -> None:
         resp = self.client.get("/admin/relations", params={
             "status": "proposed", "from": "2026-07-01", "to": "2026-06-01"})
         self.assertEqual(resp.status_code, 400)
         mock_list.assert_not_called()
 
-    @patch("service.api.routes.admin.list_edges_for_review")
+    @patch("service.portal.repositories.admin_repo.list_edges_for_review")
     def test_q_over_max_length_422(self, mock_list) -> None:
-        # FR-702 — q 는 최대 200자. Query(max_length=200) 초과 시 FastAPI 검증 422.
+        # [2026-09-21] 자유 문자열 질의 상한을 **300자로 통일**했다(종전 이 창구만 200) — 화면이
+        #   창구마다 다른 숫자를 외우지 않게. 초과는 그대로 FastAPI 검증 422.
         resp = self.client.get("/admin/relations", params={
-            "status": "proposed", "q": "x" * 201})
+            "status": "proposed", "q": "x" * 301})
         self.assertEqual(resp.status_code, 422)
         mock_list.assert_not_called()
 
@@ -210,7 +213,7 @@ class TestRelationKindsList(unittest.TestCase):
         _enable_bypass(self)
         self.client = TestClient(app)
 
-    @patch("service.api.routes.admin.list_relation_kinds")
+    @patch("service.portal.repositories.admin_repo.list_relation_kinds")
     def test_list_all(self, mock_kinds) -> None:
         mock_kinds.return_value = {"rows": [
             {"kind_code": "same_domain", "kind_name_ko": "동일 도메인", "status": "active"}],
@@ -220,14 +223,14 @@ class TestRelationKindsList(unittest.TestCase):
         self.assertEqual(mock_kinds.call_args[1]["status"], None)
         self.assertEqual(resp.json()["total"], 1)
 
-    @patch("service.api.routes.admin.list_relation_kinds")
+    @patch("service.portal.repositories.admin_repo.list_relation_kinds")
     def test_list_status_active(self, mock_kinds) -> None:
         mock_kinds.return_value = {"rows": [], "total": 0}
         resp = self.client.get("/admin/relation-kinds", params={"status": "active"})
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(mock_kinds.call_args[1]["status"], "active")
 
-    @patch("service.api.routes.admin.list_relation_kinds")
+    @patch("service.portal.repositories.admin_repo.list_relation_kinds")
     def test_list_bogus_status_400(self, mock_kinds) -> None:
         resp = self.client.get("/admin/relation-kinds", params={"status": "bogus"})
         self.assertEqual(resp.status_code, 400)
@@ -289,8 +292,8 @@ class TestRelationsApproveReject(unittest.TestCase):
         _enable_bypass(self)
         self.client = TestClient(app)
 
-    @patch("service.api.routes.review.record_access")
-    @patch("service.api.routes.review.bulk_review")
+    @patch("service.portal.repositories.review_repo.record_access")
+    @patch("service.portal.repositories.review_repo.bulk_review")
     def test_approve_returns_results_and_audits_ok(self, mock_bulk, mock_audit) -> None:
         mock_bulk.return_value = [{"edge_id": E1, "ok": True}, {"edge_id": E2, "ok": False}]
         resp = self.client.post("/admin/relations/approve",
@@ -310,8 +313,8 @@ class TestRelationsApproveReject(unittest.TestCase):
         self.assertEqual(approve_calls[0].kwargs["user_id"], "anonymous")
         self.assertEqual(approve_calls[0].kwargs["detail"], {"edge_id": E1})
 
-    @patch("service.api.routes.review.record_access")
-    @patch("service.api.routes.review.bulk_review")
+    @patch("service.portal.repositories.review_repo.record_access")
+    @patch("service.portal.repositories.review_repo.bulk_review")
     def test_reject_dispatches_reject_action(self, mock_bulk, mock_audit) -> None:
         mock_bulk.return_value = [{"edge_id": E1, "ok": True}]
         resp = self.client.post("/admin/relations/reject", json={"edge_ids": [E1]})
@@ -320,7 +323,7 @@ class TestRelationsApproveReject(unittest.TestCase):
         actions = [c.kwargs.get("action") for c in mock_audit.call_args_list]
         self.assertIn("relation.reject", actions)
 
-    @patch("service.api.routes.review.bulk_review")
+    @patch("service.portal.repositories.review_repo.bulk_review")
     def test_empty_edge_ids_400(self, mock_bulk) -> None:
         resp = self.client.post("/admin/relations/approve", json={"edge_ids": []})
         self.assertEqual(resp.status_code, 400)
@@ -334,8 +337,8 @@ class TestRelationsRevise(unittest.TestCase):
         _enable_bypass(self)
         self.client = TestClient(app)
 
-    @patch("service.api.routes.review.record_access")
-    @patch("service.api.routes.review.revise_edge")
+    @patch("service.portal.repositories.review_repo.record_access")
+    @patch("service.portal.repositories.review_repo.revise_edge")
     def test_revise_calls_and_audits(self, mock_revise, mock_audit) -> None:
         mock_revise.return_value = True
         resp = self.client.post("/admin/relations/revise",
@@ -352,8 +355,8 @@ class TestRelationsRevise(unittest.TestCase):
         self.assertEqual(revise_calls[0].kwargs["detail"],
                          {"edge_id": E1, "to_status": "rejected"})
 
-    @patch("service.api.routes.review.record_access")
-    @patch("service.api.routes.review.revise_edge")
+    @patch("service.portal.repositories.review_repo.record_access")
+    @patch("service.portal.repositories.review_repo.revise_edge")
     def test_revise_ok_false_no_audit(self, mock_revise, mock_audit) -> None:
         mock_revise.return_value = False
         resp = self.client.post("/admin/relations/revise",
@@ -364,7 +367,7 @@ class TestRelationsRevise(unittest.TestCase):
                         if c.kwargs.get("action") == "relation.revise"]
         self.assertEqual(len(revise_calls), 0)
 
-    @patch("service.api.routes.review.revise_edge")
+    @patch("service.portal.repositories.review_repo.revise_edge")
     def test_revise_bogus_to_status_400(self, mock_revise) -> None:
         resp = self.client.post("/admin/relations/revise",
                                 json={"edge_id": E1, "to_status": "bogus"})
@@ -379,8 +382,8 @@ class TestRelationKindPromote(unittest.TestCase):
         _enable_bypass(self)
         self.client = TestClient(app)
 
-    @patch("service.api.routes.review.record_access")
-    @patch("service.api.routes.review.promote_relation_kind")
+    @patch("service.portal.repositories.review_repo.record_access")
+    @patch("service.portal.repositories.review_repo.promote_relation_kind")
     def test_promote_calls_and_audits(self, mock_promote, mock_audit) -> None:
         mock_promote.return_value = True
         resp = self.client.post("/admin/relation-kinds/gaming_hardware/promote")
@@ -393,8 +396,8 @@ class TestRelationKindPromote(unittest.TestCase):
         self.assertEqual(len(promote_calls), 1)
         self.assertEqual(promote_calls[0].kwargs["detail"], {"kind_code": "gaming_hardware"})
 
-    @patch("service.api.routes.review.record_access")
-    @patch("service.api.routes.review.promote_relation_kind")
+    @patch("service.portal.repositories.review_repo.record_access")
+    @patch("service.portal.repositories.review_repo.promote_relation_kind")
     def test_promote_ok_false_no_audit(self, mock_promote, mock_audit) -> None:
         mock_promote.return_value = False
         resp = self.client.post("/admin/relation-kinds/already_active/promote")
@@ -409,13 +412,12 @@ class TestRelationAuditBestEffort(unittest.TestCase):
     """FR-502 — 감사 기록 실패가 결정 트랜잭션을 깨지 않는다(best-effort·savepoint)."""
 
     def test_record_relation_audit_swallows_failure(self) -> None:
-        from service.api.routes.review import _record_relation_audit
         conn = MagicMock()
         # conn.transaction() 컨텍스트 진입 시 예외 → best-effort 로 삼켜야 한다.
         conn.transaction.side_effect = RuntimeError("db down")
         # 예외를 전파하지 않으면 성공(결정 트랜잭션 보존).
-        _record_relation_audit(conn, action="relation.approve", reviewer="bc",
-                               detail={"edge_id": E1})
+        ReviewRepository(conn).audit(action="relation.approve", reviewer="bc",
+                                     detail={"edge_id": E1})
 
 
 class TestReviewDecisionNoReindex(unittest.TestCase):
@@ -435,9 +437,9 @@ class TestReviewDecisionNoReindex(unittest.TestCase):
 
     # 승인 — ok=True(e1)만 감사 기록·응답 봉투 불변. 재색인용 PostgresUtil 미생성(065 로 재색인 훅 제거).
     @patch("src.database.postgres_util.PostgresUtil")
-    @patch("service.api.routes.review._record_relation_audit")
-    @patch("service.api.routes.review.record_access")
-    @patch("service.api.routes.review.bulk_review")
+    @patch.object(ReviewRepository, "audit")
+    @patch("service.portal.repositories.review_repo.record_access")
+    @patch("service.portal.repositories.review_repo.bulk_review")
     def test_approve_records_audit_and_no_reindex(
         self, m_bulk, m_access, m_audit, m_pgutil
     ) -> None:
@@ -457,9 +459,9 @@ class TestReviewDecisionNoReindex(unittest.TestCase):
 
     # 반려 — 감사 기록·봉투 불변, 재색인 없음.
     @patch("src.database.postgres_util.PostgresUtil")
-    @patch("service.api.routes.review._record_relation_audit")
-    @patch("service.api.routes.review.record_access")
-    @patch("service.api.routes.review.bulk_review")
+    @patch.object(ReviewRepository, "audit")
+    @patch("service.portal.repositories.review_repo.record_access")
+    @patch("service.portal.repositories.review_repo.bulk_review")
     def test_reject_records_audit_and_no_reindex(
         self, m_bulk, m_access, m_audit, m_pgutil
     ) -> None:
@@ -473,9 +475,9 @@ class TestReviewDecisionNoReindex(unittest.TestCase):
 
     # 전건 ok=False → 감사 미기록·재색인 없음(변경 없음).
     @patch("src.database.postgres_util.PostgresUtil")
-    @patch("service.api.routes.review._record_relation_audit")
-    @patch("service.api.routes.review.record_access")
-    @patch("service.api.routes.review.bulk_review")
+    @patch.object(ReviewRepository, "audit")
+    @patch("service.portal.repositories.review_repo.record_access")
+    @patch("service.portal.repositories.review_repo.bulk_review")
     def test_approve_all_ok_false_no_audit_no_reindex(
         self, m_bulk, m_access, m_audit, m_pgutil
     ) -> None:
@@ -487,9 +489,9 @@ class TestReviewDecisionNoReindex(unittest.TestCase):
 
     # 정정(revise) 성공(ok=True) → 감사 기록·봉투 불변, 재색인 없음.
     @patch("src.database.postgres_util.PostgresUtil")
-    @patch("service.api.routes.review._record_relation_audit")
-    @patch("service.api.routes.review.record_access")
-    @patch("service.api.routes.review.revise_edge")
+    @patch.object(ReviewRepository, "audit")
+    @patch("service.portal.repositories.review_repo.record_access")
+    @patch("service.portal.repositories.review_repo.revise_edge")
     def test_revise_ok_records_audit_and_no_reindex(
         self, m_revise, m_access, m_audit, m_pgutil
     ) -> None:
@@ -506,9 +508,9 @@ class TestReviewDecisionNoReindex(unittest.TestCase):
 
     # 정정 실패(ok=False·변경 없음) → 감사 미기록·재색인 없음.
     @patch("src.database.postgres_util.PostgresUtil")
-    @patch("service.api.routes.review._record_relation_audit")
-    @patch("service.api.routes.review.record_access")
-    @patch("service.api.routes.review.revise_edge")
+    @patch.object(ReviewRepository, "audit")
+    @patch("service.portal.repositories.review_repo.record_access")
+    @patch("service.portal.repositories.review_repo.revise_edge")
     def test_revise_ok_false_no_audit_no_reindex(
         self, m_revise, m_access, m_audit, m_pgutil
     ) -> None:
@@ -528,6 +530,7 @@ class TestReviewDecisionNoReindex(unittest.TestCase):
         self.assertFalse(hasattr(pa, "_reindex_review_topics"))
         self.assertFalse(hasattr(pa, "_resolve_edge_endpoint_assets"))
         # 스왑 검증: 주제 소비는 자기주제 정본 seam(065)으로 갈아끼워져 있다.
-        self.assertTrue(hasattr(pa, "fetch_asset_topic"))
-        self.assertTrue(hasattr(pa, "find_same_topic_groups"))
+        # 주제 소비는 저장소로 옮겼다(DB 조회는 저장소가 한다) — 거기 있는지 본다.
+        self.assertTrue(hasattr(asset_repo, "fetch_asset_topic"))
+        self.assertTrue(hasattr(asset_repo, "find_same_topic_groups"))
         self.assertFalse(hasattr(pa, "project_asset_topics"))

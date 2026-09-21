@@ -18,40 +18,21 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from service.api import db, params
-from service.portal.asset.detail import fetch_asset_detail
+from service.api import params
 from service.portal.asset.stats import (
     _RELATION_SCOPES,
     _SNAPSHOT_BUCKETS,
-    asset_stats,
-    asset_timeline,
-    build_modality_overview,
-    modality_detail,
-    query_assets,
 )
 from service.portal.auth import Principal, require_principal
+from service.portal.common.db_manager import DbManager
 from service.portal.common.review_vocab import REVIEW_STATUSES
-from service.portal.dashboard import build_dashboard_summary
-from service.portal.history.access_log import (
-    access_log_overview,
-    access_log_stats,
-    access_log_timeline,
-    query_access_logs,
-)
-from service.portal.history.lineage import (
-    lineage_timeline,
-    query_asset_lineage,
-    query_lineage_feed,
-    relation_proposed_summary,
-)
 from src.domain.status_vocab import RelationKindStatus
-from src.relations.review import list_edges_for_review, list_relation_kinds
-from src.topic.asset_topic_query import fetch_asset_topic, find_same_topic_groups
 
 # 이 라우터의 경로는 전부 ``/admin`` 아래이고 전부 인증이 필요하다 — 접두사와 인증을
 # 라우터에 한 번만 건다(핸들러마다 반복하면 한 곳이 빠져도 드러나지 않는다).
 # ⚠️ 인증을 **의존성으로만** 걸었으므로 핸들러는 주체를 받지 않는다. 등급·식별자가
 #    필요한 핸들러만 ``principal`` 을 따로 선언한다(예: ``admin_asset_detail``).
+# TODO(배포 전): `/admin/*` 에 역할(RBAC) 검사가 없다 — 지금은 인증만 요구한다(`TODO.md` §3).
 router = APIRouter(
     prefix="/admin",
     tags=["admin"],
@@ -69,14 +50,14 @@ def asset_lineage(
 ) -> dict[str, Any]:
     """자산 하나의 처리 이력(계보)을 발생 시각순으로 돌려준다.
 
-    조회 전용(``db.run_in_db`` idempotent) — ``query_asset_lineage`` 가 ``asset_lineage`` 를
+    조회 전용(``DbManager.read`` idempotent) — ``query_asset_lineage`` 가 ``asset_lineage`` 를
     조회 전용이며 도메인에 따른 제외는 없다(모든 도메인을 균일하게 노출).
     미존재/이력 없음은 빈 ``activities`` 로 200 반환(의도·도메인 제외 없음).
     """
     # 형식이 아닌 id 는 **없는 자산과 같게** 본다 — 이 창구는 미존재를 200·빈 목록으로 답한다.
     if not params.is_uuid(asset_id):
         return {"asset_id": asset_id, "activities": []}
-    activities = db.run_in_db(lambda conn: query_asset_lineage(conn, asset_id))
+    activities = DbManager.read(lambda repo: repo.admin.asset_lineage(asset_id))
     return {"asset_id": asset_id, "activities": activities}
 
 
@@ -95,9 +76,9 @@ def access_logs(
     clearance 별 마스킹 없이 전사 노출 — admin/operator 한정은 RBAC 도입 시(향후 포탈) 조인다(의도적 개방).
     """
     since, until = params.parse_dt(from_), params.parse_dt(to)
-    return db.run_in_db(
-        lambda conn: query_access_logs(
-            conn, user_id=user, action=action, since=since, until=until,
+    return DbManager.read(
+        lambda repo: repo.admin.access_logs(
+            user_id=user, action=action, since=since, until=until,
             limit=limit, offset=offset,
         )
     )
@@ -110,7 +91,7 @@ def access_logs_stats(
 ) -> dict[str, Any]:
     """접근 이력 집계 — 총계와 동작별·사용자별 건수(조회 전용)."""
     since, until = params.parse_dt(from_), params.parse_dt(to)
-    return db.run_in_db(lambda conn: access_log_stats(conn, since=since, until=until))
+    return DbManager.read(lambda repo: repo.admin.access_log_stats(since=since, until=until))
 
 
 @router.get("/access-logs/timeline")
@@ -129,9 +110,9 @@ def access_logs_timeline(
     if group_by is not None and group_by not in ("action", "user_id"):
         raise HTTPException(status_code=422, detail=f"group_by 는 action|user_id 만 허용: {group_by!r}")
     since, until = params.parse_dt(from_), params.parse_dt(to)
-    return db.run_in_db(
-        lambda conn: access_log_timeline(
-            conn, since=since, until=until, action=action, interval=interval, group_by=group_by))
+    return DbManager.read(
+        lambda repo: repo.admin.access_log_timeline(
+            since=since, until=until, action=action, interval=interval, group_by=group_by))
 
 
 @router.get("/access-logs/overview")
@@ -149,9 +130,9 @@ def access_logs_overview_endpoint(
     list 는 별도 페이징 유지). interval 화이트리스트 위반은 422(``params.validated_interval``).
     """
     since, until = params.parse_dt(from_), params.parse_dt(to)
-    return db.run_in_db(
-        lambda conn: access_log_overview(
-            conn, since=since, until=until, action=action, interval=interval))
+    return DbManager.read(
+        lambda repo: repo.admin.access_log_overview(
+            since=since, until=until, action=action, interval=interval))
 
 
 @router.get("/lineage")
@@ -167,9 +148,9 @@ def lineage_feed(
 ) -> dict[str, Any]:
     """기간 내 모든 자산의 계보를 최신순으로 페이징해 돌려준다(조회 전용)."""
     since, until = params.parse_dt(from_), params.parse_dt(to)
-    return db.run_in_db(
-        lambda conn: query_lineage_feed(
-            conn, since=since, until=until, activity=activity, modality=modality,
+    return DbManager.read(
+        lambda repo: repo.admin.lineage_feed(
+            since=since, until=until, activity=activity, modality=modality,
             status=status, file_ext=file_ext, limit=limit, offset=offset))
 
 
@@ -189,9 +170,9 @@ def lineage_timeline_endpoint(
     if group_by is not None and group_by not in ("activity", "modality", "status"):
         raise HTTPException(status_code=422, detail=f"group_by 는 activity|modality|status 만: {group_by!r}")
     since, until = params.parse_dt(from_), params.parse_dt(to)
-    return db.run_in_db(
-        lambda conn: lineage_timeline(
-            conn, since=since, until=until, activity=activity, interval=interval, group_by=group_by))
+    return DbManager.read(
+        lambda repo: repo.admin.lineage_timeline(
+            since=since, until=until, activity=activity, interval=interval, group_by=group_by))
 
 
 @router.get("/asset-stats")
@@ -207,9 +188,9 @@ def asset_stats_endpoint(
     count·합계가 total 과 일치)이 추가된다. 주지 않으면 응답 모양이 그대로다.
     """
     since, until = params.parse_dt(from_), params.parse_dt(to)
-    return db.run_in_db(
-        lambda conn: asset_stats(
-            conn, since=since, until=until, snapshot_buckets=snapshot_buckets))
+    return DbManager.read(
+        lambda repo: repo.admin.asset_stats(
+            since=since, until=until, snapshot_buckets=snapshot_buckets))
 
 
 @router.get("/assets")
@@ -245,9 +226,9 @@ def assets_list(
             status_code=400,
             detail=f"알 수 없는 relation_scope: {relation_scope!r} (허용: {list(_RELATION_SCOPES)})")
     cfrom, cto = params.parse_dt(created_from), params.parse_dt(created_to)
-    return db.run_in_db(
-        lambda conn: query_assets(
-            conn, status=status, modality=modality, domain=domain, file_ext=file_ext,
+    return DbManager.read(
+        lambda repo: repo.admin.assets(
+            status=status, modality=modality, domain=domain, file_ext=file_ext,
             created_from=cfrom, created_to=cto, snapshot_bucket=snapshot_bucket,
             relation_scope=relation_scope, limit=limit, offset=offset,
             with_content=with_content))
@@ -264,7 +245,7 @@ def modality_detail_endpoint(
     도메인에 따른 제외는 없다(모든 도메인을 균일하게 노출).
     """
     since, until = params.parse_dt(from_), params.parse_dt(to)
-    return db.run_in_db(lambda conn: modality_detail(conn, modality, since=since, until=until))
+    return DbManager.read(lambda repo: repo.admin.modality_detail(modality, since=since, until=until))
 
 
 @router.get("/assets/modality/{modality}/overview")
@@ -281,9 +262,9 @@ def modality_overview_endpoint(
     catch-all 1세그 ``/admin/assets/{asset_id}`` 보다 위(구체 경로)에 둔다.
     """
     since, until = params.parse_dt(from_), params.parse_dt(to)
-    return db.run_in_db(
-        lambda conn: build_modality_overview(
-            conn, modality, since=since, until=until, interval=interval, limit=limit))
+    return DbManager.read(
+        lambda repo: repo.admin.modality_overview(
+            modality, since=since, until=until, interval=interval, limit=limit))
 
 
 @router.get("/asset-timeline")
@@ -303,9 +284,9 @@ def asset_timeline_endpoint(
         raise HTTPException(status_code=422,
                             detail=f"group_by 는 modality|status|domain|file_ext 만: {group_by!r}")
     since, until = params.parse_dt(from_), params.parse_dt(to)
-    return db.run_in_db(
-        lambda conn: asset_timeline(
-            conn, since=since, until=until, interval=interval, group_by=group_by))
+    return DbManager.read(
+        lambda repo: repo.admin.asset_timeline(
+            since=since, until=until, interval=interval, group_by=group_by))
 
 
 # 관리자 화면에서 자산 1건으로 파고드는 경로. 노출 판단은 사용자용 상세와 같은 함수를 쓴다
@@ -325,19 +306,9 @@ def admin_asset_detail(
     """
     params.uuid_or_404(asset_id, detail="자산을 찾을 수 없거나 노출 대상이 아님")
 
-    def _work(conn: Any) -> dict[str, Any] | None:
-        """한 트랜잭션에서 상세·주제를 모아 온다(서비스웹 상세와 같은 순서·같은 seam).
-
-        ``None`` 은 "없거나 볼 권한이 없음" — 호출부가 404 로 바꾼다.
-        """
-        detail = fetch_asset_detail(conn, asset_id=asset_id, clearance=principal.clearance)
-        if detail is None:
-            return None
-        detail["topics"] = fetch_asset_topic(conn, asset_id=asset_id)
-        detail["same_topic_groups"] = find_same_topic_groups(conn, asset_id=asset_id)
-        return detail
-
-    detail = db.run_in_db(_work)
+    detail = DbManager.read(
+        lambda repo: repo.admin.asset_detail(
+            asset_id=asset_id, clearance=principal.clearance))
     if detail is None:
         raise HTTPException(status_code=404, detail="자산을 찾을 수 없거나 노출 대상이 아님")
     return detail
@@ -359,9 +330,9 @@ def dashboard_summary_endpoint(
         raise HTTPException(status_code=422,
                             detail=f"monthly_interval 은 day|month 만 허용: {monthly_interval!r}")
     now = datetime.now(UTC)
-    return db.run_in_db(
-        lambda conn: build_dashboard_summary(
-            conn, now=now, months=months, monthly_interval=monthly_interval))
+    return DbManager.read(
+        lambda repo: repo.admin.dashboard_summary(
+            now=now, months=months, monthly_interval=monthly_interval))
 
 
 @router.get("/relations/proposed-summary")
@@ -376,8 +347,9 @@ def relations_proposed_summary_endpoint(
     ``params.validated_interval`` Depends(422).
     """
     since, until = params.parse_dt(from_), params.parse_dt(to)
-    return db.run_in_db(
-        lambda conn: relation_proposed_summary(conn, since=since, until=until, interval=interval))
+    return DbManager.read(
+        lambda repo: repo.admin.relation_proposed_summary(
+            since=since, until=until, interval=interval))
 
 
 @router.get("/relations")
@@ -386,7 +358,7 @@ def relations_list(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     q: str | None = Query(
-        None, max_length=200,
+        None, max_length=300,
         description="통합 텍스트 검색(edge_id·asset_id·파일명·reason·topic·최대 200자)"),
     asset_id: str | None = Query(None, description="양끝 중 하나 정확 일치"),
     kind_code: str | None = Query(None, description="관계종류 코드 정확 일치"),
@@ -438,9 +410,9 @@ def relations_list(
     q_clean = q.strip() if q else None
     q_clean = q_clean or None
 
-    return db.run_in_db(
-        lambda conn: list_edges_for_review(
-            conn, status=status, limit=limit, offset=offset,
+    return DbManager.read(
+        lambda repo: repo.admin.edges_for_review(
+            status=status, limit=limit, offset=offset,
             q=q_clean, asset_id=asset_id, kind_code=kind_code, modality=modality,
             min_confidence=min_confidence, max_confidence=max_confidence,
             reviewed_by=reviewed_by, since=since, until=until, date_col=date_col)
@@ -461,4 +433,4 @@ def relation_kinds_list(
             status_code=400,
             detail=f"알 수 없는 status: {status!r} (허용: {list(_RELATION_KIND_STATUSES)})",
         )
-    return db.run_in_db(lambda conn: list_relation_kinds(conn, status=status))
+    return DbManager.read(lambda repo: repo.admin.relation_kinds(status=status))
