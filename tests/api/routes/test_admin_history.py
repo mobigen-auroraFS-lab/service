@@ -93,6 +93,30 @@ class HistoryEndpointsTest(unittest.TestCase):
                 self.assertEqual(r.status_code, 200, f"{path} interval=month 은 200 이어야 함")
                 self.assertEqual(r.json()["interval"], "month")
 
+    def test_timeline_week_accepted_all_endpoints(self):
+        """🔴 [2026-09-21] week 는 종전에 422 였다 — 시·일·달만 되고 주만 안 될 까닭이 없다.
+
+        Swagger 설명문(``hour | day | week | month``)에는 처음부터 있었는데 화이트리스트에만 빠져 있었다.
+        """
+        with mock.patch.object(routes_admin, "access_log_timeline",
+                               return_value={"interval": "week", "buckets": []}), \
+             mock.patch.object(routes_admin, "lineage_timeline",
+                               return_value={"interval": "week", "buckets": []}), \
+             mock.patch.object(routes_admin, "asset_timeline",
+                               return_value={"interval": "week", "buckets": []}), \
+             mock.patch.object(db, "run_in_db", side_effect=lambda cb: cb(None)):
+            for path in ("/admin/access-logs/timeline", "/admin/lineage/timeline",
+                         "/admin/asset-timeline"):
+                r = self.client.get(f"{path}?interval=week")
+                self.assertEqual(r.status_code, 200, f"{path} interval=week 은 200 이어야 함")
+                self.assertEqual(r.json()["interval"], "week")
+
+    def test_bad_interval_message_lists_week(self):
+        """허용 목록 안내 문구에도 week 가 있어야 한다 — 문구가 곧 화면이 읽는 어휘다."""
+        r = self.client.get("/admin/access-logs/timeline?interval=year")
+        self.assertEqual(r.status_code, 422)
+        self.assertIn("week", r.json()["detail"])
+
     def test_timeline_group_by_action_multiseries(self):
         with mock.patch.object(routes_admin, "access_log_timeline",
                                return_value={"interval": "day", "group_by": "action",

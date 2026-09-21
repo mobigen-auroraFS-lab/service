@@ -183,7 +183,7 @@
     },
     "IF-ADMIN-04": {
       "errors": {
-        "422": "interval·group_by·날짜 형식 오류(week 는 422)"
+        "422": "interval·group_by·날짜 형식 오류"
       },
       "gubun": "현행 정본",
       "method": "GET",
@@ -442,7 +442,7 @@
     },
     "IF-ADMIN-07": {
       "errors": {
-        "422": "interval·group_by·날짜 형식 오류(week 는 422)"
+        "422": "interval·group_by·날짜 형식 오류"
       },
       "gubun": "현행 정본",
       "method": "GET",
