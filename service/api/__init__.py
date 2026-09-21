@@ -14,6 +14,8 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from service.api import audit, errors, lifespan
 from service.api.routes import (
@@ -33,6 +35,12 @@ app = FastAPI(title="일반 도메인 포탈 API (010 P1)", lifespan=lifespan.li
 
 # 접근 기록 미들웨어 — 실제 로직·상태는 ``audit`` 이 갖고, 여기서는 앱에 붙이기만 한다.
 app.middleware("http")(audit.access_log_middleware)
+
+# 실패 응답 봉투 통일 — 우리 4xx·자동 검증 422·미처리 500 을 모두 같은 모양으로 내보낸다.
+# ⚠️ ``Exception`` 처리기는 응답만 대신 만들고 예외는 Starlette 이 다시 올린다(서버 로그 보존).
+app.add_exception_handler(StarletteHTTPException, errors.http_exception_handler)
+app.add_exception_handler(RequestValidationError, errors.validation_exception_handler)
+app.add_exception_handler(Exception, errors.unhandled_exception_handler)
 
 # 검색 엔진 연결 실패는 503 으로 — 코드 버그(500)와 구분해야 알람을 나눌 수 있다.
 # 라이브러리가 없는 환경에서는 이 핸들러를 등록하지 않는다.
