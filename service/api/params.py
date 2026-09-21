@@ -67,6 +67,29 @@ def validated_interval(
 #    뜻이라, 클라이언트가 잘못 보낸 것과 구분되지 않는다.
 
 
+def preview(values: Sequence[object], *, max_items: int = 5, max_len: int = 60) -> str:
+    """잘못된 값을 응답 문구에 실을 때 **줄여서** 싣는다.
+
+    🔴 받은 값을 그대로 되돌리면 요청 크기가 그대로 응답 크기가 된다 — 실측 2026-09-21: 5MB 본문을
+    보내자 "UUID 형식이어야 함: ['aaa…']" 에 그 5MB 가 통째로 실려 나갔다. 무엇이 틀렸는지 알아볼
+    만큼만 보여 주고 나머지는 건수로 알린다.
+
+    Args:
+        values: 문구에 실을 값들.
+        max_items: 보여 줄 개수. 나머지는 "외 N건" 으로 줄인다.
+        max_len: 값 하나의 최대 길이. 넘으면 잘라서 ``…`` 를 붙인다.
+
+    Returns:
+        ``['abc', 'de…'] 외 3건`` 꼴의 문자열.
+    """
+    shown = []
+    for v in list(values)[:max_items]:
+        text = str(v)
+        shown.append(f"{text[:max_len]}…" if len(text) > max_len else text)
+    rest = len(values) - max_items
+    return f"{shown!r}" + (f" 외 {rest}건" if rest > 0 else "")
+
+
 def is_uuid(value: str) -> bool:
     """UUID 형식인지만 본다(존재 여부는 보지 않는다 · 순수 함수)."""
     try:
@@ -111,9 +134,9 @@ def uuid_list_or_400(values: Sequence[str], *, field: str) -> list[str]:
         형식을 통과한 목록 그대로.
 
     Raises:
-        HTTPException: 형식이 아닌 값이 있으면 400(어느 값인지 함께 알린다).
+        HTTPException: 형식이 아닌 값이 있으면 400(어느 값인지 **줄여서** 함께 알린다 — ``preview``).
     """
     bad = [v for v in values if not is_uuid(v)]
     if bad:
-        raise HTTPException(status_code=400, detail=f"{field} 는 UUID 형식이어야 함: {bad}")
+        raise HTTPException(status_code=400, detail=f"{field} 는 UUID 형식이어야 함: {preview(bad)}")
     return list(values)

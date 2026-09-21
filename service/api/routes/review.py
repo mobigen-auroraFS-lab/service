@@ -165,9 +165,11 @@ def relations_revise(
         HTTPException: 허용 목록 밖 상태이거나 edge_id 가 UUID 형식이 아니면 400.
     """
     if body.to_status not in REVIEW_STATUSES:
+        # 받은 값은 줄여서 싣는다 — 본문으로 들어온 값이라 길이 제한이 없다(응답이 요청만큼 커진다).
         raise HTTPException(
             status_code=400,
-            detail=f"알 수 없는 to_status: {body.to_status!r} (허용: {list(REVIEW_STATUSES)})",
+            detail=f"알 수 없는 to_status: {params.preview([body.to_status])} "
+                   f"(허용: {list(REVIEW_STATUSES)})",
         )
     params.uuid_list_or_400([body.edge_id], field="edge_id")
     reviewer = principal.user_id
