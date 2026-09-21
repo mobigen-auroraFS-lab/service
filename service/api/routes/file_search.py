@@ -269,6 +269,15 @@ def file_search(
             status_code=400,
             detail="cursor 와 offset 은 함께 줄 수 없습니다 — 어느 자리부터 읽을지 모호합니다",
         )
+    # 🔴 훑기(검색어 없음)는 **커서 전용 경로**다(아래 ``use_cursor``) — 그 경로에는 "몇 번째부터"가
+    #    없어 offset 이 버려진다. 조용히 버리면 2쪽을 달라고 한 화면이 1쪽을 받고도 알 수 없다
+    #    (실측 2026-09-21: offset=3·9000 이 전부 첫 쪽이었고 응답 offset 은 0 이었다). 끊어서 알린다.
+    if browsing and offset:
+        raise HTTPException(
+            status_code=400,
+            detail=("검색어가 없는 훑기에서는 offset 을 쓸 수 없습니다 — next_cursor 로 이어 읽으십시오"
+                    "(offset 은 검색어가 있을 때의 얕은 페이지 전용)"),
+        )
     # 🔴 **대체를 먼저** 한다 — 순서가 반대면 첫 화면이 이어 읽기를 못 한다(실측 결함 2026-09-15).
     #    첫 쪽은 sort 없이 오므로 relevance 가 기본인데, 응답의 커서에는 실제 쓰인 created_desc 가
     #    찍힌다. 다음 쪽도 sort 없이 오니, 대체보다 거부를 먼저 두면 **자기가 준 커서를 자기가 막는다.**
