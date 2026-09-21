@@ -172,6 +172,7 @@ def fetch_list(
     after_type: str | None = None,
     uid_allow: set[tuple[str, str]] | None = None,
     uid_first: set[tuple[str, str]] | None = None,
+    uid_semantic: set[tuple[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """노출 개체 목록을 읽어 화면 항목으로 정형한다(선택: 책갈피부터 이어 읽기 · 검색 집합 안에서만).
 
@@ -190,6 +191,8 @@ def fetch_list(
         uid_allow: 찾아오기·좁히기가 정한 개체 화이트리스트(``search_and_refine`` 의 결과).
             🔴 ``None`` = **필터 없음(전체)** · 빈 집합 = **0건**. 둘을 섞으면 "검색했는데 전체가
             나오는" 조용한 오류가 된다.
+        uid_semantic: 뜻으로 상위인 개체 집합(``semantic_first_keys``). 이름 일치보다 한 단
+            아래 티어라 이름이 있으면 그쪽이 앞선다. 순서만 바꾸고 거르지 않는다.
         uid_first: **맨 앞에 세울** 개체 집합(099 G7 · ``EntityScope.name_first``). 순서만 바꾸고
             거르지 않는다 — ``uid_allow`` 와 달리 빈 집합도 "앞세울 것이 없다"일 뿐 0건이 아니다.
 
@@ -209,6 +212,7 @@ def fetch_list(
         after_type=after_type,
         uid_allow=uid_allow,
         uid_first=uid_first,
+        uid_semantic=uid_semantic,
     )
     return [shape_list_item(r) for r in rows]
 
@@ -294,6 +298,27 @@ def entity_cursor_scope(
     return json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+# 뜻으로 앞세울 개체 수. 🔴 **화면 정책**이라 여기(백엔드)에서 정한다 — 코어는 손잡이만 준다(093).
+# 5 인 이유: 사용자가 보는 것은 첫 화면 앞자리다. 더 키우면 뜻 10등처럼 이미 먼 것까지 앞으로
+# 오고, 더 줄이면 앞자리가 거의 안 바뀐다(2026-09-21 · 「남자 배우」에서 상위 5가 전부 남자).
+SEMANTIC_FIRST_N = 5
+
+
+def semantic_first_keys(ranked: tuple[tuple[str, str], ...]) -> set[tuple[str, str]]:
+    """뜻 순위 상위 ``SEMANTIC_FIRST_N`` 개를 **앞세울 집합**으로 고른다(순수).
+
+    왜 집합으로 접나: 코어는 "이 안에 들면 티어 1" 만 본다 — 순위 자체를 SQL 로 옮기면 관련도
+    정렬이 되어 커서가 성립하지 않는다(099 가 피한 자리다). 앞자리로 **승급**만 시킨다.
+
+    Args:
+        ranked: 코사인 내림차순 개체 키 튜플(``EntityMatchSet.semantic_ranked``).
+
+    Returns:
+        앞세울 ``(entity_type, entity_uid)`` 집합. 비었으면 빈 집합(앞세울 것 없음).
+    """
+    return set(ranked[:SEMANTIC_FIRST_N])
+
+
 def name_first_keys(
     *, q: str | None, refine: str | None, keys: set[tuple[str, str]] | None
 ) -> set[tuple[str, str]]:
@@ -374,6 +399,7 @@ def decode_entity_cursor(token: str, *, scope: str) -> tuple[int, int, str, str]
 def next_entity_cursor(
     rows: Sequence[Mapping[str, Any]], *, page_size: int, scope: str,
     uid_first: set[tuple[str, str]] | None = None,
+    uid_semantic: set[tuple[str, str]] | None = None,
 ) -> str | None:
     """이번 쪽의 마지막 행으로 **다음 책갈피**를 만든다(마지막 쪽이면 ``None``).
 
@@ -384,7 +410,7 @@ def next_entity_cursor(
     만들면, 걸러진 꼬리 행들을 다음 쪽이 건너뛴다(누락). 099 G5 부터 찾아오기·좁히기는 **SQL 이**
     하므로(화이트리스트) 이 쪽은 이미 걸러진 결과이고, 파이썬이 다시 거를 일이 없다.
 
-    🔴 커서에는 **정렬 자리 넷**(우선 티어·구성 자산 수·표기 키·종류)과 조건 지문이 함께 담긴다.
+    🔴 커서에는 정렬 자리 넷(우선 티어·구성 자산 수·표기 키·종류)과 조건 지문이 함께 담긴다.
     종류까지 싣는 것은 자연키가 (종류, 표기) 둘이라, 표기만으로는 같은 자리를 가리키는 책갈피가
     둘 생겨 한 개체를 건너뛰거나 두 번 내기 때문이다.
     (099 G7). 종전에는 정렬 자리만 담아 "어떤 질의에서 나온 책갈피인지"를 몰랐고, 그래서 조건이
@@ -395,6 +421,8 @@ def next_entity_cursor(
         rows: 이번 쪽의 목록 행들(정형 전후 무관 · ``confirmed_count``·``entity_uid`` 만 읽는다).
         page_size: 이번 요청의 쪽 크기(``limit``). 행 수가 이 값과 같아야 꽉 찬 쪽이다.
         scope: 이번 조회의 조건 지문 재료(``entity_cursor_scope``) — 다음 쪽에서 대조한다.
+        uid_semantic: 이번 조회에서 뜻으로 앞세운 개체 집합(목록 질의에 준 것과 **같은 값**).
+            🔴 다른 집합을 주면 커서의 티어가 SQL 과 어긋나 다음 쪽이 엉뚱한 자리에서 이어진다.
         uid_first: 이번 조회에서 **맨 앞에 세운** 개체 집합(목록 질의에 준 것과 **같은 값**).
             마지막 행의 우선 티어를 여기서 읽는다. 🔴 목록과 다른 집합을 주면 티어가 어긋나
             다음 쪽이 엉뚱한 자리에서 이어진다 — 라우트가 한 값을 두 곳에 함께 넘긴다.
@@ -405,10 +433,15 @@ def next_entity_cursor(
     if not rows or len(rows) != int(page_size):
         return None
     last = rows[-1]
-    # 우선 티어는 SQL 이 만든 값과 **같은 규칙**으로 되짚는다(집합에 들었으면 1, 아니면 0).
-    # 같은 집합을 두 곳이 보므로 갈라질 여지가 없다 — 코어 SQL 도 이 집합으로 티어를 만든다.
+    # 🔴 우선 티어는 SQL 의 ``CASE`` 와 **같은 순서·같은 값**으로 되짚는다. 갈라지면 다음 쪽이
+    #    엉뚱한 자리에서 이어져 개체가 조용히 빠진다. 이름(2)을 뜻(1)보다 먼저 보는 것까지 같다.
     key = (str(last["entity_type"]), str(last["entity_uid"]))
-    tier = 1 if (uid_first and key in uid_first) else 0
+    if uid_first and key in uid_first:
+        tier = 2
+    elif uid_semantic and key in uid_semantic:
+        tier = 1
+    else:
+        tier = 0
     return encode_cursor(
         ENTITY_CURSOR_SORT,
         [tier, int(last["confirmed_count"]), str(last["entity_uid"]), str(last["entity_type"])],
@@ -440,6 +473,9 @@ class EntityScope(NamedTuple):
         refined: 좁히기(refine)가 걸렸는지. 걸리지 않았으면 두 집합이 같은 값이라 총계를 한 번만 센다.
         text_keys: **글자로** 걸린 개체 키들 — 항목의 ``by_text`` 재료. 질의가 둘이면 **교집합**이다
             (합침 규칙과 근거는 ``search_and_refine`` 주석).
+        semantic_ranked: 뜻 갈래의 **코사인 내림차순** 키 튜플 — 상위 몇을 앞자리로 승급시킬지
+            고르는 재료다(``semantic_first_keys``). 🔴 질의가 둘(``q``·``refine``)이면 **``q`` 쪽
+            순위**를 쓴다 — 찾아온 것이 ``q`` 이고 좁히기는 거르기일 뿐이라 순서의 주인이 아니다.
         semantic_keys: **뜻으로** 걸린 개체 키들 — 항목의 ``by_semantic`` 재료. 질의가 둘이면
             **합집합**이다. 아무것도 묻지 않았으면 둘 다 빈 집합이다(걸린 이유 자체가 없다).
     """
@@ -452,6 +488,7 @@ class EntityScope(NamedTuple):
     # ``match_reason`` 은 ``None`` 이 된다(``attach_match_reason``) — 거짓 문구를 적지 않는다.
     text_keys: frozenset[tuple[str, str]] = frozenset()
     semantic_keys: frozenset[tuple[str, str]] = frozenset()
+    semantic_ranked: tuple[tuple[str, str], ...] = ()
 
 
 def search_and_refine(*, q: str | None, refine: str | None) -> EntityScope:
@@ -507,18 +544,27 @@ def search_and_refine(*, q: str | None, refine: str | None) -> EntityScope:
     q_match = _matching_keys(q) if (q and q.strip()) else None
     refine_match = _matching_keys(refine) if (refine and refine.strip()) else None
     text_keys, semantic_keys = _merge_match_reasons(q_match, refine_match)
+    # 순서의 주인은 ``q`` 다 — 좁히기는 거르기이지 순서를 만들지 않는다. ``q`` 가 없으면 좁히기
+    # 쪽 순위라도 쓴다(그때는 그것이 유일하게 찾아온 것이다).
+    ranked = (q_match or refine_match).semantic_ranked if (q_match or refine_match) else ()
+    # 걸러진 뒤에도 살아남은 것만 앞세운다 — 화면에 없는 것을 앞세우면 티어가 헛돈다.
+
     if refine_match is None:
         # 좁히기가 없으면 결과 집합과 좁히기 이전 집합이 **같은 값**이다(총계도 한 번만 센다).
         keys = None if q_match is None else set(q_match.keys)
         return EntityScope(uid_allow=keys, scope_allow=keys, refined=False,
-                           text_keys=text_keys, semantic_keys=semantic_keys)
+                           text_keys=text_keys, semantic_keys=semantic_keys,
+                           semantic_ranked=ranked)
     if q_match is None:
         # 찾아온 적이 없으니 "지우면 몇 건"의 답은 조건 없는 목록 전체다 → scope 는 None(전체).
         return EntityScope(uid_allow=set(refine_match.keys), scope_allow=None, refined=True,
-                           text_keys=text_keys, semantic_keys=semantic_keys)
-    return EntityScope(uid_allow=set(q_match.keys & refine_match.keys),
+                           text_keys=text_keys, semantic_keys=semantic_keys,
+                           semantic_ranked=tuple(k for k in ranked if k in refine_match.keys))
+    allow = set(q_match.keys & refine_match.keys)
+    return EntityScope(uid_allow=allow,
                        scope_allow=set(q_match.keys), refined=True,
-                       text_keys=text_keys, semantic_keys=semantic_keys)
+                       text_keys=text_keys, semantic_keys=semantic_keys,
+                       semantic_ranked=tuple(k for k in ranked if k in allow))
 
 
 def _merge_match_reasons(

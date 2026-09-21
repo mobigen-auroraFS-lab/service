@@ -207,6 +207,11 @@ def list_mm_meta(
     #   `경포대` 는 15위였다 — 정렬이 구성 자산 수뿐이라 큰 개체가 늘 위로 왔기 때문이다.
     #   🔴 판정은 여기(화면 정책)서 하고, 순서를 만드는 것은 코어 SQL 이다(093 경계).
     uid_first = mm_meta.name_first_keys(q=q, refine=refine, keys=scope.uid_allow)
+    # **뜻으로 상위**인 개체도 앞자리로 승급시킨다(2026-09-21). 이름이 하나도 안 맞는 개념 질의
+    #   (「남자 배우」)에서는 전원이 티어 0 이 되어 구성 자산 수가 순서를 지배했다 — kNN 1등이
+    #   하정우인데 화면 1위는 채원빈이었다. 관련도로 **정렬**하는 것이 아니라 상위를 **승급**시키는
+    #   것이라 커서 계약은 그대로다(티어는 이미 커서에 실려 있다).
+    uid_semantic = mm_meta.semantic_first_keys(scope.semantic_ranked)
 
     def _read(conn: Any) -> tuple[list[dict[str, Any]], int, int]:
         """이 쪽의 행과 두 모수를 **한 트랜잭션**에서 읽는다(세 값이 서로 다른 시점을 말하지 않게).
@@ -222,7 +227,7 @@ def list_mm_meta(
             min_bundle_size=_MIN_BUNDLE_SIZE, limit=limit,
             after_tier=after_tier, after_count=after_count,
             after_uid=after_uid, after_type=after_type,
-            uid_allow=scope.uid_allow, uid_first=uid_first,
+            uid_allow=scope.uid_allow, uid_first=uid_first, uid_semantic=uid_semantic,
         )
         after = mm_meta.fetch_total(
             conn, entity_type=entity_type, areas=picked_areas,
@@ -245,7 +250,8 @@ def list_mm_meta(
         "total": total,
         "scope_total": scope_total,
         "next_cursor": mm_meta.next_entity_cursor(
-            rows, page_size=limit, scope=scope_material, uid_first=uid_first),
+            rows, page_size=limit, scope=scope_material,
+            uid_first=uid_first, uid_semantic=uid_semantic),
     }
     if scope.refined:
         body["refine"] = refine

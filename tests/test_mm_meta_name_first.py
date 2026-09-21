@@ -77,6 +77,7 @@ def _fake_fetch_list(
     after_type: str | None = None,
     uid_allow: set[tuple[str, str]] | None = None,
     uid_first: set[tuple[str, str]] | None = None,
+    uid_semantic: set[tuple[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """코어 목록 대역 — **SQL 과 같은 3단 규칙**으로 줄을 세우고 이어 읽는다.
 
@@ -91,6 +92,7 @@ def _fake_fetch_list(
         after_uid: 직전 쪽 마지막 개체의 표기 키.
         after_type: 직전 쪽 마지막 개체의 종류(표기까지 같은 자리를 가른다 · 2026-09-18).
         uid_allow: 검색이 정한 화이트리스트(``None`` = 전체 · 빈 집합 = 0건).
+        uid_semantic: 뜻으로 앞세울 개체 집합(티어 1 · 이름보다 한 단 아래).
         uid_first: 맨 앞에 둘 개체 집합(순서만 바꾼다).
 
     Returns:
@@ -105,7 +107,10 @@ def _fake_fetch_list(
     rows = [(t, u, c) for t, u, c in _TABLE
             if uid_allow is None or (t, u) in uid_allow]
     first = uid_first or set()
-    ranked = sorted(((1 if (t, u) in first else 0, c, u, t) for t, u, c in rows),
+    sem = uid_semantic or set()
+    # 코어 SQL 의 ``CASE`` 와 같은 값 — 이름(2) → 뜻(1) → 나머지(0).
+    ranked = sorted(((2 if (t, u) in first else (1 if (t, u) in sem else 0), c, u, t)
+                     for t, u, c in rows),
                     key=lambda r: (-r[0], -r[1], r[2], r[3]))
     if after_tier is not None:
         ranked = [r for r in ranked
