@@ -1,0 +1,37 @@
+"""앱 수명 주기(단일 책임: 기동과 종료 순서).
+
+⚠️ 종료 순서가 중요하다 — 감사 기록 태스크를 **먼저** 비운 뒤 DB 풀을 닫는다. 반대로 하면
+아직 쓰기 중인 태스크가 닫힌 풀을 잡는다.
+"""
+
+from __future__ import annotations
+
+import os
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+
+from service.api import audit, db
+
+ENV = os.getenv("PORTAL_API_ENV", "dev")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """앱의 수명 주기 — 기동 시 설정을 확정하고, 종료 시 남은 작업과 DB 풀을 정리한다.
+
+    ⚠️ 부트스트랩은 **백엔드 전용**을 쓴다(코어 것이 아니라). 코어 부트스트랩은 코어 레포의
+    ``.env`` 를 읽기 때문에, 그걸 쓰면 백엔드가 남의 설정으로 뜬다.
+
+    종료 순서가 중요하다 — 감사 기록 태스크를 **먼저** 비운 뒤 DB 풀을 닫는다. 반대로 하면
+    아직 쓰기 중인 태스크가 닫힌 풀을 잡는다.
+    """
+    from service.bootstrap import bootstrap_env
+
+    bootstrap_env(ENV)
+    db.warn_if_pool_undersized()
+    yield
+    # 종료 시 남은 감사 기록 작업을 먼저 비운다(응답과 분리돼 뒤에서 돌던 것들).
+    await audit.drain_pending()
+    # 그다음에 DB 풀을 닫는다 — **순서가 중요하다**. 먼저 닫으면 아직 쓰는 중인 감사 작업이 실패한다.
+    db.close_db()
