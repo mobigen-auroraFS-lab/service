@@ -17,7 +17,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from service.api import db
+from service.api import db, params
 from service.portal.auth import Principal, require_principal
 from service.portal.common.review_vocab import REVIEW_STATUSES
 from service.portal.history.access_log import record_access
@@ -77,16 +77,18 @@ def _bulk_decide(action: str, edge_ids: list[str], reviewer: str) -> dict[str, A
     Args:
         action: ``approve`` 또는 ``reject``.
         edge_ids: 처리할 엣지 목록. **비어 있으면 400** — 아무 대상도 없는 요청은 오작동 신호다.
+            UUID 형식이 아닌 값이 섞여 있어도 400(DB 가 거절해 500 으로 새던 것을 앞에서 끊는다).
         reviewer: 결정자.
 
     Returns:
         ``{results: [{edge_id, ok}]}``. ``ok=False`` 는 없거나 이미 결정된 건이다.
 
     Raises:
-        HTTPException: 빈 목록이면 400.
+        HTTPException: 빈 목록이거나 UUID 형식이 아닌 id 가 있으면 400.
     """
     if not edge_ids:
         raise HTTPException(status_code=400, detail="edge_ids 는 1개 이상이어야 함")
+    params.uuid_list_or_400(edge_ids, field="edge_ids")
 
     def _work(conn: Any) -> dict[str, Any]:
         """검토 결정과 감사 기록을 **한 트랜잭션에서** 처리한다.
@@ -160,13 +162,14 @@ def relations_revise(
         ``{results: [{edge_id, ok}]}`` — 단건이어도 배열로 감싸 일괄 처리와 응답 모양을 맞춘다.
 
     Raises:
-        HTTPException: 허용 목록 밖 상태면 400.
+        HTTPException: 허용 목록 밖 상태이거나 edge_id 가 UUID 형식이 아니면 400.
     """
     if body.to_status not in REVIEW_STATUSES:
         raise HTTPException(
             status_code=400,
             detail=f"알 수 없는 to_status: {body.to_status!r} (허용: {list(REVIEW_STATUSES)})",
         )
+    params.uuid_list_or_400([body.edge_id], field="edge_id")
     reviewer = principal.user_id
 
     def _work(conn: Any) -> dict[str, Any]:

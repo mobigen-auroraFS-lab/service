@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 
-from service.api import db
+from service.api import db, params
 from service.portal.asset.detail import fetch_asset_detail
 from service.portal.asset.download import (
     build_bundle_zip_stream,
@@ -71,9 +71,11 @@ def asset_detail(
     """자산 1건 상세 — 메타·임베딩 요약·관계 미니뷰·자기주제.
 
     노출 여부 판정은 ``fetch_asset_detail`` 이 맡는다 — 없거나 등록 완료가 아니면 404.
+    UUID 형식이 아닌 id 도 **같은 404** 다(둘을 가르면 "그 모양의 id 는 있을 수 있다"를 알려 준다).
     노출을 통과한 자산에는 주제 정보(``topics``·``same_topic_groups``)를 같은 읽기
     트랜잭션에서 함께 싣는다(신규 LLM 0). 게이트 미통과(None)면 주제 seam 미호출.
     """
+    params.uuid_or_404(asset_id, detail="자산을 찾을 수 없거나 노출 대상이 아님")
 
     def _work(conn: Any) -> dict[str, Any] | None:
         """한 트랜잭션에서 상세·주제·관계를 모아 온다.
@@ -206,6 +208,9 @@ def asset_mm_meta(
         ``{"items": [{entity_type, entity_uid, name, bundle_size, edge_id, status, reason}]}`` —
         종류·표기 키 오름차순. 소속이 없으면 빈 목록이다.
     """
+    # 형식이 아닌 id 는 **없는 자산과 같게** 본다 — 이 창구는 미존재를 200·빈 목록으로 답한다.
+    if not params.is_uuid(asset_id):
+        return {"items": []}
     items = db.run_in_db(lambda conn: mm_meta_of_asset(conn, asset_id=asset_id))
     return {"items": items}
 
@@ -222,6 +227,7 @@ def download(
     3. ``Range`` 헤더 있으면 ``parse_range_header`` 로 구간 산출 → 206 + ``Content-Range``; 범위 위반 → 416.
     바이트 산출은 디스크 실제 크기 기준. ``Accept-Ranges: bytes`` 항상 고지.
     """
+    params.uuid_or_404(asset_id, detail="다운로드 대상을 찾을 수 없거나 노출 대상이 아님")
     target = db.run_in_db(lambda conn: resolve_download_target(conn, asset_id=asset_id))
     if target is None:
         raise HTTPException(status_code=404, detail="다운로드 대상을 찾을 수 없거나 노출 대상이 아님")
@@ -283,6 +289,7 @@ def asset_thumbnail(
     ``cached_thumbnail`` 은 디스크 캐시 경유(generate-once·크기별) — 첫 요청만 생성·저장, 이후 캐시 서빙.
     원본 무수정·결정적·LLM 0.
     """
+    params.uuid_or_404(asset_id, detail="썸네일 대상을 찾을 수 없거나 노출 대상이 아님")
     target = db.run_in_db(lambda conn: resolve_download_target(conn, asset_id=asset_id))
     if target is None:
         raise HTTPException(status_code=404, detail="썸네일 대상을 찾을 수 없거나 노출 대상이 아님")
@@ -312,6 +319,7 @@ def bundle(
     이웃 자산도 ``collect_bundle_assets`` 의 SQL(registered)로 비registered 를 제외한다
     (``download.py`` 의 묶음 조회 SQL).
     """
+    params.uuid_or_404(asset_id, detail="묶음 seed 를 찾을 수 없거나 노출 대상이 아님")
 
     def _work(conn: Any) -> list[dict[str, Any]] | None:
         """묶음에 담을 자산들을 모은다.
