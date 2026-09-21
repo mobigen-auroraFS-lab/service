@@ -219,7 +219,9 @@ class TestEveryRouteKeepsEnvelope(unittest.TestCase):
         routes = self._routes()
         self.assertGreater(len(routes), 30, "라우트를 못 모았다 — 훑기가 헛돈다")
         for path, methods in routes:
-            unsupported = "DELETE" if "DELETE" not in methods else "PUT"
+            # 지원하지 않는 메서드를 **실제로** 고른다 — 후보를 고정해 두면 PUT·DELETE 를 둘 다
+            # 받는 창구(즐겨찾기)에서 지원 메서드를 보내 404 를 405 로 착각한다.
+            unsupported = next(m for m in ("DELETE", "PUT", "PATCH", "POST") if m not in methods)
             with self.subTest(f"{unsupported} {path}"), _no_db()[0], _no_db()[1]:
                 r = self.client.request(unsupported, path)
                 self.assertEqual(405, r.status_code, f"{unsupported} {path}: {r.text[:120]}")

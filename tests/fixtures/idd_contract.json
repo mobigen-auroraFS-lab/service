@@ -978,6 +978,10 @@
           "domain_label",
           "status",
           "file_name",
+          "file_ext",
+          "file_size",
+          "created_at",
+          "updated_at",
           "core_meta",
           "ext_meta",
           "tags",
@@ -1338,6 +1342,10 @@
           "domain_label",
           "status",
           "file_name",
+          "file_ext",
+          "file_size",
+          "created_at",
+          "updated_at",
           "core_meta",
           "ext_meta",
           "tags",
@@ -1353,16 +1361,20 @@
         "200": {
           "asset_id": "string(UUID)",
           "core_meta": "object",
+          "created_at": "string(datetime)",
           "domain_label": "string",
           "embedding_channels": "[{channel, chunk_count}]",
           "ext_meta": "object",
+          "file_ext": "string",
           "file_name": "string",
+          "file_size": "integer",
           "modality": "string",
           "relations": "[{...}]",
           "same_topic_groups": "[{...}]",
           "status": "string",
           "tags": "string[]",
-          "topics": "[{...}]"
+          "topics": "[{...}]",
+          "updated_at": "string(datetime)"
         }
       },
       "resp_nested": {
@@ -1894,8 +1906,9 @@
     },
     "IF-ASSET-09": {
       "errors": {
-        "400": "offset·cursor 동시 지정 / 관련도 정렬 + cursor / 깨진 커서 · 정렬이 다른 커서 · 조건이 바뀐 커서(조건 지문 불일치 · 2026-09-18) / 훑기(q 없음)에서 offset 지정(2026-09-21)",
+        "400": "offset·cursor 동시 지정 / 관련도 정렬 + cursor / 깨진 커서 · 정렬이 다른 커서 · 조건이 바뀐 커서(조건 지문 불일치 · 2026-09-18) / 훑기(q 없음)에서 offset 지정(2026-09-21)\n🔴 [2026-09-21] size_bucket 을 주면 501(아직 거르지 못한다 — 조용히 무시하지 않는다).",
         "422": "닫힌 어휘(modality) 위반 · 날짜 형식 오류 · 범위 검증(limit 1~200 · 반복 파라미터 50개 상한) · [2026-09-21] q·refine 300자 초과",
+        "501": "size_bucket 으로 거르기 — 아직 제공하지 않는다(검색 엔진 필터에 크기 축이 없다). 건수는 IF-ASSET-14 의 file_size 축이 준다",
         "503": "OpenSearch 연결 실패 · 임베딩 서버 연결 실패(검색어가 있는 요청)"
       },
       "gubun": "현행 정본",
@@ -1909,6 +1922,7 @@
           "tag",
           "modality",
           "file_ext",
+          "size_bucket",
           "created_from",
           "created_to",
           "refine",
@@ -1984,6 +1998,14 @@
           "type": "string"
         },
         "refine": {
+          "default": null,
+          "loc": "Query",
+          "max": null,
+          "min": null,
+          "required": false,
+          "type": "string"
+        },
+        "size_bucket": {
           "default": null,
           "loc": "Query",
           "max": null,
@@ -2111,12 +2133,272 @@
       "same_as": "",
       "url": "/assets/{asset_id}/mm-meta"
     },
+    "IF-ASSET-11": {
+      "errors": {
+        "404": "없거나 노출 대상이 아닌 자산 · 읽을 수 있는 글자가 없는 자산(그림 등)",
+        "410": "DB 에는 있으나 원본 파일이 사라졌거나 읽을 수 없음"
+      },
+      "gubun": "현행 정본",
+      "method": "GET",
+      "name": "자산 원문",
+      "req": {
+        "Path": [
+          "asset_id"
+        ]
+      },
+      "req_meta": {
+        "asset_id": {
+          "default": null,
+          "loc": "Path",
+          "max": null,
+          "min": null,
+          "required": true,
+          "type": "string(UUID)"
+        }
+      },
+      "resp": {
+        "200": [
+          "asset_id",
+          "modality",
+          "source",
+          "text",
+          "truncated",
+          "byte_cap"
+        ]
+      },
+      "resp_alt": {},
+      "resp_kind": {},
+      "resp_meta": {
+        "200": {
+          "asset_id": "string",
+          "byte_cap": "integer",
+          "modality": "string",
+          "source": "string",
+          "text": "string",
+          "truncated": "boolean"
+        }
+      },
+      "resp_nested": {},
+      "resp_opt": {},
+      "same_as": "",
+      "url": "/assets/{asset_id}/content"
+    },
+    "IF-ASSET-12": {
+      "errors": {
+        "400": "빈 목록 · UUID 형식이 아닌 값 · 건수 상한(200) 초과",
+        "409": "고른 자산이 모두 노출 대상이 아님(빈 zip 을 주지 않는다)",
+        "413": "묶음 용량이 상한(500MB)을 넘음 — 문구에 실측 용량과 상한을 함께 준다"
+      },
+      "gubun": "현행 정본",
+      "method": "POST",
+      "name": "고른 자산 묶음 내려받기",
+      "req": {
+        "Body": [
+          "asset_ids"
+        ]
+      },
+      "req_meta": {
+        "asset_ids": {
+          "default": null,
+          "loc": "Body",
+          "max": 200,
+          "min": 1,
+          "required": true,
+          "type": "string[]"
+        }
+      },
+      "resp": {},
+      "resp_alt": {},
+      "resp_kind": {
+        "200": "binary"
+      },
+      "resp_meta": {},
+      "resp_nested": {},
+      "resp_opt": {},
+      "same_as": "",
+      "url": "/assets/bundle"
+    },
+    "IF-ASSET-13": {
+      "errors": {
+        "422": "q 누락·빈 값·100자 초과 · limit 범위 밖"
+      },
+      "gubun": "현행 정본",
+      "method": "GET",
+      "name": "검색 추천어",
+      "req": {
+        "Query": [
+          "q",
+          "limit"
+        ]
+      },
+      "req_meta": {
+        "limit": {
+          "default": "10",
+          "loc": "Query",
+          "max": 50,
+          "min": 1,
+          "required": false,
+          "type": "integer"
+        },
+        "q": {
+          "default": null,
+          "loc": "Query",
+          "max": 300,
+          "min": 1,
+          "required": true,
+          "type": "string"
+        }
+      },
+      "resp": {
+        "200": [
+          "rows",
+          "total"
+        ]
+      },
+      "resp_alt": {},
+      "resp_kind": {},
+      "resp_meta": {
+        "200": {
+          "rows": "array",
+          "total": "integer"
+        }
+      },
+      "resp_nested": {},
+      "resp_opt": {},
+      "same_as": "",
+      "url": "/file-search/suggest"
+    },
+    "IF-ASSET-14": {
+      "errors": {
+        "422": "모르는 축 · 필터 형식 오류",
+        "503": "검색 엔진 연결 실패 · 임베딩 서버 연결 실패(검색어가 있는 요청)"
+      },
+      "gubun": "현행 정본",
+      "method": "GET",
+      "name": "추가 좁히기 칩",
+      "req": {
+        "Query": [
+          "axis",
+          "q",
+          "refine",
+          "topic",
+          "subtopic",
+          "tag",
+          "modality",
+          "file_ext",
+          "created_from",
+          "created_to"
+        ]
+      },
+      "req_meta": {
+        "axis": {
+          "default": null,
+          "loc": "Query",
+          "max": null,
+          "min": null,
+          "required": false,
+          "type": "string[]"
+        },
+        "created_from": {
+          "default": null,
+          "loc": "Query",
+          "max": null,
+          "min": null,
+          "required": false,
+          "type": "string(date)"
+        },
+        "created_to": {
+          "default": null,
+          "loc": "Query",
+          "max": null,
+          "min": null,
+          "required": false,
+          "type": "string(date)"
+        },
+        "file_ext": {
+          "default": null,
+          "loc": "Query",
+          "max": null,
+          "min": null,
+          "required": false,
+          "type": "string[]"
+        },
+        "modality": {
+          "default": null,
+          "loc": "Query",
+          "max": null,
+          "min": null,
+          "required": false,
+          "type": "string[]"
+        },
+        "q": {
+          "default": null,
+          "loc": "Query",
+          "max": null,
+          "min": null,
+          "required": false,
+          "type": "string"
+        },
+        "refine": {
+          "default": null,
+          "loc": "Query",
+          "max": null,
+          "min": null,
+          "required": false,
+          "type": "string"
+        },
+        "subtopic": {
+          "default": null,
+          "loc": "Query",
+          "max": null,
+          "min": null,
+          "required": false,
+          "type": "string[]"
+        },
+        "tag": {
+          "default": null,
+          "loc": "Query",
+          "max": null,
+          "min": null,
+          "required": false,
+          "type": "string[]"
+        },
+        "topic": {
+          "default": null,
+          "loc": "Query",
+          "max": null,
+          "min": null,
+          "required": false,
+          "type": "string[]"
+        }
+      },
+      "resp": {
+        "200": [
+          "axes",
+          "total",
+          "as_of"
+        ]
+      },
+      "resp_alt": {},
+      "resp_kind": {},
+      "resp_meta": {
+        "200": {
+          "as_of": "string(datetime)",
+          "axes": "object",
+          "total": "integer"
+        }
+      },
+      "resp_nested": {},
+      "resp_opt": {},
+      "same_as": "",
+      "url": "/file-search/facet-extra"
+    },
     "IF-AUTH-01": {
       "errors": {
-        "409": "아이디 중복(lower(login_id) 충돌)",
-        "422": "필수 필드 누락·빈 값·글자수 초과"
+        "409": "이미 쓰는 아이디(대소문자 무관)",
+        "422": "필수 누락 · 공백뿐인 값 · 글자수 초과"
       },
-      "gubun": "계획(정본 미반영)",
+      "gubun": "현행 정본",
       "method": "POST",
       "name": "회원가입",
       "req": {
@@ -2138,8 +2420,8 @@
         "login_id": {
           "default": null,
           "loc": "Body",
-          "max": null,
-          "min": null,
+          "max": 50,
+          "min": 1,
           "required": true,
           "type": "string"
         },
@@ -2177,7 +2459,7 @@
       "errors": {
         "422": "파라미터 누락·빈 값·50자 초과"
       },
-      "gubun": "계획(정본 미반영)",
+      "gubun": "현행 정본",
       "method": "GET",
       "name": "아이디 중복 확인",
       "req": {
@@ -2189,14 +2471,15 @@
         "login_id": {
           "default": null,
           "loc": "Query",
-          "max": null,
-          "min": null,
+          "max": 50,
+          "min": 1,
           "required": true,
           "type": "string"
         }
       },
       "resp": {
         "200": [
+          "login_id",
           "available"
         ]
       },
@@ -2204,7 +2487,8 @@
       "resp_kind": {},
       "resp_meta": {
         "200": {
-          "available": "boolean"
+          "available": "-",
+          "login_id": "-"
         }
       },
       "resp_nested": {},
@@ -2304,6 +2588,166 @@
       "resp_opt": {},
       "same_as": "",
       "url": "/me"
+    },
+    "IF-AUTH-05": {
+      "errors": {
+        "401": "아이디·비밀번호 불일치 · 정지된 계정(같은 401)",
+        "422": "필수 누락 · 빈 값"
+      },
+      "gubun": "현행 정본",
+      "method": "POST",
+      "name": "로그인",
+      "req": {
+        "Body": [
+          "login_id",
+          "password"
+        ]
+      },
+      "req_meta": {
+        "login_id": {
+          "default": null,
+          "loc": "Body",
+          "max": 50,
+          "min": 1,
+          "required": true,
+          "type": "string"
+        },
+        "password": {
+          "default": null,
+          "loc": "Body",
+          "max": null,
+          "min": null,
+          "required": true,
+          "type": "string"
+        }
+      },
+      "resp": {
+        "200": [
+          "access_token",
+          "token_type"
+        ]
+      },
+      "resp_alt": {},
+      "resp_kind": {},
+      "resp_meta": {
+        "200": {
+          "access_token": "string",
+          "token_type": "string"
+        }
+      },
+      "resp_nested": {},
+      "resp_opt": {},
+      "same_as": "",
+      "url": "/auth/login"
+    },
+    "IF-CAT-01": {
+      "errors": {
+        "400": "허용 목록 밖 status"
+      },
+      "gubun": "현행 정본",
+      "method": "GET",
+      "name": "관계 종류 카탈로그",
+      "req": {
+        "Query": [
+          "status"
+        ]
+      },
+      "req_meta": {
+        "status": {
+          "default": null,
+          "loc": "Query",
+          "max": null,
+          "min": null,
+          "required": false,
+          "type": "string"
+        }
+      },
+      "resp": {
+        "200": [
+          "rows",
+          "total"
+        ]
+      },
+      "resp_alt": {},
+      "resp_kind": {},
+      "resp_meta": {
+        "200": {
+          "rows": "array",
+          "total": "integer"
+        }
+      },
+      "resp_nested": {},
+      "resp_opt": {},
+      "same_as": "",
+      "url": "/relation-kinds"
+    },
+    "IF-CAT-02": {
+      "errors": {
+        "422": "limit 범위 밖 · q 100자 초과"
+      },
+      "gubun": "현행 정본",
+      "method": "GET",
+      "name": "태그 목록",
+      "req": {
+        "Query": [
+          "topic",
+          "subtopic",
+          "q",
+          "limit"
+        ]
+      },
+      "req_meta": {
+        "limit": {
+          "default": "50",
+          "loc": "Query",
+          "max": 500,
+          "min": 1,
+          "required": false,
+          "type": "integer"
+        },
+        "q": {
+          "default": null,
+          "loc": "Query",
+          "max": null,
+          "min": null,
+          "required": false,
+          "type": "string"
+        },
+        "subtopic": {
+          "default": null,
+          "loc": "Query",
+          "max": null,
+          "min": null,
+          "required": false,
+          "type": "string[]"
+        },
+        "topic": {
+          "default": null,
+          "loc": "Query",
+          "max": null,
+          "min": null,
+          "required": false,
+          "type": "string[]"
+        }
+      },
+      "resp": {
+        "200": [
+          "rows",
+          "total"
+        ]
+      },
+      "resp_alt": {},
+      "resp_kind": {},
+      "resp_meta": {
+        "200": {
+          "rows": "array",
+          "total": "integer"
+        }
+      },
+      "resp_nested": {},
+      "resp_opt": {},
+      "same_as": "",
+      "url": "/tags"
     },
     "IF-DS-01": {
       "errors": {

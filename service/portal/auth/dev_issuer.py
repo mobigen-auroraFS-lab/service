@@ -1,7 +1,8 @@
-"""개발 환경 전용 토큰 발급.
+"""토큰 발급 — 로그인(``POST /auth/login``)과 dev 발급기(``POST /auth/token``)가 함께 쓴다.
 
-``POST /auth/token`` 전용 — 비밀번호 검증 없음, 로컬 스모크용.
-운영 IdP 연동 시 본 모듈·엔드포인트는 비활성화 예정.
+서명 방식·유효 기간·발급자 핀은 **한 곳**에서 정한다. 두 벌로 두면 한쪽만 고쳐져 검증을 통과하지
+못하는 토큰이 생긴다. 다른 점은 **주체를 어떻게 정하느냐**뿐이다 — 로그인은 계정 표에서 확인한
+``user_id``, dev 발급기는 요청이 적어 보낸 문자열.
 """
 
 from __future__ import annotations
@@ -13,8 +14,8 @@ import jwt
 from service.portal.auth.config import load_portal_auth_config
 
 
-def issue_dev_token(*, user_id: str) -> str:
-    """로컬 스모크용 토큰을 발급한다 — 검증 쪽과 비밀값·알고리즘을 맞춰 만든다.
+def issue_access_token(*, user_id: str) -> str:
+    """토큰을 발급한다 — 검증 쪽과 비밀값·알고리즘을 맞춰 만든다.
 
     Args:
         user_id: 토큰 주체. 검증 뒤 이 값이 요청자 식별자가 된다.
@@ -34,3 +35,8 @@ def issue_dev_token(*, user_id: str) -> str:
         # issuer 핀이 켜져 있으면 발급 토큰도 iss 를 박아 자체 검증을 통과시킨다.
         payload["iss"] = cfg.jwt_issuer
     return jwt.encode(payload, cfg.jwt_secret, algorithm="HS256")
+
+
+def issue_dev_token(*, user_id: str) -> str:
+    """dev 발급기(``POST /auth/token``)용 — 비밀번호를 보지 않고 주체를 그대로 믿는다."""
+    return issue_access_token(user_id=user_id)

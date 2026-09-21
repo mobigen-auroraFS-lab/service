@@ -92,10 +92,25 @@ def _target_row(path: Path) -> list[dict[str, Any]]:
              "status": "registered"}]
 
 
+# [2026-09-21 신설 창구] 원문·고른 자산 묶음·태그·추천은 각자 다른 질의를 쓴다.
+#   ⚠️ 원문 질의는 상세 질의와 같은 조인 문구를 써서 ``_DETAIL_SQL`` 에도 걸린다 — **먼저** 둬야
+#      제 픽스처를 만난다(FakeConn 은 첫 일치를 쓴다).
+_CONTENT_SQL = r"SELECT a\.asset_id, a\.modality, a\.status, a\.fs_path, m\.ext_meta"
+_SELECTION_SQL = r"SELECT asset_id, fs_path, file_size\s+FROM asset\s+WHERE asset_id = ANY"
+_TAGS_SQL = r"jsonb_array_elements_text\(COALESCE\(m\.ext_meta->'keywords'"
+_SUGGEST_SQL = r"SELECT t\.topic_ko AS value, 'topic' AS kind"
+
+
 def found() -> list[Fixture]:
     """행도 있고 파일도 있다 — 정상 200·400·422 유발용."""
     img = ensure_image()
     return [
+        # 원문 — 받아쓰기가 있는 소리 자산(파일을 읽지 않고도 200 이 난다).
+        fixture(_CONTENT_SQL, [{"asset_id": ASSET_ID, "modality": "audio", "status": "registered",
+                                "fs_path": str(img), "ext_meta": {"stt": "받아쓴 글자"}}]),
+        fixture(_SELECTION_SQL, [{"asset_id": ASSET_ID, "fs_path": str(img), "file_size": 512}]),
+        fixture(_TAGS_SQL, [{"tag": "한옥", "count": 3}]),
+        fixture(_SUGGEST_SQL, [{"value": "역사·문화유산", "kind": "topic", "count": 5}]),
         fixture(_DETAIL_SQL, [{"asset_id": ASSET_ID, "modality": "image",
                                "domain_label": "general", "status": "registered",
                                "fs_path": str(img), "core_meta": {}, "ext_meta": {}, "tags": []}]),
@@ -129,6 +144,20 @@ def entity_assets_pathless() -> list[Fixture]:
                       "file_size": 10}])]
 
 
+def selection_huge() -> list[Fixture]:
+    """고른 자산의 크기 합이 **상한을 넘는다** → 413(건수만으로는 못 막는 자리)."""
+    return [fixture(_SELECTION_SQL,
+                    [{"asset_id": ASSET_ID, "fs_path": "/tmp/huge.bin",
+                      "file_size": 600 * 1024 * 1024}])]
+
+
+def gone_content() -> list[Fixture]:
+    """원문을 읽을 문서인데 **원본 파일이 사라졌다** → 410(404 와 가른다)."""
+    return [fixture(_CONTENT_SQL, [{"asset_id": ASSET_ID, "modality": "text",
+                                    "status": "registered", "fs_path": str(MISSING_PATH),
+                                    "ext_meta": {}}])]
+
+
 def gone() -> list[Fixture]:
     """행은 있고 디스크 파일이 없다 → 410."""
     return [fixture(_TARGET_SQL, _target_row(MISSING_PATH))]
@@ -140,8 +169,13 @@ PATH_VALUES = {"{asset_id}": ASSET_ID, "{modality}": "image", "{topic}": "요리
                "{entity_type}": "person", "{entity_uid}": "u1"}
 
 # 200 을 얻으려면 값이 필요한 엔드포인트
-HAPPY_QUERY = {"/search": {"q": "김치"}, "/admin/asset-stats": {"snapshot_buckets": "true"}}
+HAPPY_QUERY = {"/search": {"q": "김치"}, "/admin/asset-stats": {"snapshot_buckets": "true"},
+               "/file-search/suggest": {"q": "역사"}}
 HAPPY_BODY = {"/auth/token": {"user_id": "conformance"},
+              "/assets/bundle": {"asset_ids": [ASSET_ID]},
+              # 계정 창구는 아직 501 이라 본문이 형식만 맞으면 된다(저장소가 생기면 계약이 산다).
+              "/auth/signup": {"login_id": "conformance", "password": "x"},
+              "/auth/login": {"login_id": "conformance", "password": "x"},
               "/admin/relations/approve": {"edge_ids": ["e1"]},
               "/admin/relations/reject": {"edge_ids": ["e1"]},
               "/admin/relations/revise": {"edge_id": "e1", "to_status": "active"}}
@@ -161,7 +195,10 @@ ERROR_PROBES: dict[str, list[tuple[str, str, dict, dict | None, dict]]] = {
                      {"sort": "relevance", "cursor": "abc"}, None, {}),
                     ("modality 닫힌 어휘 위반", "found", {"modality": "bogus"}, None, {}),
                     ("limit 범위 밖", "found", {"limit": "9999"}, None, {}),
-                    ("날짜 형식 오류", "found", {"created_from": "notadate"}, None, {})],
+                    ("날짜 형식 오류", "found", {"created_from": "notadate"}, None, {}),
+                    # 크기 구간은 자리만 있다 — 주면 501(조용히 무시하지 않는다는 계약).
+                    ("크기 구간(미구현)", "found", {"size_bucket": "under1"}, None, {}),
+                    ("모르는 크기 구간", "found", {"size_bucket": "bogus"}, None, {})],
     # /mm-meta — 깨진 커서는 400, 집합 판정 불가는 503(IDD IF-ENTITY-01). 503 은 설정 대역이 고른
     #   되돌림 백엔드(``fake_settings`` 의 ``search_backend="db"``)에서 검색어를 주면 난다.
     "IF-ENTITY-01": [("깨진 커서", "found", {"cursor": "abc"}, None, {}),
@@ -188,6 +225,26 @@ ERROR_PROBES: dict[str, list[tuple[str, str, dict, dict | None, dict]]] = {
     "IF-ENTITY-05": [("개체 없음", "none", {}, None, {})],
     "IF-ENTITY-06": [("개체 없음", "none", {}, None, {}),
                      ("구성 자산 없음", "entity_card_empty", {}, None, {})],
+    # [2026-09-21 신설] 원문 — 글자가 없는 자산은 404, 원본이 사라졌으면 410.
+    "IF-ASSET-11": [("행 없음", "none", {}, None, {}),
+                    ("원본 파일 없음", "gone_content", {}, None, {})],
+    # 고른 자산 묶음 — 빈 목록·형식 오류·건수 초과는 400, 전부 노출 대상 아님은 409, 용량 초과는 413.
+    "IF-ASSET-12": [("빈 asset_ids", "found", {}, {"asset_ids": []}, {}),
+                    ("UUID 아님", "found", {}, {"asset_ids": ["nope"]}, {}),
+                    ("전부 노출 대상 아님", "none", {}, {"asset_ids": [ASSET_ID]}, {}),
+                    ("용량 상한 초과", "selection_huge", {}, {"asset_ids": [ASSET_ID]}, {})],
+    "IF-ASSET-13": [("q 누락", "found", {"q": ""}, None, {}),
+                    ("limit 범위 밖", "found", {"q": "가", "limit": "0"}, None, {})],
+    "IF-ASSET-14": [("모르는 축", "found", {"axis": "bogus"}, None, {}),
+                    ("날짜 형식 오류", "found", {"created_from": "notadate"}, None, {})],
+    "IF-CAT-01": [("status 오타", "found", {"status": "bogus"}, None, {})],
+    "IF-CAT-02": [("limit 범위 밖", "found", {"limit": "0"}, None, {})],
+    # 미구현 창구 — 형식이 맞는 요청은 501 로 끊긴다(그것이 지금의 계약이다).
+    "IF-AUTH-01": [("빈 값", "found", {}, {"login_id": "", "password": ""}, {})],
+    "IF-AUTH-02": [("빈 값", "found", {"login_id": ""}, None, {})],
+    # 로그인 — 없는 아이디·틀린 비밀번호는 같은 401, 빈 값은 422(형식 검증이 먼저).
+    "IF-AUTH-05": [("없는 아이디", "found", {}, {"login_id": "nobody", "password": "x"}, {}),
+                   ("빈 값", "found", {}, {"login_id": "", "password": ""}, {})],
     "IF-REVIEW-01": [("빈 edge_ids", "found", {}, {"edge_ids": []}, {})],
     "IF-REVIEW-02": [("빈 edge_ids", "found", {}, {"edge_ids": []}, {})],
     "IF-REVIEW-03": [("to_status 오타", "found", {}, {"edge_id": "e", "to_status": "bogus"}, {})],
@@ -225,6 +282,11 @@ IDD_PENDING_RESP: dict[tuple[str, str], str] = {
 UNREACHABLE = {
     ("IF-AUTH-03", "404"): "운영 모드(PORTAL_AUTH_DISABLED=0) 전용 — 인증 계약 테스트가 따로 확인한다",
     ("IF-AUTH-03", "500"): "서명 키 미설정 전용 — 인증 계약 테스트가 따로 확인한다",
+    # [2026-09-21] 가입 409 는 **같은 아이디가 이미 있어야** 나는데, 계약 테스트는 가짜 커넥션이라
+    #   유일 인덱스가 없다 — 단위 테스트(tests/api/routes/test_new_portal_routes.py)가 본다.
+    ("IF-AUTH-01", "409"): "유일 인덱스 위반이 있어야 나는 코드 — 가짜 커넥션에서는 만들 수 없다",
+    ("IF-ASSET-14", "503"): "검색 엔진·임베딩 장애 전용 — 계약 테스트는 집계를 대역으로 두므로 여기선 "
+                            "만들 수 없다(실측 하네스가 장애 서버로 확인한다)",
 }
 
 
@@ -232,7 +294,9 @@ def fixtures_for(kind: str) -> list[Fixture]:
     return {"found": found(), "none": NONE, "gone": gone(),
             "entity_huge": entity_assets_huge(),
             "entity_pathless": entity_assets_pathless(),
-            "entity_card_empty": entity_card_empty()}[kind]
+            "entity_card_empty": entity_card_empty(),
+            "selection_huge": selection_huge(),
+            "gone_content": gone_content()}[kind]
 
 
 def fill_path(url: str) -> str:

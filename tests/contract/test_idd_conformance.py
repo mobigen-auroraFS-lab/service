@@ -90,6 +90,11 @@ def _external_patches(*, mm_meta_stubs: bool = True):
         patch.object(routes_file_search, "active_embed_channel", lambda: "text"),
         patch.object(routes_file_search, "embed_query_for_media_search", lambda *a, **k: [0.0] * 8),
         patch.object(routes_file_search, "search_files", lambda *a, **k: dict(FILE_SEARCH_STUB)),
+        # 추가 칩(IF-ASSET-14)은 검색 엔진에 직접 집계를 던진다 — 대역 클라이언트(object())로는
+        #   못 가므로 계산 자체를 대역으로 둔다(응답 **모양**만 보는 자리다).
+        patch.object(routes_file_search, "extra_facets", lambda *a, **k: {
+            "axes": {"file_ext": [{"key": "txt", "count": 1}]}, "total": 1,
+            "as_of": "2026-09-21T00:00:00+00:00"}),
         patch.object(routes_file_search, "browse_files", lambda *a, **k: dict(FILE_SEARCH_STUB)),
         # 설정 대역은 **들여온 모든 모듈**에 건다 — 소비처를 하나씩 쫓지 않는다.
         *probes.settings_patches(),
@@ -289,7 +294,12 @@ class TestRequestBody(unittest.TestCase):
 class TestAuthContract(unittest.TestCase):
     """② 인증 계약 — 보호 라우트는 토큰 없이 401."""
 
-    OPEN = {"/health": 200, "/auth/token": 404}          # 운영 모드에서 dev 발급기는 404
+    # 운영 모드에서 dev 발급기는 404. 계정 창구는 **로그인 전에** 부르므로 인증을 걸지 않는다 —
+    # 지금은 저장소가 없어 501(가입·로그인)·422(필수 파라미터 없음)로 답한다.
+    # 계정 창구는 **로그인 전에** 부르므로 인증을 걸지 않는다. 이 검사는 빈 요청을 보내므로
+    # 본문·파라미터 검증에서 먼저 422 가 난다 — 요점은 **401 이 아니라는 것**이다.
+    OPEN = {"/health": 200, "/auth/token": 404,
+            "/auth/signup": 422, "/auth/login": 422, "/auth/login-id/availability": 422}
 
     def test_protected_routes_401(self) -> None:
         env = {"PORTAL_AUTH_DISABLED": "0",

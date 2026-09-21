@@ -11,16 +11,20 @@
 
 from __future__ import annotations
 
+import os
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from service.api import audit, errors, lifespan
 from service.api.routes import (
+    account,
     admin,
     assets,
+    catalog,
     file_search,
     mm_meta,
     review,
@@ -82,6 +86,24 @@ def me(principal: Annotated[Principal, Depends(require_principal)]) -> dict[str,
 # ── 라우터 포함(원래 등록 순서: admin GET → review POST → search → assets) ────────────────
 # 경로 공간이 겹치지 않아(/admin/*·/search·/assets/*·/topics*) 라우터 간 순서는 매칭에 무관하나,
 # 원래 순서를 보존한다. catch-all 라우트 순서는 각 라우터 파일 내부에서 보장(구체 경로 먼저 선언).
+# TODO(배포): 앞단 프록시에서 헤더·본문 읽기 제한 시간과 본문 크기 상한을 건다 — `TODO.md` §3.
+# ── 다른 오리진에서 부를 수 있게(CORS) ──────────────────────────────────────────
+# 화면(Vite dev 서버 등)이 다른 오리진에서 직접 부르면 브라우저가 막는다. 허용할 오리진을
+# ``PORTAL_CORS_ORIGINS`` 에 쉼표로 적는다(예: http://localhost:5173,http://127.0.0.1:5173).
+# 🔴 비워 두면 **아무 오리진도 허용하지 않는다**(종전 동작) — 운영에서 실수로 전면 개방되지 않게
+#    기본값을 열어 두지 않는다. ``*`` 는 자격 증명과 함께 쓸 수 없어 목록으로만 받는다.
+_CORS_ORIGINS = [o.strip() for o in os.getenv("PORTAL_CORS_ORIGINS", "").split(",") if o.strip()]
+if _CORS_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_CORS_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type"],
+        expose_headers=["Content-Disposition", "Content-Range", "X-Bundle-Files",
+                        "X-Bundle-Missing"],
+    )
+
 app.include_router(admin.router)
 app.include_router(review.router)
 app.include_router(search.router)
@@ -89,5 +111,9 @@ app.include_router(search.router)
 app.include_router(file_search.router)
 app.include_router(assets.router)
 app.include_router(mm_meta.router)
+# 목록 창구(관계 종류·태그) — 화면이 "고를 값"을 받아 가는 자리. 검색 결과 칩과 쓰임이 다르다.
+app.include_router(catalog.router)
+# 계정(가입·로그인) — 로그인 전에 부르므로 인증을 걸지 않는다.
+app.include_router(account.public_router)
 
 __all__ = ["app"]
