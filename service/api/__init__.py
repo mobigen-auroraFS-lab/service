@@ -36,6 +36,10 @@ app = FastAPI(title="일반 도메인 포탈 API (010 P1)", lifespan=lifespan.li
 # 접근 기록 미들웨어 — 실제 로직·상태는 ``audit`` 이 갖고, 여기서는 앱에 붙이기만 한다.
 app.middleware("http")(audit.access_log_middleware)
 
+# NUL 바이트 차단 — **나중에 등록한 미들웨어가 바깥**이라, 이 검사가 접근 기록보다 먼저 돈다.
+# 못 쓸 요청을 가장 앞에서 끊고(DB·감사 어디에도 닿지 않는다), 통과한 것만 아래로 내려보낸다.
+app.middleware("http")(errors.reject_nul_bytes)
+
 # 실패 응답 봉투 통일 — 우리 4xx·자동 검증 422·미처리 500 을 모두 같은 모양으로 내보낸다.
 # ⚠️ ``Exception`` 처리기는 응답만 대신 만들고 예외는 Starlette 이 다시 올린다(서버 로그 보존).
 app.add_exception_handler(StarletteHTTPException, errors.http_exception_handler)
