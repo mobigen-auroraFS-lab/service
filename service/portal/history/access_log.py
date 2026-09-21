@@ -84,6 +84,10 @@ def derive_access_action(method: str, path: str) -> tuple[str, str | None] | Non
             return ("download", asset_id)
         if len(parts) == 2 and parts[1] == "bundle":
             return ("bundle", asset_id)
+        # [2026-09-21] 원문 열람 — 상세(asset_view)와 구분한다. 요약이 아니라 **본문 글자**를
+        # 가져가는 접근이라, 감사에서 같은 이름으로 묶으면 무엇을 읽었는지 구분되지 않는다.
+        if len(parts) == 2 and parts[1] == "content":
+            return ("content", asset_id)
     return None
 
 
