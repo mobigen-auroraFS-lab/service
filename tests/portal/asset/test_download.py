@@ -226,6 +226,10 @@ class TestBuildBundleZip(unittest.TestCase):
         self.assertEqual(zf.read("b.txt"), b"hello-b")
         manifest = json.loads(zf.read("_manifest.json"))
         self.assertEqual([m["asset_id"] for m in manifest["missing"]], ["MISS"])
+        # 🔴 서버 경로는 싣지 않는다 — 클라이언트가 받아 가는 zip 이라 담으면 디렉터리 구조가
+        #    그대로 나간다(2026-09-21 전수 감사에서 fs_path 가 실려 나가던 것을 걷어냈다).
+        self.assertEqual({"asset_id", "file_name"}, set(manifest["missing"][0]),
+                         "manifest 에 내부 정보가 실렸다")
 
     def test_all_present_has_no_manifest(self) -> None:
         # 누락 없으면 manifest 를 만들지 않는다(완전 zip).
