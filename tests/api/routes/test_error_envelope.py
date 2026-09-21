@@ -110,6 +110,14 @@ class TestEnvelopeShape(unittest.TestCase):
         self.assertNotIn("Method Not Allowed", wrong.json()["detail"])
         self.assertIn("allow", {k.lower() for k in wrong.headers}, "Allow 헤더를 잃었다")
 
+    def test_bad_values_are_not_reflected_whole(self) -> None:
+        """🔴 보낸 값을 통째로 되돌리지 않는다 — 5MB 본문이 5MB 응답이 되면 반사 증폭이다."""
+        huge = "a" * 200_000
+        r = self.client.post("/admin/relations/approve", json={"edge_ids": [huge] * 20})
+        self.assertEqual(400, r.status_code, r.text[:200])
+        self.assertLess(len(r.content), 4000, "잘못된 값이 그대로 실려 나갔다")
+        self.assertIn("외 15건", r.json()["detail"])
+
     def test_unhandled_exception_is_json(self) -> None:
         """미처리 예외 — text/plain 이 아니라 JSON 봉투이고, 내부 정보를 싣지 않는다."""
         secret = "비밀-내부-사정-1234"
