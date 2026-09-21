@@ -180,5 +180,61 @@ class TestNulBytesRejected(unittest.TestCase):
         return bool(called)
 
 
+class TestEveryRouteKeepsEnvelope(unittest.TestCase):
+    """**전 라우트 훑기** — 새 창구가 생겨도 봉투를 빠뜨리지 못하게 한다.
+
+    개별 창구를 하나씩 적으면 새로 추가된 창구는 검사에서 빠진다. 앱이 가진 라우트 전부를 돌면서,
+    DB 에 닿지 않고도 반드시 실패하는 두 요청(안 받는 메서드 · 쿼리의 NUL)을 넣어 본다.
+    """
+
+    def setUp(self) -> None:
+        self.client = TestClient(app)
+
+    @staticmethod
+    def _routes() -> list[tuple[str, set[str]]]:
+        """(경로, 허용 메서드) 목록 — OpenAPI 스키마에서 뽑는다.
+
+        ``app.routes`` 를 직접 읽지 않는다 — include_router 로 붙은 창구는 감싸인 객체라 메서드가
+        보이지 않아 훑기가 통째로 비어 버린다(그래도 테스트는 초록이 되어 더 위험하다).
+        경로 파라미터는 아무 값으로 채운다 — 검사가 그 앞에서 끊으므로 값은 상관없다.
+        """
+        out = []
+        for path, ops in app.openapi()["paths"].items():
+            filled = path
+            while "{" in filled:
+                head, _, rest = filled.partition("{")
+                _, _, tail = rest.partition("}")
+                filled = head + "x" + tail
+            out.append((filled, {m.upper() for m in ops}))
+        return out
+
+    def _assert_enveloped(self, r, where: str) -> None:
+        self.assertIn("application/json", r.headers.get("content-type", ""), where)
+        body = r.json()
+        self.assertIsInstance(body.get("detail"), str, f"{where}: {r.text[:120]}")
+        self.assertEqual(set(body) - {"detail", "errors"}, set(), where)
+
+    def test_method_mismatch_is_enveloped(self) -> None:
+        """안 받는 메서드는 어느 창구에서든 405 봉투다(라우터 밖으로 새지 않는다)."""
+        routes = self._routes()
+        self.assertGreater(len(routes), 30, "라우트를 못 모았다 — 훑기가 헛돈다")
+        for path, methods in routes:
+            unsupported = "DELETE" if "DELETE" not in methods else "PUT"
+            with self.subTest(f"{unsupported} {path}"), _no_db()[0], _no_db()[1]:
+                r = self.client.request(unsupported, path)
+                self.assertEqual(405, r.status_code, f"{unsupported} {path}: {r.text[:120]}")
+                self._assert_enveloped(r, f"{unsupported} {path}")
+
+    def test_nul_in_query_is_enveloped_everywhere(self) -> None:
+        """쿼리의 NUL 은 어느 창구에서든 400 봉투다 — DB 에 닿지 않는다."""
+        for path, methods in self._routes():
+            if "GET" not in methods:
+                continue
+            with self.subTest(path), _no_db()[0], _no_db()[1]:
+                r = self.client.get(f"{path}?any=a%00b")
+                self.assertEqual(400, r.status_code, f"{path}: {r.text[:120]}")
+                self._assert_enveloped(r, path)
+
+
 if __name__ == "__main__":
     unittest.main()
