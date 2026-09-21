@@ -35,8 +35,11 @@ from src.relations.graph_query import fetch_relations_for_asset
 # asset + metadata 1행. LEFT JOIN — 메타 없어도 자산 행 유지(core/ext NULL 가능).
 # 경로에서 표시용 파일명을 파생한다. 경로는 항상 존재하며
 # 검색 색인(opensearch_sync)·review 등 전 표면이 fs_path basename 을 파일명으로 쓰는 관례와 일치한다.
+# 🔴 [2026-09-21] ``file_size``·``created_at``·``updated_at`` 을 함께 읽는다 — 화면의 상세가
+#    크기·등록일을 보여 주는데 목록을 거치지 않고 링크로 바로 열면 그 값을 얻을 데가 없었다.
 _FETCH_ASSET_SQL = """
 SELECT a.asset_id, a.modality, a.domain_label, a.status, a.fs_path,
+       a.file_size, a.created_at, a.updated_at,
        m.core_meta, m.ext_meta, m.tags
 FROM asset a
 LEFT JOIN asset_metadata m ON m.asset_id = a.asset_id
@@ -224,13 +227,22 @@ def fetch_asset_detail(
             clearance=clearance,
         )
 
+    file_name = display_name(str(row["fs_path"] or ""))
+    # 확장자는 **표시용 파일명에서** 뽑는다 — 검색 결과의 ``file_ext`` 와 같은 값이 되게(표기 일치).
+    _, _, ext = file_name.rpartition(".")
     return {
         "asset_id": str(row["asset_id"]),
         "modality": row["modality"],
         "domain_label": row["domain_label"],
         "status": row["status"],
         # 표시용 파일명을 함께 내려 준다 — 검색 결과와 **같은 함수**를 써서 표기가 어긋나지 않게.
-        "file_name": display_name(str(row["fs_path"] or "")),
+        "file_name": file_name,
+        "file_ext": ext.lower() if ext else None,
+        # 🔴 ``.get`` 으로 읽는다 — 이 조회를 흉내 내는 단위 테스트의 가짜 행에 칸이 없어도
+        #    상세 전체가 깨지지 않게(값이 없으면 "모른다"는 뜻의 None 을 싣는다).
+        "file_size": int(row["file_size"]) if row.get("file_size") is not None else None,
+        "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+        "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
         "core_meta": row["core_meta"],
         "ext_meta": ext_meta,
         "tags": row["tags"],

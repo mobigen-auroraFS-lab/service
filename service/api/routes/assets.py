@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import logging
 import mimetypes
 import os
 from collections.abc import Iterator
@@ -18,31 +19,27 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from service.api import db, params
-from service.portal.asset.detail import fetch_asset_detail
+from service.api import params
+from service.portal.asset.content import build_content
 from service.portal.asset.download import (
     build_bundle_zip_stream,
-    collect_bundle_assets,
     parse_range_header,
-    resolve_download_target,
 )
+from service.portal.asset.selection import MAX_SELECTION, MAX_SELECTION_BYTES
 from service.portal.asset.thumbnail import THUMBNAILABLE_MODALITIES, cached_thumbnail
 from service.portal.auth import Principal, require_principal
+from service.portal.common.db_manager import DbManager
+from service.portal.history.access_log import record_access
 from src.config.filename_util import display_file_name
-from src.relations.graph_query import mm_meta_of_asset
-from src.topic.asset_topic_query import (
-    assets_in_topic,
-    assets_unclassified,
-    fetch_asset_topic,
-    find_same_topic_groups,
-    list_topics,
-)
 
 # 경로가 ``/assets`` 와 ``/topics`` 로 갈려 공통 접두사를 둘 수 없다 — 인증만 라우터에 건다.
 # ⚠️ 주체가 필요한 핸들러만 ``principal`` 을 따로 선언한다.
 router = APIRouter(tags=["assets"], dependencies=[Depends(require_principal)])
+
+_LOG = logging.getLogger(__name__)
 
 # 다운로드 스트리밍 청크 크기(64KiB) — 대용량 멀티모달 자산을 메모리에 다 올리지 않는다.
 _STREAM_CHUNK = 64 * 1024
@@ -60,7 +57,7 @@ def unclassified_assets(
     **라우트 순서**: ``/assets/{asset_id}`` catch-all 보다 먼저 등록해야 'unclassified' 가 asset_id 로
     오매칭되지 않는다(이 위치 유지).
     """
-    return db.run_in_db(lambda conn: assets_unclassified(conn, limit=limit, offset=offset))
+    return DbManager.read(lambda repo: repo.asset.unclassified(limit=limit, offset=offset))
 
 
 @router.get("/assets/{asset_id}")
@@ -77,20 +74,8 @@ def asset_detail(
     """
     params.uuid_or_404(asset_id, detail="자산을 찾을 수 없거나 노출 대상이 아님")
 
-    def _work(conn: Any) -> dict[str, Any] | None:
-        """한 트랜잭션에서 상세·주제·관계를 모아 온다.
-
-        ``None`` 은 "없거나 볼 권한이 없음" — 호출부가 404 로 바꾼다(존재 여부를 응답으로
-        흘리지 않기 위해 둘을 같게 다룬다).
-        """
-        detail = fetch_asset_detail(conn, asset_id=asset_id, clearance=principal.clearance)
-        if detail is None:
-            return None
-        detail["topics"] = fetch_asset_topic(conn, asset_id=asset_id)
-        detail["same_topic_groups"] = find_same_topic_groups(conn, asset_id=asset_id)
-        return detail
-
-    detail = db.run_in_db(_work)
+    detail = DbManager.read(
+        lambda repo: repo.asset.detail(asset_id=asset_id, clearance=principal.clearance))
     if detail is None:
         raise HTTPException(status_code=404, detail="자산을 찾을 수 없거나 노출 대상이 아님")
     return detail
@@ -104,7 +89,7 @@ def topics_list() -> dict[str, Any]:
     정렬을 고정해(대주제 → 세부주제 이름순) 같은 요청이 늘 같은 순서를 낸다. 각 행에
     ``topic_asset_count``(주제 전체 distinct 자산 수) 동반(하위호환 필드).
     """
-    return {"topics": db.run_in_db(list_topics)}
+    return {"topics": DbManager.read(lambda repo: repo.asset.topics())}
 
 
 @router.get("/topics/{topic}")
@@ -124,9 +109,8 @@ def topic_assets(
     정렬로 페이징한다. ``subtopic`` 미지정=topic 하위 전체·``unassigned=true``='기타'(IS NULL)만·
     ``modality`` 필터. 응답 ``modality_counts`` 는 필터 무관 전체 분포(모달리티 폴더 카운트).
     """
-    return db.run_in_db(
-        lambda conn: assets_in_topic(
-            conn,
+    return DbManager.read(
+        lambda repo: repo.asset.topic_assets(
             topic_ko=topic,
             subtopic_ko=subtopic,
             unassigned_only=unassigned,
@@ -211,7 +195,7 @@ def asset_mm_meta(
     # 형식이 아닌 id 는 **없는 자산과 같게** 본다 — 이 창구는 미존재를 200·빈 목록으로 답한다.
     if not params.is_uuid(asset_id):
         return {"items": []}
-    items = db.run_in_db(lambda conn: mm_meta_of_asset(conn, asset_id=asset_id))
+    items = DbManager.read(lambda repo: repo.asset.entities_of(asset_id=asset_id))
     return {"items": items}
 
 
@@ -228,7 +212,7 @@ def download(
     바이트 산출은 디스크 실제 크기 기준. ``Accept-Ranges: bytes`` 항상 고지.
     """
     params.uuid_or_404(asset_id, detail="다운로드 대상을 찾을 수 없거나 노출 대상이 아님")
-    target = db.run_in_db(lambda conn: resolve_download_target(conn, asset_id=asset_id))
+    target = DbManager.read(lambda repo: repo.asset.download_target(asset_id=asset_id))
     if target is None:
         raise HTTPException(status_code=404, detail="다운로드 대상을 찾을 수 없거나 노출 대상이 아님")
 
@@ -279,7 +263,8 @@ def download(
 @router.get("/assets/{asset_id}/thumbnail")
 def asset_thumbnail(
     asset_id: str,
-    size: str = Query("card", description="크기 프리셋: card(320·목록/hover 기본) | detail(640·상세 히어로)"),
+    size: str = Query("card",
+                      description="크기 프리셋: card(320·목록/hover 기본) | detail(640·상세 히어로) · 대소문자 무관"),
 ) -> Response:
     """이미지·영상의 축소 썸네일을 돌려준다(조회 전용).
 
@@ -290,7 +275,7 @@ def asset_thumbnail(
     원본 무수정·결정적·LLM 0.
     """
     params.uuid_or_404(asset_id, detail="썸네일 대상을 찾을 수 없거나 노출 대상이 아님")
-    target = db.run_in_db(lambda conn: resolve_download_target(conn, asset_id=asset_id))
+    target = DbManager.read(lambda repo: repo.asset.download_target(asset_id=asset_id))
     if target is None:
         raise HTTPException(status_code=404, detail="썸네일 대상을 찾을 수 없거나 노출 대상이 아님")
     modality = target.get("modality")
@@ -299,7 +284,8 @@ def asset_thumbnail(
     fs_path = target.get("fs_path")
     if not fs_path or not os.path.isfile(fs_path):
         raise HTTPException(status_code=410, detail="원본 파일이 존재하지 않거나 접근할 수 없음")
-    data = cached_thumbnail(asset_id, fs_path, modality, size=size)  # 디스크 캐시 경유(크기별 generate-once)
+    # 대소문자를 가리지 않는다 — `DETAIL` 을 보냈다고 조용히 card 로 떨어지면 화면이 이유를 모른다.
+    data = cached_thumbnail(asset_id, fs_path, modality, size=size.lower())  # 디스크 캐시 경유(크기별 generate-once)
     if data is None:
         raise HTTPException(status_code=404, detail="썸네일을 생성할 수 없음")
     return Response(
@@ -321,17 +307,7 @@ def bundle(
     """
     params.uuid_or_404(asset_id, detail="묶음 seed 를 찾을 수 없거나 노출 대상이 아님")
 
-    def _work(conn: Any) -> list[dict[str, Any]] | None:
-        """묶음에 담을 자산들을 모은다.
-
-        기준 자산이 노출 대상이 아니면 ``None`` — 호출부가 404 로 바꾼다. 이 확인을 먼저
-        하지 않으면 볼 수 없는 자산을 통해 딸린 파일들이 새어 나간다.
-        """
-        if resolve_download_target(conn, asset_id=asset_id) is None:
-            return None
-        return collect_bundle_assets(conn, seed_asset_id=asset_id)
-
-    targets = db.run_in_db(_work)
+    targets = DbManager.read(lambda repo: repo.asset.bundle_targets(seed_asset_id=asset_id))
     if targets is None:
         raise HTTPException(status_code=404, detail="묶음 seed 를 찾을 수 없거나 노출 대상이 아님")
 
@@ -352,5 +328,108 @@ def bundle(
         _iter_zip(),
         media_type="application/zip",
         headers={"Content-Disposition": _content_disposition(f"bundle_{asset_id}.zip")},
+        background=BackgroundTask(zip_stream.close),
+    )
+
+
+# ── 원문(글자) 열람 ─────────────────────────────────────────────────────────────
+_CONTENT_404 = "자산을 찾을 수 없거나 노출 대상이 아님"
+
+
+@router.get("/assets/{asset_id}/content")
+def asset_content(asset_id: str) -> dict[str, Any]:
+    """자산의 **글자 내용**을 돌려준다 — 상세 화면의 원문 영역용.
+
+    문서는 원본 파일에서, 소리·영상은 받아쓰기(``ext_meta.stt``)에서. 글자가 없는 자산(그림)은
+    없는 자산과 **같은 문구의 404** 다 — 존재 여부를 흘리지 않는다.
+
+    Raises:
+        HTTPException: 노출 대상이 아니거나 글자가 없으면 404 · 원본 파일이 사라졌으면 410.
+    """
+    params.uuid_or_404(asset_id, detail=_CONTENT_404)
+    source = DbManager.read(lambda repo: repo.content.source_of(asset_id))
+    if source is None:
+        raise HTTPException(status_code=404, detail=_CONTENT_404)
+    try:
+        # 파일 읽기는 **DB 트랜잭션 밖**에서 한다 — 느린 디스크가 커넥션을 붙잡지 않게.
+        body = build_content(source)
+    except OSError as exc:
+        raise HTTPException(status_code=410, detail="원본 파일이 존재하지 않거나 접근할 수 없음") from exc
+    if body is None:
+        raise HTTPException(status_code=404, detail="이 자산에는 읽을 수 있는 원문이 없습니다")
+    return body
+
+
+# ── 고른 자산 여러 건을 한 zip 으로 ───────────────────────────────────────────────
+class SelectionBundleRequest(BaseModel):
+    """화면에서 고른 자산 목록 — '전체 선택' 같은 암묵 대상은 받지 않는다(관계 검토와 같은 원칙)."""
+
+    asset_ids: list[str]
+
+
+@router.post("/assets/bundle")
+def selection_bundle(
+    payload: SelectionBundleRequest,
+    principal: Annotated[Principal, Depends(require_principal)] = ...,
+) -> Response:
+    """**고른 자산들**을 한 zip 으로 묶어 내려준다(목록 화면의 일괄 내려받기).
+
+    관계 묶음과 달리 대상을 사용자가 정한다. 노출 게이트·부분 zip·목록 파일(manifest) 규칙은 같다 —
+    노출되지 않는 자산은 빠지되 **빠졌다는 사실은 manifest 에 남는다**.
+
+    감사는 담긴 자산마다 ``bundle`` 한 행(미들웨어는 GET 만 기록한다).
+
+    Raises:
+        HTTPException: 빈 목록·형식 오류·건수 초과는 400 · 용량 초과는 413 ·
+            내려받을 파일이 하나도 없으면 409.
+    """
+    asset_ids = params.uuid_list_or_400(payload.asset_ids, field="asset_ids")
+    if not asset_ids:
+        raise HTTPException(status_code=400, detail="asset_ids 가 비어 있습니다 — 내려받을 자산을 고르십시오")
+    if len(asset_ids) > MAX_SELECTION:
+        raise HTTPException(
+            status_code=400,
+            detail=f"한 번에 {MAX_SELECTION}건까지 묶을 수 있습니다(요청 {len(asset_ids)}건)")
+
+    picked = DbManager.read(lambda repo: repo.selection.targets(asset_ids))
+    targets = picked["targets"]
+    if not targets:
+        raise HTTPException(status_code=409, detail="내려받을 수 있는 자산이 없습니다 — 모두 노출 대상이 아닙니다")
+    if picked["total_bytes"] > MAX_SELECTION_BYTES:
+        mb, cap = picked["total_bytes"] // (1024 * 1024), MAX_SELECTION_BYTES // (1024 * 1024)
+        raise HTTPException(
+            status_code=413,
+            detail=f"용량이 상한을 넘습니다({mb}MB > {cap}MB) — 고른 자산을 줄이십시오")
+
+    def _audit(repo: Any) -> None:
+        """담긴 자산마다 한 행 — 개별 다운로드와 같은 낱개로 남겨야 이력이 맞물린다."""
+        for t in targets:
+            record_access(repo.conn, action="bundle", user_id=principal.user_id,
+                          asset_id=t["asset_id"], detail={"selection": len(targets)})
+
+    try:
+        DbManager.write(_audit)
+    except Exception:  # noqa: BLE001 — 감사 실패가 내려받기를 막지 않는다(최선 노력)
+        _LOG.warning("선택 묶음 감사 기록 실패(무시): %d건", len(targets))
+
+    zip_stream = build_bundle_zip_stream(targets)
+
+    def _iter_zip() -> Iterator[bytes]:
+        while True:
+            chunk = zip_stream.read(_STREAM_CHUNK)
+            if not chunk:
+                break
+            yield chunk
+
+    return StreamingResponse(
+        _iter_zip(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": _content_disposition(f"selection_{len(targets)}.zip"),
+            # 🔴 zip 은 스트리밍이라 실패가 **본문 도중에** 드러난다 — 몇 건이 담겼고 몇 건이 빠졌는지
+            #    헤더로 먼저 알려, 화면이 받은 zip 이 온전한지 스스로 맞춰 볼 수 있게 한다.
+            "X-Bundle-Files": str(len(targets)),
+            "X-Bundle-Missing": str(len(picked["missing"])),
+        },
         background=BackgroundTask(zip_stream.close),
     )

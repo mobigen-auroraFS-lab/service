@@ -75,7 +75,7 @@ class TestFileSearchRoute(unittest.TestCase):
         for target, repl in (
             ("service.api.db.run_in_db", _passthrough_db),
             ("service.portal.search.projection.fetch_access_tiers", lambda *_a, **_k: {}),
-            ("service.api.routes.file_search.fetch_file_meta", lambda *_a, **_k: {}),
+            ("service.portal.repositories.search_repo.fetch_file_meta", lambda *_a, **_k: {}),
             ("src.search.opensearch_sync.get_client", lambda *_a, **_k: object()),
             # 설정 미초기화 상태로 도는 단위 테스트다 — 색인 이름·임베딩 채널만 대역으로 준다.
             ("service.api.routes.file_search.get_current_settings",
@@ -344,7 +344,7 @@ class TestFileSearchCursor(unittest.TestCase):
         for target, repl in (
             ("service.api.db.run_in_db", _passthrough_db),
             ("service.portal.search.projection.fetch_access_tiers", lambda *_a, **_k: {}),
-            ("service.api.routes.file_search.fetch_file_meta", lambda *_a, **_k: {}),
+            ("service.portal.repositories.search_repo.fetch_file_meta", lambda *_a, **_k: {}),
             ("src.search.opensearch_sync.get_client", lambda *_a, **_k: object()),
             ("service.api.routes.file_search.get_current_settings",
              lambda: SimpleNamespace(opensearch=SimpleNamespace(index="assets"))),
@@ -413,7 +413,7 @@ class TestFileSearchCursor(unittest.TestCase):
         r = self.client.get("/file-search", params={"cursor": "!!!", "sort": "created_desc"})
         self.assertEqual(r.status_code, 400)
 
-    @patch("service.api.routes.file_search.project_rows")
+    @patch("service.portal.repositories.search_repo.project_rows")
     @patch("service.api.routes.file_search.browse_files")
     def test_커서_경로에도_권한_가리기가_걸린다(self, mock_browse, mock_project) -> None:
         """🔴 무한 스크롤은 쪽마다 따로 응답한다 — 한 쪽이라도 빠지면 권한 없는 사용자가 요약을 본다.
@@ -442,7 +442,7 @@ class TestFileSearchDepthAndStability(unittest.TestCase):
         for target, repl in (
             ("service.api.db.run_in_db", _passthrough_db),
             ("service.portal.search.projection.fetch_access_tiers", lambda *_a, **_k: {}),
-            ("service.api.routes.file_search.fetch_file_meta", lambda *_a, **_k: {}),
+            ("service.portal.repositories.search_repo.fetch_file_meta", lambda *_a, **_k: {}),
             ("src.search.opensearch_sync.get_client", lambda *_a, **_k: object()),
             ("service.api.routes.file_search.get_current_settings",
              lambda: SimpleNamespace(opensearch=SimpleNamespace(index="assets"))),

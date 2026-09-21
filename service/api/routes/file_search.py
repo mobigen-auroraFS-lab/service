@@ -25,10 +25,11 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from service.api import db, errors, params
-from service.portal.asset.file_meta import fetch_file_meta
+from service.api import errors, params
 from service.portal.auth import Principal, require_principal
-from service.portal.search.projection import project_rows
+from service.portal.common.db_manager import DbManager
+from service.portal.search.extra_facets import AXES as EXTRA_AXES
+from service.portal.search.extra_facets import SIZE_BUCKETS, extra_facets
 from src.config.search_modalities import VALID_SEARCH_MODALITIES
 from src.config.settings import active_embed_channel, get_current_settings
 from src.search.cursor import CursorError
@@ -54,6 +55,9 @@ from src.search.search_filters import applied_date_bounds, parse_search_filters
 router = APIRouter(tags=["search"])
 
 _LOG = logging.getLogger("meta_extract.portal_api")
+
+# 크기 구간 이름 — 칩(``facet-extra``)과 **같은 이름**을 쓴다(화면이 두 벌로 외우지 않게).
+SIZE_BUCKET_KEYS = tuple(k for k, _, _ in SIZE_BUCKETS)
 
 # 질의 길이 상한 — 검색 엔진이 낱말마다 절(clause)을 만들고 **1024개**에서 거절한다
 # (실측 2026-09-21: 2,000자 질의가 OpenSearch RequestError 로 터져 **500** 이 났다).
@@ -200,6 +204,11 @@ def file_search(
             " 099 G7 부터 **서버가 강제한다**(조건이 바뀐 커서는 400)"
         ),
     ),
+    size_bucket: str | None = Query(
+        None,
+        description=("파일 크기 구간: under1 | 1to10 | over10. ⚠️ **아직 거르지 못한다**(501) — "
+                     "건수는 /file-search/facet-extra 가 준다"),
+    ),
     sort: str = Query(
         SORT_DEFAULT,
         description=(
@@ -309,6 +318,18 @@ def file_search(
                 status_code=422,
                 detail=f"{name} 은(는) 한 번에 {_REPEAT_MAX}개까지만 받습니다(요청 {len(values)}개)",
             )
+    # TODO(코어): 크기로 **거르는 것**은 검색 엔진 필터에 크기 축이 없어 아직 못 한다. 파라미터 자리를
+    #   먼저 열어 두고(화면이 이 이름으로 코딩할 수 있게) 지금은 501 로 분명히 막는다 — 조용히
+    #   무시하면 화면은 걸린 줄 알고 잘못된 목록을 보여 준다(`TODO.md` · `extra_facets` 의 TODO).
+    if size_bucket is not None:
+        if size_bucket not in SIZE_BUCKET_KEYS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"알 수 없는 크기 구간입니다: {size_bucket!r} (가능: {', '.join(SIZE_BUCKET_KEYS)})")
+        raise HTTPException(
+            status_code=501,
+            detail=("크기 구간으로 거르기는 아직 제공하지 않습니다 — 건수는 "
+                    "/file-search/facet-extra?axis=file_size 가 줍니다"))
     if sort not in SORT_OPTIONS:
         raise HTTPException(
             status_code=422,
@@ -400,6 +421,8 @@ def file_search(
                 sort_depth=SORT_DEPTH_DEFAULT, facet_size=FACET_SIZE_DEFAULT,
                 refine=refine,
             )
+    # TODO(코어): 커서 해독 실패 문구에 파이썬 예외 원문이 붙는다(`src/search/cursor.py`) —
+    #   상태 코드·봉투는 정상이라 서비스에서 가리지 않고 코어 담당자에게 남겨 둔다(`TODO.md`).
     except CursorError as exc:
         # 커서가 깨졌거나 정렬이 어긋났다 — **조용히 다른 자리에서 이어 주지 않는다**(097 §2-3).
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -412,11 +435,11 @@ def file_search(
         _LOG.warning("파일 검색 — 검색 엔진 연결 실패: %s", exc, exc_info=True)
         raise HTTPException(status_code=503, detail="검색 엔진에 연결할 수 없습니다") from exc
 
-    def _finish(conn: Any) -> list[dict[str, Any]]:
+    def _finish(repo: Any) -> list[dict[str, Any]]:
         """권한 가리기와 파일 메타 붙이기를 **한 트랜잭션**에서 끝낸다(연결을 두 번 잡지 않게).
 
         Args:
-            conn: DB 커넥션(``db.run_in_db`` 가 넘긴다).
+            repo: 저장소 묶음(``DbManager.read`` 가 넘긴다).
 
         Returns:
             코어가 준 순서 그대로의 행 목록. 각 행에 표에 찍을 ``file_ext``·``file_size``·
@@ -424,9 +447,9 @@ def file_search(
             키 유무로 분기하지 않게.
         """
         # 깊이 밖에서 떠본 한 건은 이 페이지의 결과가 아니다 — 가리기·메타를 붙이기 전에 버린다.
-        rows = project_rows(conn, [] if beyond_depth else found["rows"],
-                            clearance=principal.clearance)
-        meta = fetch_file_meta(conn, [r["asset_id"] for r in rows])
+        rows = repo.search.project_rows([] if beyond_depth else found["rows"],
+                                        clearance=principal.clearance)
+        meta = repo.search.file_meta([r["asset_id"] for r in rows])
         for row in rows:
             got = meta.get(row["asset_id"]) or {}
             row["file_ext"] = _ext_of(str(row.get("file_name") or ""))
@@ -435,7 +458,7 @@ def file_search(
             row["created_at"] = got.get("created_at")
         return rows
 
-    items: list[dict[str, Any]] = db.run_in_db(_finish)  # type: ignore[assignment]
+    items: list[dict[str, Any]] = DbManager.read(_finish)
 
     # 🔴 여기서 한 번 더 거르지 않는다(099 G3). 좁히기는 이미 **검색 엔진 질의 절**로 걸렸고,
     #   엔진은 낱말(형태소) 단위로 맞춘다. 파이썬 부분 문자열로 다시 거르면 두 판정이 어긋나
@@ -504,3 +527,73 @@ def file_search(
         body["refine"] = {"q": refine, "shown": len(items)}
     return body
 
+
+
+# ── 추천 검색어 ─────────────────────────────────────────────────────────────────
+@router.get("/file-search/suggest")
+def file_search_suggest(
+    q: str = Query(..., min_length=1, max_length=_QUERY_MAX_LEN,
+                   description="사용자가 친 글자(부분 일치)"),
+    limit: int = Query(10, ge=1, le=50, description="돌려줄 개수(전체 상한)"),
+    principal: Annotated[Principal, Depends(require_principal)] = ...,
+) -> dict[str, Any]:
+    """검색창 추천 — 주제·하위주제·태그 중 글자가 든 값을 건수 많은 순으로.
+
+    🔴 **DB 에서 읽는다** — 추천은 "지금 결과"가 아니라 "고를 수 있는 값"이고, 검색이 멈춰도 떠야 한다.
+    """
+    rows = DbManager.read(lambda repo: repo.catalog.suggest(q=q.strip(), limit=limit))
+    return {"rows": rows, "total": len(rows)}
+
+
+# ── 추가 좁히기 칩(형식·크기·기간) ────────────────────────────────────────────────
+@router.get("/file-search/facet-extra")
+def file_search_facet_extra(
+    axis: list[str] = Query(default=[], description=f"셀 축(반복 가능): {' | '.join(EXTRA_AXES)} · 생략=전부"),
+    q: str = Query("", max_length=_QUERY_MAX_LEN, description="검색어(빈 값이면 조건에 맞는 전부)"),
+    refine: str | None = Query(None, max_length=_QUERY_MAX_LEN, description="결과 내 재검색"),
+    topic: list[str] | None = Query(None),
+    subtopic: list[str] | None = Query(None),
+    tag: list[str] | None = Query(None),
+    modality: list[str] | None = Query(None),
+    file_ext: list[str] | None = Query(None),
+    created_from: str | None = Query(None),
+    created_to: str | None = Query(None),
+    principal: Annotated[Principal, Depends(require_principal)] = ...,
+) -> dict[str, Any]:
+    """목록 화면의 **형식·크기·기간 칩 건수** — 코어 칩 네 축(주제·하위주제·태그·종류) 밖.
+
+    파라미터는 ``/file-search`` 와 같은 이름·같은 뜻이고 세는 집합도 같다. 칩은 자기 조건을 뺀 채 센다.
+    ``file_size`` 축은 **세기만** 한다(좁히기는 코어 확장 대기 — ``extra_facets`` 의 TODO).
+
+    Raises:
+        HTTPException: 모르는 축·필터 형식 오류는 422 · 검색 엔진에 닿지 못하면 503.
+    """
+    unknown = [a for a in axis if a not in EXTRA_AXES]
+    if unknown:
+        raise HTTPException(status_code=422,
+                            detail=f"알 수 없는 축입니다: {unknown} (가능: {', '.join(EXTRA_AXES)})")
+    try:
+        filters = parse_search_filters(
+            file_ext=file_ext, created_from=created_from, created_to=created_to,
+            topic=topic, subtopic=subtopic, modality=modality, tag=tag)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"필터 파라미터 형식 오류: {exc}") from exc
+
+    query = (q or "").strip()
+    query_vector: list[float] = []
+    if query:
+        try:
+            query_vector = embed_query_for_media_search(query, channel=active_embed_channel())
+        except Exception as exc:  # noqa: BLE001 — 임베딩 서버 장애를 빈 결과로 감추지 않는다
+            _LOG.warning("추가 칩 — 질의 임베딩 실패: %s", exc, exc_info=True)
+            raise HTTPException(status_code=503, detail="임베딩 서버에 연결할 수 없습니다") from exc
+    # 검색 엔진 클라이언트는 **부를 때** 가져온다(모듈 로딩 시점에 연결을 만들지 않는다 — 훑기 경로와 같은 규칙).
+    from src.search.opensearch_sync import get_client
+    try:
+        return extra_facets(
+            get_client(), get_current_settings().opensearch.index,
+            query=query, query_vector=query_vector, filters=filters,
+            refine=(refine or "").strip() or None, axes=list(axis))
+    except _OS_CONN_ERRORS as exc:
+        _LOG.warning("추가 칩 — 검색 엔진 연결 실패: %s", exc, exc_info=True)
+        raise HTTPException(status_code=503, detail="검색 엔진에 연결할 수 없습니다") from exc
