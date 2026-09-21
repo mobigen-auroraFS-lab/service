@@ -85,6 +85,7 @@ def _fake_list_entities(
     after_type: str | None = None,
     uid_allow: set[tuple[str, str]] | None = None,
     uid_first: set[tuple[str, str]] | None = None,
+    uid_semantic: set[tuple[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """코어 ``list_entities`` 대역 — 화이트리스트·커서·상한을 **SQL 과 같은 규칙**으로 흉내 낸다.
 
@@ -101,6 +102,7 @@ def _fake_list_entities(
         after_uid: 직전 쪽 마지막 개체의 표기 키.
         after_type: 직전 쪽 마지막 개체의 종류(표기까지 같은 자리를 가른다 · 2026-09-18).
         uid_allow: 개체 화이트리스트. 🔴 ``None`` 이면 조건 없음 · 빈 집합이면 **0건**이다.
+        uid_semantic: 뜻으로 앞세울 개체 집합(티어 1 · 이름보다 한 단 아래).
         uid_first: 맨 앞에 세울 개체 집합(099 G7 · 순서만 바꾸고 거르지 않는다).
 
     Returns:
@@ -110,6 +112,7 @@ def _fake_list_entities(
         ValueError: 책갈피를 일부만 준 경우(코어와 같은 계약).
     """
     first = uid_first or set()
+    sem = uid_semantic or set()
 
     def _tier(row: dict[str, Any]) -> int:
         """행의 우선 티어(1=앞세운 개체 · 0=나머지).
@@ -120,7 +123,10 @@ def _fake_list_entities(
         Returns:
             티어 값.
         """
-        return 1 if (row["entity_type"], row["entity_uid"]) in first else 0
+        # 🔴 코어 SQL 의 ``CASE`` 와 **같은 순서·같은 값** — 이름(2) → 뜻(1) → 나머지(0).
+        #    대역이 갈라지면 시험이 실제 동작과 다른 것을 재게 된다.
+        key = (row["entity_type"], row["entity_uid"])
+        return 2 if key in first else (1 if key in sem else 0)
 
     rows = sorted(_rows_of(uid_allow),
                   key=lambda r: (-_tier(r), -int(r["confirmed_count"]),

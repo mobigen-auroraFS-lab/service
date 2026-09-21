@@ -67,6 +67,21 @@ def _allowed(uid_allow: set[tuple[str, str]] | None) -> list[dict[str, Any]]:
     return [r for r in _TABLE if (r["entity_type"], r["entity_uid"]) in uid_allow]
 
 
+def _tier3(row: dict[str, Any], first: set, sem: set) -> int:
+    """코어 SQL 의 ``CASE`` 와 같은 값 — 이름(2) → 뜻(1) → 나머지(0).
+
+    Args:
+        row: 목록 행.
+        first: 이름이 정확히 맞은 개체 집합.
+        sem: 뜻으로 상위인 개체 집합.
+
+    Returns:
+        우선 티어.
+    """
+    key = (row["entity_type"], row["entity_uid"])
+    return 2 if key in first else (1 if key in sem else 0)
+
+
 def _fake_fetch_list(
     _conn: object,
     *,
@@ -80,6 +95,7 @@ def _fake_fetch_list(
     after_type: str | None = None,
     uid_allow: set[tuple[str, str]] | None = None,
     uid_first: set[tuple[str, str]] | None = None,
+    uid_semantic: set[tuple[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """코어 keyset 목록 대역 — 실제 SQL 과 **같은 조건**으로 이어 읽는다.
 
@@ -98,6 +114,7 @@ def _fake_fetch_list(
         after_uid: 직전 쪽 마지막 개체의 표기 키.
         after_type: 직전 쪽 마지막 개체의 종류(표기까지 같은 자리를 가른다).
         uid_allow: 찾아오기·좁히기가 정한 개체 화이트리스트(099 G5).
+        uid_semantic: 뜻으로 앞세울 개체 집합(티어 1 · 이름보다 한 단 아래).
         uid_first: 맨 앞에 세울 개체 집합(099 G7 · 순서만 바꾼다).
 
     Returns:
@@ -110,9 +127,10 @@ def _fake_fetch_list(
     if any(v is not None for v in book) and any(v is None for v in book):
         raise ValueError("이어읽기 책갈피는 네 값을 함께 줘야 한다")
     first = uid_first or set()
+    sem = uid_semantic or set()
     rows = sorted(
         _allowed(uid_allow),
-        key=lambda r: (-(1 if (r["entity_type"], r["entity_uid"]) in first else 0),
+        key=lambda r: (-_tier3(r, first, sem),
                        -int(r["confirmed_count"]), str(r["entity_uid"]),
                        str(r["entity_type"])))
     if after_count is not None:
