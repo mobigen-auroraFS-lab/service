@@ -25,7 +25,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from service.api import db, errors
+from service.api import db, errors, params
 from service.portal.asset.file_meta import fetch_file_meta
 from service.portal.auth import Principal, require_principal
 from service.portal.search.projection import project_rows
@@ -272,6 +272,7 @@ def file_search(
     # 🔴 검색어가 비면 **조건만으로 훑는 화면**이다(097). 종전에는 422 로 막았다 — 첫 화면 전량
     #    목록을 낼 창구가 없었기 때문이다. 이제는 커서 경로가 그것을 맡는다.
     browsing = not q.strip()
+    cursor = params.cursor_or_none(cursor)   # 빈 커서(cursor=)는 커서 없음 — 아래 판단이 갈리지 않게
     if cursor is not None and offset:
         raise HTTPException(
             status_code=400,

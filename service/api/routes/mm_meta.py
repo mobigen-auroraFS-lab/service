@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 
-from service.api import db
+from service.api import db, params
 from service.portal import mm_meta
 from service.portal.asset.download import build_bundle_zip_stream
 from service.portal.auth import require_principal
@@ -185,6 +185,7 @@ def list_mm_meta(
     # 커서에 실을 **조건 지문 재료**(099 G7) — 이번 결과 집합을 정의하는 것 전부를 한 문자열로.
     #   같은 값을 되읽기와 다음 커서 발급에 함께 쓴다(두 곳이 갈라지면 서버가 준 커서를 서버가
     #   거부한다). 무엇이 재료이고 무엇을 뺐는지는 `mm_meta.entity_cursor_scope` 주석에 있다.
+    cursor = params.cursor_or_none(cursor)   # 빈 커서(cursor=)는 커서 없음(첫 쪽) — "커서가 비었다" 400 이 아니다
     scope_material = mm_meta.entity_cursor_scope(
         q=q, refine=refine, entity_type=entity_type, areas=picked_areas,
         min_bundle_size=_MIN_BUNDLE_SIZE)
