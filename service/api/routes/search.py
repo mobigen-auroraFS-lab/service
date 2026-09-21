@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator, Mapping
 from typing import Annotated, Any
 
@@ -38,6 +39,19 @@ from src.search.search_tuning import SearchTuning
 from src.search.tag_facets import aggregate_tag_facets
 
 router = APIRouter(tags=["search"])
+
+_LOG = logging.getLogger("meta_extract.portal_api")
+
+# 질의 임베딩 실패를 가려내는 표식 — 코어가 전용 예외 없이 ``RuntimeError`` 로 올린다
+# (``src/embedders/text_embedder_api.py``: "임베딩 API 호출 실패(N회): …").
+# ⚠️ 코어에 예외 형이 생기면 **그것으로 바꾼다** — 그때까지는 이 문자열이 사실상의 계약이다.
+_EMBED_FAIL_MARK = "임베딩"
+
+# 질의 길이 상한 — 검색 엔진이 낱말마다 절(clause)을 만들고 **1024개**에서 거절한다
+# (실측 2026-09-21: 2,000자 질의가 OpenSearch RequestError 로 터져 **500** 이 났다).
+# 입력이 너무 긴 것은 **사용자가 고칠 문제**라 422 로 앞에서 끊는다 — 상한은 넉넉하되
+# 질의와 좁히기를 합쳐도 절 수가 한계에 닿지 않는 값이다.
+_QUERY_MAX_LEN = 300
 
 # 배제할 도메인 목록. **지금은 비어 있다**(모든 도메인을 균일하게 노출) — 특정 도메인을
 # 다시 가려야 할 때 여기에 넣으면 결과 조립 단계가 그 행들을 걷어낸다.
@@ -355,7 +369,7 @@ def _compact_view(
 
 @router.get("/search")
 def search(
-    q: str = Query(..., description="검색 질의(한국어)"),
+    q: str = Query(..., max_length=_QUERY_MAX_LEN, description="검색 질의(한국어)"),
     modalities: str | None = Query(
         None, description="콤마 구분: text,image,video,audio (미지정=전체)"
     ),
@@ -388,6 +402,7 @@ def search(
     ),
     refine: str | None = Query(
         None,
+        max_length=_QUERY_MAX_LEN,
         description=(
             "결과 내 재검색(글자 좁히기). 공백으로 쪼갠 낱말이 **모두** 들어 있는 행만 남긴다"
             "(파일명·요약·태그 대상). 서버에 다시 묻지 않고 **이번 결과 안에서만** 좁히므로"
@@ -431,17 +446,31 @@ def search(
         raise HTTPException(status_code=422, detail=f"필터 파라미터 형식 오류: {exc}") from exc
 
     # 풀 하한: 요청 풀이 노출 size 보다 얕으면 size 로 끌어올린다(size 계약 보장 + 승격 여지 확보).
+    # 공백뿐인 질의는 **묻지 않은 것**이다 — 조용히 0건을 주면 사용자는 "자료가 없다"로 읽는다.
+    #   입력 오류는 422 로 통일한다(`/file-search` 가 2026-09-09 리뷰에서 같은 이유로 정리됐다).
+    if not q.strip():
+        raise HTTPException(status_code=422, detail="검색어(q)가 비어 있습니다 — 찾을 말을 주십시오")
+
     effective_pool = max(limit_per_bucket, size)
-    result = search_hybrid(
-        q,
-        modalities=mods,
-        limit_per_bucket=effective_pool,
-        search_mode=search_mode,
-        search_filters=search_filters,
-        # 디버그용 우회. 기본은 꺼져 있어 평소 호출에는 영향이 없다.
-        disable_os_cutoff=no_cutoff,
-        tuning=tuning,
-    )
+    try:
+        result = search_hybrid(
+            q,
+            modalities=mods,
+            limit_per_bucket=effective_pool,
+            search_mode=search_mode,
+            search_filters=search_filters,
+            # 디버그용 우회. 기본은 꺼져 있어 평소 호출에는 영향이 없다.
+            disable_os_cutoff=no_cutoff,
+            tuning=tuning,
+        )
+    except RuntimeError as exc:
+        # 임베딩 서버 장애는 **검색 엔진 장애와 다른 원인**이라 따로 알린다(`/file-search`·`/mm-meta`
+        # 와 같은 규율 · 실측 2026-09-21: 이 창구만 500 이었다). 그 밖의 RuntimeError(설정 미초기화 등)는
+        # 🔴 **그대로 올린다** — 코드 결함을 장애로 위장하면 운영자가 엉뚱한 곳을 본다.
+        if _EMBED_FAIL_MARK not in str(exc):
+            raise
+        _LOG.warning("검색 — 질의 임베딩 실패: %s", exc, exc_info=True)
+        raise HTTPException(status_code=503, detail="임베딩 서버에 연결할 수 없습니다") from exc
 
     # 모달리티별로 독립 순위를 매겨 상위 N개씩 담는다(배제 목록은 현재 비어 있다).
     grouped_raw = group_ranked(result, limit_per_modality=size, exclude_domains=_EXCLUDE_DOMAINS)

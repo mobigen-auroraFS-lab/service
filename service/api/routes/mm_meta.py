@@ -32,6 +32,12 @@ from src.search.cursor import CursorError
 # 끝 슬래시 취급이 미묘해진다. 이득은 표기뿐이라 정확성을 택했다. 인증만 라우터에 건다.
 router = APIRouter(tags=["entity"], dependencies=[Depends(require_principal)])
 
+# 질의 길이 상한 — 검색 엔진이 낱말마다 절(clause)을 만들고 **1024개**에서 거절한다
+# (실측 2026-09-21: 2,000자 질의가 OpenSearch RequestError 로 터져 **500** 이 났다).
+# 입력이 너무 긴 것은 **사용자가 고칠 문제**라 422 로 앞에서 끊는다 — 상한은 넉넉하되
+# 질의와 좁히기를 합쳐도 절 수가 한계에 닿지 않는 값이다.
+_QUERY_MAX_LEN = 300
+
 # zip 전송 조각 크기 — 자산 다운로드와 같은 값(같은 이유: 묶음이 커도 서버 메모리가 일정하다).
 _STREAM_CHUNK = 64 * 1024
 
@@ -91,6 +97,7 @@ def _zip_response(
 def list_mm_meta(
     q: str | None = Query(
         None,
+        max_length=_QUERY_MAX_LEN,
         description=(
             "검색어(낱말 단위) — 이름·근거 키워드·설명·구성 자료를 본다. 글자가 겹치지 않아도"
             " 뜻이 가까우면 함께 걸린다(의미 검색 · 게이트를 넘겼을 때). 미지정이면 전체 목록"
@@ -106,6 +113,7 @@ def list_mm_meta(
     ),
     refine: str | None = Query(
         None,
+        max_length=_QUERY_MAX_LEN,
         description=(
             "결과 내 재검색(낱말 좁히기 · 099). 공백으로 쪼갠 낱말이 **모두** 걸린 개체만 남긴다"
             "(이름·근거 키워드·설명·구성 자료 대상). 🔴 **이번 쪽이 아니라 결과 집합 전체**를 서버가"
