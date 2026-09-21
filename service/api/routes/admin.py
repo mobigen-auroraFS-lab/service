@@ -73,6 +73,9 @@ def asset_lineage(
     조회 전용이며 도메인에 따른 제외는 없다(모든 도메인을 균일하게 노출).
     미존재/이력 없음은 빈 ``activities`` 로 200 반환(의도·도메인 제외 없음).
     """
+    # 형식이 아닌 id 는 **없는 자산과 같게** 본다 — 이 창구는 미존재를 200·빈 목록으로 답한다.
+    if not params.is_uuid(asset_id):
+        return {"asset_id": asset_id, "activities": []}
     activities = db.run_in_db(lambda conn: query_asset_lineage(conn, asset_id))
     return {"asset_id": asset_id, "activities": activities}
 
@@ -320,6 +323,7 @@ def admin_asset_detail(
     응답 형상은 서비스웹 ``GET /assets/{asset_id}`` 와 **같다**(IDD IF-ADMIN-13 = IF-ASSET-01).
     주제 두 필드가 빠져 계약과 어긋나 있던 것을 맞췄다 — 같은 읽기 트랜잭션에서 함께 싣는다.
     """
+    params.uuid_or_404(asset_id, detail="자산을 찾을 수 없거나 노출 대상이 아님")
 
     def _work(conn: Any) -> dict[str, Any] | None:
         """한 트랜잭션에서 상세·주제를 모아 온다(서비스웹 상세와 같은 순서·같은 seam).
