@@ -55,6 +55,12 @@ router = APIRouter(tags=["search"])
 
 _LOG = logging.getLogger("meta_extract.portal_api")
 
+# 질의 길이 상한 — 검색 엔진이 낱말마다 절(clause)을 만들고 **1024개**에서 거절한다
+# (실측 2026-09-21: 2,000자 질의가 OpenSearch RequestError 로 터져 **500** 이 났다).
+# 입력이 너무 긴 것은 **사용자가 고칠 문제**라 422 로 앞에서 끊는다 — 상한은 넉넉하되
+# 질의와 좁히기를 합쳐도 절 수가 한계에 닿지 않는 값이다.
+_QUERY_MAX_LEN = 300
+
 # 한 페이지 상한. 표로 훑는 화면이라 검색 화면(100)보다 넉넉히 두되, 한 번에 다 받게 하지는 않는다.
 _PAGE_SIZE_MAX = 200
 # 화면에 보일 칩 수 — 083 태그 패싯 표시 기본(12)과 같은 값으로 맞춘다(축이 달라도 눈에 보이는 양은 같게).
@@ -155,6 +161,7 @@ def _ext_of(file_name: str) -> str:
 def file_search(
     q: str = Query(
         "",
+        max_length=_QUERY_MAX_LEN,
         description=(
             "검색어 — 파일 이름과 내용을 함께 찾는다."
             " **비우면 조건에 맞는 전부**(첫 화면 훑기 · 097). 그때는 관련도가 뜻이 없으므로"
@@ -184,6 +191,7 @@ def file_search(
     created_to: str | None = Query(None, description="생성일 상한"),
     refine: str | None = Query(
         None,
+        max_length=_QUERY_MAX_LEN,
         description=(
             "결과 내 재검색(좁히기). 공백으로 쪼갠 낱말이 **모두** 든 자산만 남긴다."
             " 🔴 **결과 집합 전체**에 걸린다(099) — 몇 쪽에 있든 걸리며 total 도 함께 줄어든다."
