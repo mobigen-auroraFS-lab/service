@@ -9,7 +9,10 @@ from typing import Any
 
 # 시간 버킷 단위 허용 목록 — **여기 하나뿐**이다(라우트·서비스가 각자 두면 서로 어긋난다).
 # ⚠️ 이 값은 SQL 문자열에 그대로 박히므로, 목록을 통과한 값만 써야 한다.
-TIMELINE_INTERVALS: tuple[str, ...] = ("day", "hour", "month")
+# 🔴 [2026-09-21] ``week`` 를 넣었다 — Swagger 설명문과 화면 쪽 기대에는 처음부터 있었는데 목록에만
+#    빠져 있어 422 였다(시·일·달은 되고 주만 안 되는 까닭이 없다). PostgreSQL ``date_trunc('week', …)``
+#    은 ISO 기준이라 **월요일 0시**가 버킷 시작이다.
+TIMELINE_INTERVALS: tuple[str, ...] = ("hour", "day", "week", "month")
 
 
 def pivot_series(grouped_rows: list[tuple]) -> list[dict]:

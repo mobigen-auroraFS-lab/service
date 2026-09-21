@@ -143,6 +143,18 @@ class LineageTimelineTest(unittest.TestCase):
         out = lineage_timeline(_Conn([(ts, 5)]), interval="month", group_by=None)
         self.assertEqual(out["interval"], "month")
 
+    def test_interval_week_goes_into_sql(self):
+        """🔴 [2026-09-21] week 는 종전에 422 였다 — 화이트리스트에 없어 SQL 까지 가지 못했다.
+
+        화이트리스트 밖 값은 조용히 day 로 떨어지므로(``trunc = interval if … else "day"``),
+        **SQL 에 실제로 week 가 실렸는지**까지 본다. 상태 코드만 보면 폴백을 통과로 읽는다.
+        """
+        ts = datetime(2026, 6, 29, tzinfo=UTC)          # 월요일 — date_trunc('week') 의 버킷 시작
+        conn = _Conn([(ts, 5)])
+        out = lineage_timeline(conn, interval="week", group_by=None)
+        self.assertEqual(out["interval"], "week")
+        self.assertIn("date_trunc('week'", conn._cur.calls[0][0])
+
     def test_multi_series_group_by_activity(self):
         ts = datetime(2026, 6, 30, tzinfo=UTC)
         # 그룹 행: (key, bucket, count) — key ASC·bucket ASC 정렬 가정
