@@ -1450,6 +1450,9 @@
       "req": {
         "Header": [
           "Range"
+        ],
+        "Path": [
+          "asset_id"
         ]
       },
       "req_meta": {
@@ -1460,6 +1463,14 @@
           "min": null,
           "required": false,
           "type": "string"
+        },
+        "asset_id": {
+          "default": null,
+          "loc": "Path",
+          "max": null,
+          "min": null,
+          "required": true,
+          "type": "string(UUID)"
         }
       },
       "resp": {},
@@ -1483,11 +1494,22 @@
       "method": "GET",
       "name": "자산 썸네일",
       "req": {
+        "Path": [
+          "asset_id"
+        ],
         "Query": [
           "size"
         ]
       },
       "req_meta": {
+        "asset_id": {
+          "default": null,
+          "loc": "Path",
+          "max": null,
+          "min": null,
+          "required": true,
+          "type": "string(UUID)"
+        },
         "size": {
           "default": null,
           "loc": "Query",
@@ -1700,7 +1722,9 @@
         ]
       },
       "resp_alt": {},
-      "resp_kind": {},
+      "resp_kind": {
+        "200": "object"
+      },
       "resp_meta": {
         "200": {
           "meta": "object",
@@ -2732,9 +2756,29 @@
       "method": "GET",
       "name": "개체 좁히기 칩",
       "req": {
-        "Query": []
+        "Query": [
+          "entity_type",
+          "areas"
+        ]
       },
-      "req_meta": {},
+      "req_meta": {
+        "areas": {
+          "default": null,
+          "loc": "Query",
+          "max": null,
+          "min": null,
+          "required": false,
+          "type": "string"
+        },
+        "entity_type": {
+          "default": null,
+          "loc": "Query",
+          "max": null,
+          "min": null,
+          "required": false,
+          "type": "string"
+        }
+      },
       "resp": {},
       "resp_alt": {},
       "resp_kind": {
@@ -2765,14 +2809,56 @@
       "url": "/mm-meta/types"
     },
     "IF-ENTITY-04": {
-      "errors": {},
+      "errors": {
+        "404": "좁힌 결과가 비었다(해당 조건에 자료 없음)",
+        "409": "대상은 있으나 **경로를 아는 파일이 하나도 없다** — 빈 zip 대신 오류로 알린다",
+        "413": "합계 용량이 상한(500MB)을 넘었다. 문구에 실측 용량과 상한을 함께 준다 — `entity_type`·`areas` 로 더 좁히거나 `exclude_video=true` 로 영상을 빼야 한다"
+      },
       "gubun": "현행 정본",
       "method": "GET",
       "name": "개체 묶음 다운로드",
       "req": {
-        "Query": []
+        "Query": [
+          "entity_type",
+          "areas",
+          "labels",
+          "exclude_video"
+        ]
       },
-      "req_meta": {},
+      "req_meta": {
+        "areas": {
+          "default": null,
+          "loc": "Query",
+          "max": null,
+          "min": null,
+          "required": false,
+          "type": "string"
+        },
+        "entity_type": {
+          "default": null,
+          "loc": "Query",
+          "max": null,
+          "min": null,
+          "required": false,
+          "type": "string"
+        },
+        "exclude_video": {
+          "default": "false",
+          "loc": "Query",
+          "max": null,
+          "min": null,
+          "required": false,
+          "type": "boolean"
+        },
+        "labels": {
+          "default": null,
+          "loc": "Query",
+          "max": null,
+          "min": null,
+          "required": false,
+          "type": "string"
+        }
+      },
       "resp": {},
       "resp_alt": {},
       "resp_kind": {
@@ -2785,7 +2871,9 @@
       "url": "/mm-meta/bundle"
     },
     "IF-ENTITY-05": {
-      "errors": {},
+      "errors": {
+        "404": "해당 개체가 없다(종류·표기 키 조합이 없음)"
+      },
       "gubun": "현행 정본",
       "method": "GET",
       "name": "개체 카드",
@@ -2825,7 +2913,10 @@
       "url": "/mm-meta/{entity_type}/{entity_uid}"
     },
     "IF-ENTITY-06": {
-      "errors": {},
+      "errors": {
+        "404": "해당 개체가 없다",
+        "409": "개체는 있으나 구성 자산이 없거나 전부 경로 미상 — 빈 zip 대신 오류로 알린다"
+      },
       "gubun": "현행 정본",
       "method": "GET",
       "name": "개체 카드 묶음 다운로드",

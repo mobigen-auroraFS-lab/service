@@ -105,6 +105,29 @@ def found() -> list[Fixture]:
 
 NONE: list[Fixture] = []                                   # 행 없음 → 404
 
+# 개체 묶음(IF-ENTITY-04)의 대상 질의 — 용량 판정에 쓰는 행을 여기서 공급한다.
+_ENTITY_ASSETS_SQL = (r"SELECT DISTINCT a\.asset_id::text AS asset_id, a\.modality, a\.fs_path")
+
+
+def entity_assets_huge() -> list[Fixture]:
+    """개체 구성 자산이 **상한을 넘는 용량**으로 잡힌다 → 413."""
+    return [fixture(_ENTITY_ASSETS_SQL,
+                    [{"asset_id": ASSET_ID, "modality": "video", "fs_path": "/tmp/huge.mp4",
+                      "file_size": 900 * 1024 * 1024}])]
+
+
+def entity_card_empty() -> list[Fixture]:
+    """개체는 있는데 **구성 자산이 하나도 없다** → 409(빈 zip 대신 오류로 알린다)."""
+    return [fixture(r"SELECT node_id,\s+COALESCE\(NULLIF\(canonical->>'name'",
+                    [{"node_id": 1, "name": "u1", "canonical": {}}])]
+
+
+def entity_assets_pathless() -> list[Fixture]:
+    """행은 있는데 **경로를 아는 파일이 하나도 없다** → 409(빈 zip 대신 오류)."""
+    return [fixture(_ENTITY_ASSETS_SQL,
+                    [{"asset_id": ASSET_ID, "modality": "image", "fs_path": None,
+                      "file_size": 10}])]
+
 
 def gone() -> list[Fixture]:
     """행은 있고 디스크 파일이 없다 → 410."""
@@ -158,6 +181,13 @@ ERROR_PROBES: dict[str, list[tuple[str, str, dict, dict | None, dict]]] = {
                     ("confidence 범위 밖", "found", {"min_confidence": "5"}, None, {}),
                     ("날짜 형식 오류", "found", {"from": "notadate"}, None, {})],
     "IF-ADMIN-17": [("status 오타", "found", {"status": "bogus"}, None, {})],
+    # 개체 묶음·카드 — 좁힌 결과가 비면 404, 용량 상한 초과면 413, 경로를 아는 파일이 없으면 409
+    "IF-ENTITY-04": [("좁힌 결과 없음", "none", {}, None, {}),
+                     ("용량 상한 초과", "entity_huge", {}, None, {}),
+                     ("전부 경로 미상", "entity_pathless", {}, None, {})],
+    "IF-ENTITY-05": [("개체 없음", "none", {}, None, {})],
+    "IF-ENTITY-06": [("개체 없음", "none", {}, None, {}),
+                     ("구성 자산 없음", "entity_card_empty", {}, None, {})],
     "IF-REVIEW-01": [("빈 edge_ids", "found", {}, {"edge_ids": []}, {})],
     "IF-REVIEW-02": [("빈 edge_ids", "found", {}, {"edge_ids": []}, {})],
     "IF-REVIEW-03": [("to_status 오타", "found", {}, {"edge_id": "e", "to_status": "bogus"}, {})],
@@ -199,7 +229,10 @@ UNREACHABLE = {
 
 
 def fixtures_for(kind: str) -> list[Fixture]:
-    return {"found": found(), "none": NONE, "gone": gone()}[kind]
+    return {"found": found(), "none": NONE, "gone": gone(),
+            "entity_huge": entity_assets_huge(),
+            "entity_pathless": entity_assets_pathless(),
+            "entity_card_empty": entity_card_empty()}[kind]
 
 
 def fill_path(url: str) -> str:

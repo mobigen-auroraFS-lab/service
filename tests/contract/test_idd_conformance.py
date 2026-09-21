@@ -50,16 +50,21 @@ FILE_SEARCH_STUB = {
 }
 
 
-def _external_patches():
+def _external_patches(*, mm_meta_stubs: bool = True):
     """조회 경로가 타는 **외부 자원 대역** — 임베딩·검색 엔진·전역 설정을 부르지 않게 한다.
 
     설정은 전역 초기화 대신 대역으로 준다(``probes.fake_settings`` 주석 참조).
+
+    Args:
+        mm_meta_stubs: 개체 카드·묶음 조회를 대역으로 덮을지. 응답 **모양**을 볼 때는 참이어야
+            200 이 나지만, **오류** 계약을 볼 때는 거짓이어야 한다 — 참이면 조회가 언제나 성공해
+            404·409·413 을 만들 길이 막힌다(2026-09-21: 그래서 세 창구의 오류가 선언조차 없었다).
     """
     from service.portal import mm_meta
     from src.search import opensearch_sync
 
     img = str(probes.ensure_image())
-    return (
+    mm_stubs = (
         # 개체 카드·묶음 — 실제 행이 있어야 200 이 난다. 없으면 404 로 빠져 **대조에서 조용히
         # 사라진다**(실제로 세 엔드포인트가 그렇게 빠져 있었다).
         patch.object(mm_meta, "fetch_card", lambda *a, **k: {
@@ -74,6 +79,9 @@ def _external_patches():
              "file_size": 512, "modality": "image", "entity_type": "person",
              "entity_uid": "u1", "name": "이순신"},
         ]),
+    ) if mm_meta_stubs else ()
+    return (
+        *mm_stubs,
         # ⚠️ ``get_client`` 는 핸들러 **안에서** import 된다 — 라우트 모듈이 아니라 원본을 패치해야
         #    잡힌다(모듈 경유 참조가 아니라 호출 시점 import 라서).
         patch.object(opensearch_sync, "get_client", lambda *a, **k: object()),
@@ -515,7 +523,9 @@ class TestErrorContract(unittest.TestCase):
             for _desc, kind, q, body, hdr in probes.ERROR_PROBES.get(api, []):
                 fx = probes.fixtures_for(kind)
                 with contextlib.ExitStack() as stack:
-                    for pt in (*_external_patches(),
+                    # 개체 카드·묶음은 대역을 걷어야 오류가 난다 — 대역이 조회를 늘 성공시킨다.
+                    stubs = api not in ("IF-ENTITY-04", "IF-ENTITY-05", "IF-ENTITY-06")
+                    for pt in (*_external_patches(mm_meta_stubs=stubs),
                                patch.object(db, "run_in_db",
                                             lambda cb, _f=fx: cb(FakeConn(_f))),
                                patch.object(db, "run_in_db_write",
