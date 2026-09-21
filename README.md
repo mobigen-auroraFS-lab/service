@@ -97,17 +97,32 @@ TEXT_EMBED_NORMALIZE=true
 | DB | `POSTGRES_HOST` · `POSTGRES_PORT` · `POSTGRES_DB` · `POSTGRES_USER` · `POSTGRES_PASSWORD` |
 | 검색 | `OPENSEARCH_HOST` · `OPENSEARCH_PORT` |
 | 인증 | `PORTAL_AUTH_DISABLED` · `PORTAL_JWT_SECRET` · `PORTAL_JWT_ISSUER` · `PORTAL_JWT_TTL_SECONDS` · `PORTAL_AUTH_BACKEND` |
+| DB 풀 | `PORTAL_DB_POOL_MIN` · `PORTAL_DB_POOL_MAX`(선택 — 미설정 시 코어 기본 1/10) |
 | 썸네일 | `THUMBNAIL_CACHE_DIR`(선택 · 기본 시스템 임시 디렉터리) |
 
 > 원본 파일 위치는 별도 설정이 없습니다 — 다운로드·썸네일은 **DB 에 기록된 경로(`fs_path`)** 를 읽습니다.
 > 그 경로가 이 서버에서 접근 가능해야 합니다(적재한 기계와 다른 기계면 같은 마운트가 필요합니다).
+
+### DB 커넥션 풀 (동시성)
+
+모든 라우트가 동기 함수라 Starlette 의 스레드풀(기본 **40개**)에서 돌아갑니다. 반면 코어의
+커넥션 풀 기본값은 **max 10** 입니다. 동시 요청이 10을 넘으면 남은 스레드가 커넥션을 기다리다
+`PoolTimeout` 으로 떨어집니다 — **부하가 걸려야 드러나는** 고장이라 기동 시 경고를 남깁니다.
+
+`PORTAL_DB_POOL_MAX` 로 풀을 키워 맞추십시오. 지켜야 하는 부등식:
+
+```
+uvicorn 워커 수 × PORTAL_DB_POOL_MAX  ≤  PostgreSQL max_connections
+```
+
+> ⚠️ 같은 DB 를 파이프라인과 공유하면 그쪽 커넥션까지 합쳐 계산해야 합니다.
 
 ### 인증 동작 (중요)
 
 | `PORTAL_AUTH_DISABLED` | 동작 |
 |---|---|
 | `1` (연구·개발) | 토큰 없이 호출 가능 → `anonymous`(public 권한). Bearer 가 있으면 검증합니다. `POST /auth/token` 으로 dev 토큰 발급 가능 |
-| `0` (운영) | Bearer **필수**(없으면 401) · `POST /auth/token` 은 404 · **`PORTAL_JWT_SECRET` 미설정이면 기동 시점에 실패**(fail-fast) |
+| `0` (운영) | Bearer **필수**(없으면 401) · `POST /auth/token` 은 404 · **`PORTAL_JWT_SECRET` 미설정이면 인증이 필요한 첫 요청이 500** |
 
 JWT 는 HS256 이고 `exp`·`sub` 를 필수로 검증합니다. `PORTAL_JWT_ISSUER` 를 설정하면 `iss` 를 고정해
 다른 서비스의 토큰 재사용을 막습니다.
@@ -156,11 +171,27 @@ python -m unittest discover -s tests
 
 ```
 service/
-  api/          FastAPI 앱·라우터·요청/응답 모델·미들웨어
-  portal/       검색 조립·자산 조회·다운로드·썸네일·인증/권한
-  bootstrap.py  코어 bootstrap_env 호출(자기 레포 루트의 .env · 서빙 역할)
-tests/          단위 테스트
+  api/            FastAPI 앱 — 앱 조립은 __init__.py, 나머지는 책임별 한 모듈
+    routes/       경로 공간별 라우터(search·file_search·assets·mm_meta·admin·review)
+    db.py         DB 풀과 트랜잭션 통로(run_in_db 읽기 · run_in_db_write 쓰기)
+    audit.py      접근 기록 미들웨어(응답과 분리해 뒤에서 적재)
+    errors.py     예외 → HTTP 응답(검색 엔진 연결 실패 503)
+    lifespan.py   기동·종료 순서(감사 기록 비우기 → 풀 닫기)
+    params.py     공용 요청 검증 의존성(날짜·시계열 단위)
+  portal/         조회 계층 — 패키지는 재수출하지 않는다(소비처가 모듈을 직접 가리킨다)
+    asset/        자산 상세·집계·파일 메타·다운로드·썸네일
+    search/       검색 결과 그룹화·튜닝 프리셋·권한 투영
+    history/      접근 기록·처리 계보
+    common/       여러 도메인이 함께 쓰는 조각(확장자 SQL·시계열 피벗·검토 어휘)
+    auth/         인증·권한
+    mm_meta.py    개체 화면 정형 계층
+    dashboard.py  운영 대시보드 조립
+  bootstrap.py    코어 bootstrap_env 호출(자기 레포 루트의 .env · 서빙 역할)
+tests/            소스와 같은 구조(api/·portal/) + e2e/(실 DB) + contract/(IDD 계약 대조)
 ```
+
+> IDD 계약 대조(`tests/contract`)는 `tests/fixtures/idd_contract.json` 을 기준으로 봅니다.
+> `IDD.xlsx` 를 고쳤으면 `python scripts/regen_idd_contract.py` 로 JSON 을 갱신해 함께 커밋하십시오.
 
 ## 설계 제약
 
@@ -186,7 +217,11 @@ tests/          단위 테스트
 ### 401 이 반환됩니다
 
 `PORTAL_AUTH_DISABLED=0`(운영)이면 Bearer 토큰이 필수입니다. 연구·개발이면 `1` 로 두십시오.
-`0` 인데 `PORTAL_JWT_SECRET` 이 없으면 **기동 시점에** 실패합니다(fail-fast).
+`0` 인데 `PORTAL_JWT_SECRET` 이 없으면 **401 이 아니라 500** 이 납니다 — 기동은 성공하고
+인증이 필요한 첫 요청에서 설정이 로드되며 터지기 때문입니다.
+
+> 🔴 이때 **`/health` 는 200 을 그대로 돌려줍니다.** 로드밸런서·오케스트레이터가 정상으로
+> 판단해 트래픽을 보내므로, 배포 점검은 `/health` 가 아니라 **인증이 필요한 경로**로 하십시오.
 
 ### 검색 결과가 비어 있습니다
 

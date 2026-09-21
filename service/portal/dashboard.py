@@ -16,9 +16,9 @@ from typing import Any
 
 from psycopg import Connection
 
-from service.portal.access_log import access_log_stats, access_log_timeline
-from service.portal.asset_stats import asset_stats, asset_timeline
-from service.portal.lineage_query import lineage_stats, lineage_timeline
+from service.portal.asset.stats import asset_stats, asset_timeline
+from service.portal.history.access_log import access_log_stats, access_log_timeline
+from service.portal.history.lineage import lineage_stats, lineage_timeline
 
 _DEFAULT_MONTHS = 6
 

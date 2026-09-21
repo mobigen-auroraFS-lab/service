@@ -1,6 +1,6 @@
 """개체(멀티모달 메타) 화면 **정형 계층** — 코어가 준 사실을 화면 응답 모양으로 바꾼다.
 
-**흐름에서의 위치**: 라우트(`service/api/routes_mm_meta.py`)는 파라미터 검증·HTTP 코드·헤더만 하고, 무엇을
+**흐름에서의 위치**: 라우트(`service/api/routes/mm_meta.py`)는 파라미터 검증·HTTP 코드·헤더만 하고, 무엇을
 읽을지는 코어 seam 이 하고, 그 사이의 **조립**을 이 모듈이 한다. 그래서 이 파일에는 SQL 이 거의 없다 —
 예외는 타입 어휘 머리 한 줄(아래 이유 참조)뿐이다.
 
@@ -25,7 +25,7 @@ from typing import Any, NamedTuple
 from psycopg import Connection
 from psycopg.rows import dict_row
 
-from service.portal.download import fetch_asset_paths
+from service.portal.asset.download import fetch_asset_paths
 from src.config import search_constants
 from src.config.filename_util import display_file_name
 from src.config.settings import active_embed_channel, get_current_settings
@@ -89,7 +89,7 @@ ENTITIES_BUNDLE_MAX_BYTES = 500 * 1024 * 1024
 
 _LOG = logging.getLogger(__name__)
 
-# 검색 엔진 **연결** 실패로 볼 예외들. 라우트(`routes_file_search.py`)와 같은 방어적 import 를 쓴다 —
+# 검색 엔진 **연결** 실패로 볼 예외들. 라우트(`routes/file_search.py`)와 같은 방어적 import 를 쓴다 —
 # 클라이언트가 안 깔린 환경(순수 단위 테스트)에서는 빈 튜플이라 ``except ()`` 가 아무것도 잡지 않는다.
 # 🔴 연결 실패만 골라 잡는다. 나머지 예외(코드 결함)까지 삼키면 결함이 "엔진 장애"로 둔갑해 운영자가
 #    엉뚱한 곳을 본다(2026-09-09 리뷰에서 파일 검색이 같은 이유로 정리됐다).
@@ -455,7 +455,7 @@ class EntitySearchUnavailable(RuntimeError):
     **되돌렸다**. 새 구조에서 같은 되돌림을 하면 화이트리스트가 ``None``(=필터 없음)이 되어
     **"검색했는데 전체 822개가 나온다"** 가 된다. 반대로 빈 집합으로 접으면 "자료가 없다"와
     "검색이 죽었다"가 같아진다. 둘 다 사용자를 속이므로 **끊는 쪽**을 고른다 —
-    파일 검색이 엔진 연결 실패를 503 으로 내는 것과 같은 규율(`routes_file_search.py`).
+    파일 검색이 엔진 연결 실패를 503 으로 내는 것과 같은 규율(`routes/file_search.py`).
     """
 
 

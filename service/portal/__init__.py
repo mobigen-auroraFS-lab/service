@@ -4,34 +4,13 @@
 HTTP 백엔드를 올리는 조회 계층이다. 흐름은 순수 로직(검색 모달리티 그룹화·Range 파싱)과
 conn 기반 조회 서비스(상세·묶음 수집/zip)로 나뉜다.
 
-의존성
-    FastAPI·psycopg 등 **무거운 의존성**은 진입점(``service/api`` 의 app)과 conn 기반
-    조회 모듈에만 두고, ``from service.portal import X`` 는 ``__getattr__`` 로 **지연 import**
-    한다(순환 참조·기동 비용 완화). ``src/relations/__init__.py`` 와 동형.
+임포트
+    이 패키지는 **아무것도 재수출하지 않는다** — 소비처는 필요한 모듈을 직접 가리킨다
+    (``from service.portal.search.group import group_ranked``). 패키지 ``__init__`` 이 비어 있으므로
+    ``import service.portal`` 이 FastAPI·psycopg 같은 무거운 의존성을 끌어오지 않는다.
 
 테스트
-    순수 함수(``group_ranked``/``parse_range_header``)는 DB 없이
-    ``from service.portal.search_group import ...`` 로 직접 import.
+    순수 함수(``group_ranked``/``parse_range_header``)는 DB 없이 각 모듈에서 직접 import 한다.
 """
 
 from __future__ import annotations
-
-from typing import Any
-
-__all__ = [
-    "group_ranked",
-    "parse_range_header",
-]
-
-
-def __getattr__(name: str) -> Any:
-    """패키지 속성 지연 로드(``import service.portal as P; P.group_ranked`` 형태 지원)."""
-    if name == "group_ranked":
-        from service.portal.search_group import group_ranked as fn
-
-        return fn
-    if name == "parse_range_header":
-        from service.portal.download import parse_range_header as fn
-
-        return fn
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
