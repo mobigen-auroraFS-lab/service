@@ -308,9 +308,13 @@ def build_bundle_zip_stream(targets: list[dict[str, Any]]) -> tempfile.SpooledTe
                 try:
                     fh = open(fs_path, "rb")  # noqa: SIM115 — copy 루프와 수명 분리(아래 with 로 닫음)
                 except (OSError, TypeError):
-                    missing.append(
-                        {"asset_id": t.get("asset_id"), "fs_path": fs_path, "file_name": file_name}
-                    )
+                    # 🔴 서버 경로(``fs_path``)는 **싣지 않는다** — 이 zip 은 클라이언트가 받아 가는
+                    #    산출물이라, 담으면 마운트 위치·디렉터리 구조가 그대로 밖으로 나간다.
+                    #    받는 쪽이 알아야 할 것은 "무엇이 빠졌나"(자산 id·파일명)뿐이고, 어디에
+                    #    있어야 했는지는 운영자의 정보다 — 그쪽은 서버 로그에 남긴다.
+                    logger.warning("묶음에서 원본을 열 수 없어 건너뜀: asset_id=%s fs_path=%s",
+                                 t.get("asset_id"), fs_path)
+                    missing.append({"asset_id": t.get("asset_id"), "file_name": file_name})
                     continue
                 entry = _dedup_entry_name(file_name, used_names)
                 info = zipfile.ZipInfo(filename=entry, date_time=(1980, 1, 1, 0, 0, 0))
