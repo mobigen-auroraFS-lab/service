@@ -370,12 +370,12 @@ class TestAssetDetail(unittest.TestCase):
         # fetch_asset_topic/find_same_topic_groups(자기주제 정본 seam)를 호출한다. object() conn 단위
         # 테스트에선 fetch_asset_detail 과 동일하게 이 seam 들을 스텁한다(보강 검증은 test_portal_topics).
         for name in ("fetch_asset_topic", "find_same_topic_groups"):
-            p = patch(f"service.api.routes.assets.{name}", return_value=[])
+            p = patch(f"service.portal.repositories.asset_repo.{name}", return_value=[])
             p.start()
             self.addCleanup(p.stop)
         self.client = TestClient(app)
 
-    @patch("service.api.routes.assets.fetch_asset_detail")
+    @patch("service.portal.repositories.asset_repo.fetch_asset_detail")
     def test_detail_returns_200(self, mock_detail) -> None:
         detail = {
             "asset_id": "a1",
@@ -394,7 +394,7 @@ class TestAssetDetail(unittest.TestCase):
         self.assertEqual(resp.json()["asset_id"], "a1")
         self.assertEqual(resp.json()["embedding_channels"][0]["chunk_count"], 3)
 
-    @patch("service.api.routes.assets.fetch_asset_detail")
+    @patch("service.portal.repositories.asset_repo.fetch_asset_detail")
     def test_detail_none_returns_404(self, mock_detail) -> None:
         # 없음/비registered/의료(FR-014) → fetch_asset_detail None → 404.
         mock_detail.return_value = None
@@ -424,7 +424,7 @@ class TestDownload(unittest.TestCase):
             "file_name": "sample.txt",
         }
 
-    @patch("service.api.routes.assets.resolve_download_target")
+    @patch("service.portal.repositories.asset_repo.resolve_download_target")
     def test_download_full_returns_200(self, mock_resolve) -> None:
         mock_resolve.return_value = self._target(self.tmp.name)
         resp = self.client.get(f"/assets/{A1}/download")
@@ -433,7 +433,7 @@ class TestDownload(unittest.TestCase):
         self.assertEqual(resp.headers["accept-ranges"], "bytes")
         self.assertIn("sample.txt", resp.headers["content-disposition"])
 
-    @patch("service.api.routes.assets.resolve_download_target")
+    @patch("service.portal.repositories.asset_repo.resolve_download_target")
     def test_download_range_returns_206(self, mock_resolve) -> None:
         # Range 부분 요청 → 206 + Content-Range + 정확한 바이트 구간(SC-004 단위 근사).
         mock_resolve.return_value = self._target(self.tmp.name)
@@ -445,7 +445,7 @@ class TestDownload(unittest.TestCase):
         self.assertEqual(resp.content, b"2345")
         self.assertEqual(resp.headers["accept-ranges"], "bytes")
 
-    @patch("service.api.routes.assets.resolve_download_target")
+    @patch("service.portal.repositories.asset_repo.resolve_download_target")
     def test_download_range_unsatisfiable_returns_416(self, mock_resolve) -> None:
         # 파일 크기 초과 범위 → parse_range_header ValueError → 416.
         mock_resolve.return_value = self._target(self.tmp.name)
@@ -454,14 +454,14 @@ class TestDownload(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 416)
 
-    @patch("service.api.routes.assets.resolve_download_target")
+    @patch("service.portal.repositories.asset_repo.resolve_download_target")
     def test_download_missing_file_returns_404_or_410(self, mock_resolve) -> None:
         # FR-009: DB 엔 있으나 원본 파일이 사라짐 → 자산 노출 없이 404/410.
         mock_resolve.return_value = self._target("/no/such/file/at/all.txt")
         resp = self.client.get(f"/assets/{A1}/download")
         self.assertIn(resp.status_code, (404, 410))
 
-    @patch("service.api.routes.assets.resolve_download_target")
+    @patch("service.portal.repositories.asset_repo.resolve_download_target")
     def test_download_none_returns_404(self, mock_resolve) -> None:
         # 비registered/의료/없음 게이트 → None → 404.
         mock_resolve.return_value = None
@@ -483,8 +483,8 @@ class TestBundle(unittest.TestCase):
         return s
 
     @patch("service.api.routes.assets.build_bundle_zip_stream", side_effect=_mk_stream.__func__)
-    @patch("service.api.routes.assets.collect_bundle_assets")
-    @patch("service.api.routes.assets.resolve_download_target")
+    @patch("service.portal.repositories.asset_repo.collect_bundle_assets")
+    @patch("service.portal.repositories.asset_repo.resolve_download_target")
     def test_bundle_returns_zip(self, mock_resolve, mock_collect, mock_zip) -> None:
         # seed 가 게이트(registered·비의료) 통과 → ego-network zip 스트리밍(069 P1-2: StreamingResponse).
         mock_resolve.return_value = {"asset_id": "seed", "fs_path": "/x/seed.txt"}
@@ -500,8 +500,8 @@ class TestBundle(unittest.TestCase):
         # 리뷰 🟡2 회귀: 응답 송신 후 BackgroundTask 가 스트림을 명시 close(FD 정리 — GC 의존 금지).
         self.assertTrue(TestBundle._last_stream.closed)
 
-    @patch("service.api.routes.assets.collect_bundle_assets")
-    @patch("service.api.routes.assets.resolve_download_target")
+    @patch("service.portal.repositories.asset_repo.collect_bundle_assets")
+    @patch("service.portal.repositories.asset_repo.resolve_download_target")
     def test_bundle_seed_gated_returns_404(self, mock_resolve, mock_collect) -> None:
         # 의료/비registered/없는 seed → resolve None → 404, collect 미호출.
         mock_resolve.return_value = None
@@ -604,7 +604,7 @@ class TestAssetThumbnail(unittest.TestCase):
         self.client = TestClient(app)
 
     @patch("service.api.routes.assets.cached_thumbnail", return_value=b"\xff\xd8\xff\xe0JPG")
-    @patch("service.api.routes.assets.resolve_download_target")
+    @patch("service.portal.repositories.asset_repo.resolve_download_target")
     def test_image_returns_jpeg(self, mock_resolve, _gen) -> None:
         import tempfile
 
@@ -618,7 +618,7 @@ class TestAssetThumbnail(unittest.TestCase):
         self.assertIn("max-age", r.headers.get("cache-control", ""))
 
     @patch("service.api.routes.assets.cached_thumbnail", return_value=b"HERO")
-    @patch("service.api.routes.assets.resolve_download_target")
+    @patch("service.portal.repositories.asset_repo.resolve_download_target")
     def test_size_query_passed_through(self, mock_resolve, mock_cached) -> None:
         # ?size=detail → cached_thumbnail(size="detail") 로 전달(상세 히어로 640).
         import tempfile
@@ -629,24 +629,24 @@ class TestAssetThumbnail(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(mock_cached.call_args.kwargs.get("size"), "detail")
 
-    @patch("service.api.routes.assets.resolve_download_target", return_value=None)
+    @patch("service.portal.repositories.asset_repo.resolve_download_target", return_value=None)
     def test_medical_or_missing_returns_404(self, _resolve) -> None:
         # 의료/비registered/없음 → resolve_download_target None → 404 (의료 썸네일=PHI 원천 차단)
         self.assertEqual(self.client.get(f"/assets/{A1}/thumbnail").status_code, 404)
 
-    @patch("service.api.routes.assets.resolve_download_target")
+    @patch("service.portal.repositories.asset_repo.resolve_download_target")
     def test_audio_returns_404(self, mock_resolve) -> None:
         mock_resolve.return_value = {"asset_id": "a1", "fs_path": "/x/a.mp3", "modality": "audio"}
         self.assertEqual(self.client.get(f"/assets/{A1}/thumbnail").status_code, 404)
 
-    @patch("service.api.routes.assets.resolve_download_target")
+    @patch("service.portal.repositories.asset_repo.resolve_download_target")
     def test_missing_file_returns_410(self, mock_resolve) -> None:
         mock_resolve.return_value = {
             "asset_id": "a1", "fs_path": "/nonexistent/x.png", "modality": "image"}
         self.assertEqual(self.client.get(f"/assets/{A1}/thumbnail").status_code, 410)
 
     @patch("service.api.routes.assets.cached_thumbnail", return_value=None)
-    @patch("service.api.routes.assets.resolve_download_target")
+    @patch("service.portal.repositories.asset_repo.resolve_download_target")
     def test_generation_failure_returns_404(self, mock_resolve, _gen) -> None:
         import tempfile
 

@@ -21,9 +21,11 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from service.api import db as api_db
 from service.api.routes import assets as routes_assets
 from service.api.routes import mm_meta as routes_mm_meta
 from service.portal import mm_meta
+from service.portal.repositories import asset_repo
 from src.mm_classify.read import label_names_of_assets as core_label_names
 from src.mm_meta.rules import MIN_BUNDLE_SIZE
 from src.relations import graph_query as gq
@@ -81,7 +83,8 @@ class TestWiring(unittest.TestCase):
         self.assertIs(mm_meta.count_entities_by_area, gq.count_entities_by_area)
         self.assertIs(mm_meta.assets_of_entities, gq.assets_of_entities)
         self.assertIs(mm_meta.mm_meta_bundle, gq.mm_meta_bundle)
-        self.assertIs(routes_assets.mm_meta_of_asset, gq.mm_meta_of_asset)
+        # DB 조회는 저장소로 옮겼다 — 코어 함수를 그대로 쓰는지는 그 자리에서 본다.
+        self.assertIs(asset_repo.mm_meta_of_asset, gq.mm_meta_of_asset)
 
     def test_threshold_comes_from_core_and_is_one_value(self) -> None:
         # 목록·칩·다운로드가 같은 값을 쓴다("적힌 숫자 = 누르면 나오는 수" · 2026-09-08 판정).
@@ -445,7 +448,8 @@ class TestRouteReadScope(unittest.TestCase):
         args = {"q": None, "entity_type": None, "areas": None, "refine": None,
                 "cursor": None, "limit": 200, **params}
         with (
-            patch.object(mod.db, "run_in_db", lambda fn: fn(object())),
+            # DB 진입은 저장소 입구(DbManager)가 감싼 seam 하나뿐이다 — 거기만 대역으로 바꾼다.
+            patch.object(api_db, "run_in_db", lambda fn: fn(object())),
             patch.object(mod.mm_meta, "fetch_list", fake_fetch),
             patch.object(mod.mm_meta, "fetch_total", lambda _conn, **kw: 1),
             patch.object(mod.mm_meta, "search_and_refine",

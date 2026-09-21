@@ -17,15 +17,10 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from service.api import db, params
+from service.api import params
 from service.portal.auth import Principal, require_principal
+from service.portal.common.db_manager import DbManager
 from service.portal.common.review_vocab import REVIEW_STATUSES
-from service.portal.history.access_log import record_access
-from src.relations.review import (
-    bulk_review,
-    promote_relation_kind,
-    revise_edge,
-)
 
 # 경로는 전부 ``/admin`` 아래다. 인증을 라우터 의존성으로 올리지 않는 이유 — 네 핸들러가
 # 모두 검토자 식별을 위해 ``principal`` 을 **실제로 쓴다**(주입이 필요하다).
@@ -45,27 +40,6 @@ class RelationReviseRequest(BaseModel):
 
     edge_id: str
     to_status: str
-
-
-def _record_relation_audit(conn: Any, *, action: str, reviewer: str, detail: dict) -> None:
-    """결정과 **같은 트랜잭션**에 감사 기록을 남긴다.
-
-    ``psycopg`` 의 중첩 ``conn.transaction()`` 은 SAVEPOINT 다 — 감사 INSERT 가 실패해도 savepoint 만
-    롤백돼 바깥 결정 트랜잭션(approve/reject/revise/promote 갱신)은 보존된다(감사 best-effort·결정 무손상).
-    ``detail`` 은 jsonb 로 edge_id/kind_code 를 담고, ``access_log.asset_id`` 는 관계에 부적합하므로 NULL.
-    미들웨어는 GET 조회만 감사하므로 이 쓰기 요청이 이중으로 기록되지는 않는다.
-
-    Args:
-        action: 감사에 남길 동작 이름(``relation.approve`` 등).
-        reviewer: 결정을 내린 사람.
-        detail: 무엇을 결정했는지(엣지 id·종류 코드 등). 자산 단위가 아니라 관계 단위라
-            ``asset_id`` 는 비워 둔다.
-    """
-    try:
-        with conn.transaction():
-            record_access(conn, action=action, user_id=reviewer, detail=detail)
-    except Exception:  # noqa: BLE001 — 감사 실패가 결정을 되돌리면 안 된다(최선 노력)
-        _LOG.warning("relation 감사 기록 실패(무시): %s %s", action, detail)
 
 
 def _bulk_decide(action: str, edge_ids: list[str], reviewer: str) -> dict[str, Any]:
@@ -90,20 +64,19 @@ def _bulk_decide(action: str, edge_ids: list[str], reviewer: str) -> dict[str, A
         raise HTTPException(status_code=400, detail="edge_ids 는 1개 이상이어야 함")
     params.uuid_list_or_400(edge_ids, field="edge_ids")
 
-    def _work(conn: Any) -> dict[str, Any]:
+    def _work(repo: Any) -> dict[str, Any]:
         """검토 결정과 감사 기록을 **한 트랜잭션에서** 처리한다.
 
         결정만 반영되고 감사 기록이 빠지면 누가 승인했는지 추적할 수 없으므로 함께 묶는다.
         """
-        results = bulk_review(conn, edge_ids=edge_ids, reviewer=reviewer, action=action)
+        results = repo.review.bulk_decide(edge_ids=edge_ids, reviewer=reviewer, action=action)
         for r in results:
             if r["ok"]:
-                _record_relation_audit(
-                    conn, action=f"relation.{action}", reviewer=reviewer,
-                    detail={"edge_id": r["edge_id"]})
+                repo.review.audit(action=f"relation.{action}", reviewer=reviewer,
+                                  detail={"edge_id": r["edge_id"]})
         return {"results": results}
 
-    return db.run_in_db_write(_work)
+    return DbManager.write(_work)
 
 
 @router.post("/relations/approve")
@@ -174,17 +147,16 @@ def relations_revise(
     params.uuid_list_or_400([body.edge_id], field="edge_id")
     reviewer = principal.user_id
 
-    def _work(conn: Any) -> dict[str, Any]:
+    def _work(repo: Any) -> dict[str, Any]:
         """결정 정정과 감사 기록을 한 트랜잭션에서 처리한다."""
-        ok = revise_edge(conn, edge_id=body.edge_id, reviewer=reviewer, to_status=body.to_status)
+        ok = repo.review.revise(edge_id=body.edge_id, reviewer=reviewer, to_status=body.to_status)
         if ok:
-            _record_relation_audit(
-                conn, action="relation.revise", reviewer=reviewer,
-                detail={"edge_id": body.edge_id, "to_status": body.to_status})
+            repo.review.audit(action="relation.revise", reviewer=reviewer,
+                              detail={"edge_id": body.edge_id, "to_status": body.to_status})
         # 응답 모양을 일괄 처리와 통일한다 — 단건이어도 배열로 감싼다(화면 분기 제거).
         return {"results": [{"edge_id": body.edge_id, "ok": ok}]}
 
-    return db.run_in_db_write(_work)
+    return DbManager.write(_work)
 
 
 @router.post("/relation-kinds/{kind_code}/promote")
@@ -206,13 +178,12 @@ def relation_kind_promote(
     """
     reviewer = principal.user_id
 
-    def _work(conn: Any) -> dict[str, Any]:
+    def _work(repo: Any) -> dict[str, Any]:
         """관계 종류 승격과 감사 기록을 한 트랜잭션에서 처리한다."""
-        ok = promote_relation_kind(conn, kind_code=kind_code, reviewer=reviewer)
+        ok = repo.review.promote_kind(kind_code=kind_code, reviewer=reviewer)
         if ok:
-            _record_relation_audit(
-                conn, action="relation.kind_promote", reviewer=reviewer,
-                detail={"kind_code": kind_code})
+            repo.review.audit(action="relation.kind_promote", reviewer=reviewer,
+                              detail={"kind_code": kind_code})
         return {"kind_code": kind_code, "ok": ok}
 
-    return db.run_in_db_write(_work)
+    return DbManager.write(_work)

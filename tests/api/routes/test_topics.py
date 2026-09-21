@@ -79,9 +79,9 @@ class TestAssetDetailTopics(unittest.TestCase):
         _enable_bypass(self)
         self.client = TestClient(app)
 
-    @patch("service.api.routes.assets.find_same_topic_groups")
-    @patch("service.api.routes.assets.fetch_asset_topic")
-    @patch("service.api.routes.assets.fetch_asset_detail")
+    @patch("service.portal.repositories.asset_repo.find_same_topic_groups")
+    @patch("service.portal.repositories.asset_repo.fetch_asset_topic")
+    @patch("service.portal.repositories.asset_repo.fetch_asset_detail")
     def test_detail_includes_topics_and_same_topic(
         self, mock_detail, mock_project, mock_groups
     ) -> None:
@@ -119,9 +119,9 @@ class TestAssetDetailTopics(unittest.TestCase):
         self.assertEqual(mock_project.call_args.kwargs["asset_id"], A1)
         self.assertEqual(mock_groups.call_args.kwargs["asset_id"], A1)
 
-    @patch("service.api.routes.assets.find_same_topic_groups")
-    @patch("service.api.routes.assets.fetch_asset_topic")
-    @patch("service.api.routes.assets.fetch_asset_detail")
+    @patch("service.portal.repositories.asset_repo.find_same_topic_groups")
+    @patch("service.portal.repositories.asset_repo.fetch_asset_topic")
+    @patch("service.portal.repositories.asset_repo.fetch_asset_detail")
     def test_detail_none_returns_404_no_topic_calls(
         self, mock_detail, mock_project, mock_groups
     ) -> None:
@@ -140,7 +140,7 @@ class TestTopicsList(unittest.TestCase):
         _enable_bypass(self)
         self.client = TestClient(app)
 
-    @patch("service.api.routes.assets.list_topics")
+    @patch("service.portal.repositories.asset_repo.list_topics")
     def test_list_topics(self, mock_list) -> None:
         mock_list.return_value = [
             {"topic_ko": "요리", "subtopic_ko": "제빵", "asset_count": 12},
@@ -159,7 +159,7 @@ class TestTopicAssets(unittest.TestCase):
         _enable_bypass(self)
         self.client = TestClient(app)
 
-    @patch("service.api.routes.assets.assets_in_topic")
+    @patch("service.portal.repositories.asset_repo.assets_in_topic")
     def test_topic_assets_paging(self, mock_assets) -> None:
         mock_assets.return_value = {
             "rows": [{"asset_id": "a1", "fs_uri": "/x/a1.txt", "file_name": "a1.txt"}],
@@ -176,7 +176,7 @@ class TestTopicAssets(unittest.TestCase):
         self.assertEqual(kw["limit"], 10)
         self.assertEqual(kw["offset"], 5)
 
-    @patch("service.api.routes.assets.assets_in_topic")
+    @patch("service.portal.repositories.asset_repo.assets_in_topic")
     def test_topic_assets_no_subtopic(self, mock_assets) -> None:
         mock_assets.return_value = {"rows": [], "total": 0}
         resp = self.client.get("/topics/스포츠")

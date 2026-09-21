@@ -22,11 +22,10 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from service.api import db
 from service.portal.auth import Principal, require_principal
+from service.portal.common.db_manager import DbManager
 from service.portal.search.group import asset_refine_fields, group_ranked
 from service.portal.search.presets import DEFAULT_PRESET, PRESETS, resolve_tuning, tuning_meta
-from service.portal.search.projection import project_grouped
 from src.config.search_constants import TAG_FACET_MIN_COUNT_DEFAULT, TAG_FACET_TOP_N_DEFAULT
 from src.config.search_modalities import VALID_SEARCH_MODALITIES, parse_modalities_csv
 from src.config.settings import get_current_settings
@@ -476,13 +475,13 @@ def search(
     grouped_raw = group_ranked(result, limit_per_modality=size, exclude_domains=_EXCLUDE_DOMAINS)
 
     # 권한 투영과 주제 패싯을 **한 트랜잭션에서** 끝낸다 — 연결을 두 번 잡지 않기 위해서다.
-    def _project_and_facet(conn: Any) -> tuple[dict[str, list[dict[str, Any]]], list[dict[str, Any]]]:
+    def _project_and_facet(repo: Any) -> tuple[dict[str, list[dict[str, Any]]], list[dict[str, Any]]]:
         """권한별 필드 가리기와 주제 패싯 계산을 **한 번의 조회**로 끝낸다(연결을 두 번 잡지 않게)."""
-        projected = project_grouped(conn, grouped_raw, clearance=principal.clearance)
+        projected = repo.search.project_grouped(grouped_raw, clearance=principal.clearance)
         facet = _search_topic_facet(projected)
         return projected, facet
 
-    grouped, topic_facets = db.run_in_db(_project_and_facet)
+    grouped, topic_facets = DbManager.read(_project_and_facet)
 
     # ── 결과 내 재검색(091) ────────────────────────────────────────────────────
     # 🔴 **서버에 다시 묻지 않는다.** 질의를 바꿔 재검색하면 게이트가 다시 판정해 원 결과에
