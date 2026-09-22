@@ -40,3 +40,19 @@ def issue_access_token(*, user_id: str) -> str:
 def issue_dev_token(*, user_id: str) -> str:
     """dev 발급기(``POST /auth/token``)용 — 비밀번호를 보지 않고 주체를 그대로 믿는다."""
     return issue_access_token(user_id=user_id)
+
+
+def token_response(*, user_id: str) -> dict[str, str | int]:
+    """발급 응답 한 벌 — 로그인과 dev 발급기가 **같은 모양**을 준다.
+
+    ``expires_in`` 을 함께 준다. 갱신 창구가 없어 화면은 토큰이 언제 죽는지 알아야 미리 로그인으로
+    보낼 수 있는데, 그러자고 화면이 JWT 를 뜯어 ``exp`` 를 읽게 하면 **서명 검증 없이 본문을 믿는
+    습관**이 화면에 생긴다. 서버가 초 단위로 알려 주는 편이 낫다.
+
+    Returns:
+        ``{access_token, token_type, expires_in}`` — ``expires_in`` 은 남은 초(발급 시점 기준).
+    """
+    cfg = load_portal_auth_config()
+    return {"access_token": issue_access_token(user_id=user_id),
+            "token_type": "bearer",
+            "expires_in": int(cfg.jwt_ttl_seconds)}
