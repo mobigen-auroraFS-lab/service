@@ -15,6 +15,11 @@ from fastapi.testclient import TestClient
 
 from service.api import app
 
+# 관리자 창구는 2026-09-22 보류로 등록을 끊었다(`service/api/__init__.py`). 테스트는 지우지 않고
+# **등록 여부로 건너뛴다** — 보류를 풀면 그대로 다시 돈다.
+ADMIN_OPEN = any(p.startswith("/admin") for p in app.openapi()["paths"])
+_SKIP_WHY = "관리자 창구 보류(2026-09-22) — 라우터 등록을 끊어 두었다"
+
 _AUTH_DISABLED_ENV = {"PORTAL_AUTH_DISABLED": "1", "PORTAL_JWT_SECRET": "test-secret"}
 
 
@@ -34,6 +39,7 @@ def _enable_bypass(tc: unittest.TestCase) -> None:
 _SENTINEL = {"access": {}, "lineage": {}, "asset": {}, "meta": {}}
 
 
+@unittest.skipUnless(ADMIN_OPEN, _SKIP_WHY)
 class TestDashboardSummary(unittest.TestCase):
     def setUp(self) -> None:
         _enable_bypass(self)
@@ -89,6 +95,7 @@ class TestDashboardSummary(unittest.TestCase):
         mock_build.assert_not_called()
 
 
+@unittest.skipUnless(ADMIN_OPEN, _SKIP_WHY)
 class TestDashboardSummaryAuth(unittest.TestCase):
     """auth bypass 없이 — 토큰 없으면 401(require_principal)."""
 

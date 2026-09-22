@@ -14,10 +14,16 @@ from service.portal.repositories import admin_repo, asset_repo
 
 # 경로에 쓰는 id 는 **실제와 같은 UUID** 여야 한다 — 라우트가 DB 에 묻기 전에 형식을 보고
 # 아니면 404/400 으로 끊는다(2026-09-21 · `tests/api/routes/test_bad_id.py`).
+# 관리자 창구는 2026-09-22 보류로 등록을 끊었다(`service/api/__init__.py`). 테스트는 지우지 않고
+# **등록 여부로 건너뛴다** — 보류를 풀면 그대로 다시 돈다.
+ADMIN_OPEN = any(p.startswith("/admin") for p in app.openapi()["paths"])
+_SKIP_WHY = "관리자 창구 보류(2026-09-22) — 라우터 등록을 끊어 두었다"
+
 A1 = "01a08fa8-0000-7000-8000-00000000a001"
 NOPE = "01a08fa8-0000-7000-8000-00000000f404"
 
 
+@unittest.skipUnless(ADMIN_OPEN, _SKIP_WHY)
 class HistoryEndpointsTest(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
@@ -387,6 +393,13 @@ class HistoryEndpointsTest(unittest.TestCase):
         ov.assert_called_once()
         det.assert_not_called()
 
+
+class AuditRecordingTest(unittest.TestCase):
+    """접근 기록 결정·스케줄 — 관리자 창구와 무관하다(데이터 라우트와 순수 함수만 쓴다)."""
+
+    def setUp(self):
+        self.client = TestClient(app)
+
     def test_record_access_safe_records_data_route(self):
         # 기록 결정 로직 직접 검증(미들웨어 fire-and-forget 타이밍과 무관·결정적):
         # 데이터 라우트 성공 응답 → record_access(action=asset_view·asset_id) 1회.
@@ -432,6 +445,7 @@ class HistoryEndpointsTest(unittest.TestCase):
         self.assertEqual(bg.call_args.args[1], f"/assets/{aid}")
 
 
+@unittest.skipUnless(ADMIN_OPEN, _SKIP_WHY)
 class SnapshotBucketApiTest(unittest.TestCase):
     """054 G3 — /admin/assets snapshot_bucket·relation_scope·/admin/asset-stats snapshot_buckets·
     /admin/assets/{id} 배선(FR-103/201/301). 전부 additive·기존 동작 불변."""
