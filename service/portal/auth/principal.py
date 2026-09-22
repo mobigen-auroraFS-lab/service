@@ -1,6 +1,7 @@
 """요청 주체 — 토큰 검증기와 분리된 애플리케이션 쪽 계약.
 
 포탈·``project_ext_meta`` 는 JWT 세부가 아니라 ``Principal``(user_id·clearance) 만 본다.
+계정 정보(login_id·display_name·role)는 인증 의존성이 계정 표에서 읽어 채운다 — 토큰에는 싣지 않는다.
 """
 
 from __future__ import annotations
@@ -17,6 +18,10 @@ class Principal:
 
     user_id: str
     clearance: str  # ``project_ext_meta`` 키 제거(omit) 판정 입력
+    # 계정 표에서 읽은 값 — 계정 표에 없는 주체(익명·개발용 발급기 토큰)는 None 이다.
+    login_id: str | None = None
+    display_name: str | None = None
+    role: str | None = None
 
 
 ANONYMOUS = Principal(

@@ -2499,8 +2499,7 @@
     "IF-AUTH-03": {
       "errors": {
         "400": "user_id·username 을 공백 문자열로만 보낸 경우 — 「username 또는 user_id 필요」",
-        "404": "운영 환경(PORTAL_AUTH_DISABLED=0)에서 발급 시도",
-        "500": "⚠ 인증 설정이 지연 로드라 서명 키 미설정 시 첫 인증 요청이 여기로 떨어진다(기동 fail-fast 아님)"
+        "404": "운영 환경(PORTAL_AUTH_DISABLED=0)에서 발급 시도"
       },
       "gubun": "현행 정본",
       "method": "POST",
@@ -2552,7 +2551,7 @@
     },
     "IF-AUTH-04": {
       "errors": {
-        "401": "토큰 없음·서명 불일치·만료"
+        "401": "토큰 없음·서명 불일치·만료.\n🔴 [2026-09-22] 토큰이 유효해도 **계정이 정지됐으면 401**(「정지된 계정입니다 — 관리자에게 문의하십시오」) — 상태를 요청마다 계정 표에서 읽으므로 이미 나간 토큰도 곧바로 막힌다.\n   운영 모드에서 계정 표에 없는 주체(지워진 계정)도 401 이다 — 문구는 무효 토큰과 같다(계정이 있었는지 알려 주지 않는다)."
       },
       "gubun": "현행 정본",
       "method": "GET",
@@ -2575,7 +2574,10 @@
       "resp": {
         "200": [
           "user_id",
-          "clearance"
+          "clearance",
+          "login_id",
+          "display_name",
+          "role"
         ]
       },
       "resp_alt": {},
@@ -2583,6 +2585,9 @@
       "resp_meta": {
         "200": {
           "clearance": "string",
+          "display_name": "string|null",
+          "login_id": "string|null",
+          "role": "string|null",
           "user_id": "string"
         }
       },

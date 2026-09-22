@@ -24,6 +24,7 @@ from fastapi import APIRouter, HTTPException, Query
 from psycopg import errors as pg_errors
 from pydantic import BaseModel, Field
 
+from service.portal.auth.deps import SUSPENDED_DETAIL
 from service.portal.auth.dev_issuer import token_response
 from service.portal.auth.passwords import hash_password, needs_rehash, verify_password
 from service.portal.common.db_manager import DbManager
@@ -35,7 +36,6 @@ _LOG = logging.getLogger(__name__)
 public_router = APIRouter(tags=["account"])
 
 _LOGIN_FAIL = "아이디 또는 비밀번호가 올바르지 않습니다"
-_SUSPENDED = "정지된 계정입니다 — 관리자에게 문의하십시오"
 
 
 class SignupRequest(BaseModel):
@@ -110,7 +110,7 @@ def login(payload: LoginRequest) -> dict[str, Any]:
     if not row or not ok:
         raise HTTPException(status_code=401, detail=_LOGIN_FAIL)
     if str(row["status"]) != "active":
-        raise HTTPException(status_code=401, detail=_SUSPENDED)
+        raise HTTPException(status_code=401, detail=SUSPENDED_DETAIL)
 
     user_id = str(row["user_id"])
     rehash = hash_password(payload.password) if needs_rehash(encoded) else None
