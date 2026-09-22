@@ -109,16 +109,25 @@ class TestItems(unittest.TestCase):
         self.assertEqual([], _items("file_ext", None))
 
 
+_ONE = {"hits": {"total": {"value": 7}},
+        "aggregations": {"file_ext": {"buckets": [{"key": "txt", "doc_count": 7}]}}}
+
+
 class _FakeClient:
-    """축마다 한 번씩 부르는지, 같은 집합을 세는지 본다."""
+    """몇 번 왕복하는지, 무엇을 세는지 본다(``msearch`` 한 번 · 의미 질의는 검색어가 있을 때만)."""
 
     def __init__(self) -> None:
-        self.bodies: list[dict] = []
+        self.bodies: list[dict] = []      # msearch 로 보낸 축 본문들(헤더 제외)
+        self.calls: list[str] = []        # 부른 메서드 순서
 
     def search(self, *, index: str, body: dict) -> dict:
-        self.bodies.append(body)
-        return {"hits": {"total": {"value": 7}},
-                "aggregations": {"file_ext": {"buckets": [{"key": "txt", "doc_count": 7}]}}}
+        self.calls.append("search")
+        return {"hits": {"hits": []}}
+
+    def msearch(self, *, body: list) -> dict:
+        self.calls.append("msearch")
+        self.bodies.extend(body[1::2])    # 짝수 자리는 {"index": ...} 헤더
+        return {"responses": [dict(_ONE) for _ in body[1::2]]}
 
 
 class TestExtraFacets(unittest.TestCase):
@@ -130,12 +139,46 @@ class TestExtraFacets(unittest.TestCase):
         self.assertEqual(sorted(AXES), sorted(out["axes"]))
         self.assertEqual(7, out["total"])
 
+    def test_축이_여럿이어도_왕복은_한_번(self) -> None:
+        """칩은 필터를 바꿀 때마다 다시 센다 — 축 수만큼 왕복하면 그대로 체감이 된다."""
+        client = _FakeClient()
+        extra_facets(client, "assets", query="", query_vector=[], filters=None,
+                     refine=None, axes=list(AXES), now=NOW)
+        self.assertEqual(["msearch"], client.calls)
+
     def test_훑기에는_의미_질의를_하지_않는다(self) -> None:
         """검색어가 없으면 뜻으로 걸 것이 없다 — 질의 하나를 아낀다."""
         client = _FakeClient()
         extra_facets(client, "assets", query="", query_vector=[0.1], filters=None,
                      refine=None, axes=["file_ext"], now=NOW)
         self.assertEqual(1, len(client.bodies))
+        self.assertEqual(["msearch"], client.calls)
+
+    def test_검색어가_있으면_의미_질의_뒤에_한_번_묶어_보낸다(self) -> None:
+        client = _FakeClient()
+        extra_facets(client, "assets", query="김치", query_vector=[0.1], filters=None,
+                     refine=None, axes=list(AXES), now=NOW)
+        self.assertEqual(["search", "msearch"], client.calls)
+
+    def test_부분_실패를_0건으로_감추지_않는다(self) -> None:
+        """msearch 는 실패한 질의를 예외가 아니라 응답 안 error 로 준다 — 빈 칩이 정상처럼 보이면 안 된다."""
+        class _Broken(_FakeClient):
+            def msearch(self, *, body: list) -> dict:
+                return {"responses": [dict(_ONE), {"error": {"type": "search_phase_execution"}},
+                                      dict(_ONE)]}
+
+        with self.assertRaises(RuntimeError):
+            extra_facets(_Broken(), "assets", query="", query_vector=[], filters=None,
+                         refine=None, axes=list(AXES), now=NOW)
+
+    def test_응답_수가_모자라면_짝을_맞춰_읽지_않는다(self) -> None:
+        class _Short(_FakeClient):
+            def msearch(self, *, body: list) -> dict:
+                return {"responses": [dict(_ONE)]}
+
+        with self.assertRaises(RuntimeError):
+            extra_facets(_Short(), "assets", query="", query_vector=[], filters=None,
+                         refine=None, axes=list(AXES), now=NOW)
 
 
 if __name__ == "__main__":
