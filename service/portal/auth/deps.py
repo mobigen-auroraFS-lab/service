@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Annotated
 
 import jwt
@@ -17,6 +18,9 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from service.portal.auth.config import load_portal_auth_config
 from service.portal.auth.principal import ANONYMOUS, Principal, claims_to_principal
 from service.portal.auth.verifier import get_token_verifier
+
+# 정지된 계정 문구 — 로그인(``POST /auth/login``)과 요청마다의 확인이 **같은 말**을 한다.
+SUSPENDED_DETAIL = "정지된 계정입니다 — 관리자에게 문의하십시오"
 
 # auto_error=False — PORTAL_AUTH_DISABLED=1 일 때 토큰 없이 anonymous 허용(401 아님).
 portal_bearer_scheme = HTTPBearer(
@@ -72,11 +76,48 @@ def get_principal(
     token = credentials.credentials if credentials else None
     if cfg.auth_disabled:
         if token:
-            return authenticate_token(token)
+            return with_account(authenticate_token(token), auth_disabled=True)
         return ANONYMOUS
     if not token:
         raise HTTPException(status_code=401, detail="인증 필요")
-    return authenticate_token(token)
+    return with_account(authenticate_token(token), auth_disabled=False)
+
+
+def with_account(principal: Principal, *, auth_disabled: bool) -> Principal:
+    """토큰 주체가 **지금도** 쓸 수 있는 계정인지 계정 표에서 확인하고, 계정 정보를 채운다.
+
+    갱신 창구·강제 로그아웃을 두지 않는 대신 상태를 **요청마다** 읽는다 — 토큰에 담으면 계정을
+    정지해도 이미 나간 토큰은 만료(8시간)까지 그대로 통한다. 캐시하지 않는 것도 같은 이유다.
+    비용은 요청당 PK 조회 한 번이다.
+
+    Args:
+        principal: 서명·만료 검증을 통과한 주체.
+        auth_disabled: 개발 모드인지. 개발용 발급기(``/auth/token``)는 계정 표에 없는 임의 주체로
+            토큰을 만들므로, **개발 모드에서만** 표에 없는 주체를 그대로 통과시킨다.
+
+    Returns:
+        계정 정보(login_id·display_name·role)를 채운 주체. 표에 없는 개발용 주체는 그대로.
+
+    Raises:
+        HTTPException: 401 — 정지된 계정, 또는 운영 모드에서 계정 표에 없는 주체(지워진 계정).
+            후자는 "유효하지 않은 토큰"과 같은 문구다 — 계정이 있었는지를 알려 줄 까닭이 없다.
+    """
+    # 늦은 import — 인증 모듈은 DB 계층보다 먼저 읽히는 자리라 위에서 들이면 순환이 생긴다.
+    from service.api.params import is_uuid
+    from service.portal.common.db_manager import DbManager
+
+    # 계정 표의 키는 UUID 다. UUID 가 아닌 주체(개발용 `dev-user` 등)는 묻지 않는다 — 물으면
+    # DB 가 형식 오류를 낸다.
+    row = (DbManager.read(lambda repo: repo.account.find_by_user_id(principal.user_id))
+           if is_uuid(principal.user_id) else None)
+    if row is None:
+        if auth_disabled:
+            return principal
+        raise HTTPException(status_code=401, detail="유효하지 않은 토큰")
+    if str(row["status"]) != "active":
+        raise HTTPException(status_code=401, detail=SUSPENDED_DETAIL)
+    return replace(principal, login_id=row["login_id"], display_name=row["display_name"],
+                   role=row["role"])
 
 
 def require_principal(

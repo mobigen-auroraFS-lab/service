@@ -17,6 +17,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from service.api import audit, errors, lifespan
@@ -64,6 +65,17 @@ def health() -> dict[str, str]:
     return {"status": "ok", "env": lifespan.ENV}
 
 
+@app.head("/health", include_in_schema=False)
+def health_head() -> Response:
+    """헬스 체크의 HEAD — 본문 없이 200.
+
+    다른 GET 창구는 HEAD 를 405 로 거절하는데(선언한 메서드만 받는다), 헬스 체크만 예외다.
+    HEAD 로 살아 있는지 묻는 헬스체커·업타임 모니터가 있고, 거기서 405 는 "죽었다"로 읽힌다.
+    API 문서에는 싣지 않는다 — 같은 창구의 GET 과 뜻이 같다.
+    """
+    return Response(status_code=200)
+
+
 @app.post("/auth/token", tags=["meta"])
 def auth_token(body: DevTokenRequest) -> dict[str, str | int]:
     """dev JWT 발급 — ``PORTAL_AUTH_DISABLED=1`` 일 때만. 로컬 스모크·Swagger Authorize 용.
@@ -79,9 +91,16 @@ def auth_token(body: DevTokenRequest) -> dict[str, str | int]:
 
 
 @app.get("/me", tags=["meta"])
-def me(principal: Annotated[Principal, Depends(require_principal)]) -> dict[str, str]:
-    """현재 principal(user_id·clearance)."""
-    return {"user_id": principal.user_id, "clearance": principal.clearance}
+def me(principal: Annotated[Principal, Depends(require_principal)]) -> dict[str, str | None]:
+    """지금 요청한 사람 — 화면 머리글(이름)과 권한 표시에 쓴다.
+
+    계정 정보는 인증 의존성이 계정 표에서 **이번 요청에** 읽은 값이다(토큰에 담긴 값이 아니다).
+    개발용 발급기 토큰처럼 계정 표에 없는 주체는 세 값이 ``None`` 이다.
+    ``display_name`` 이 ``None`` 이면 화면은 ``login_id`` 를 쓴다.
+    """
+    return {"user_id": principal.user_id, "clearance": principal.clearance,
+            "login_id": principal.login_id, "display_name": principal.display_name,
+            "role": principal.role}
 
 
 # ── 라우터 포함(원래 등록 순서: admin GET → review POST → search → assets) ────────────────

@@ -71,7 +71,8 @@ def load_portal_auth_config() -> PortalAuthConfig:
         secret = raw_secret
     # 🔴 갱신(refresh) 창구를 두지 않기로 했으므로 **수명이 곧 로그인 주기**다. 1시간이던 종전 기본값은
     #    화면을 붙이면 근무 중에 두세 번 로그인 화면으로 튕기는 뜻이었다. 하루 일과를 한 번의 로그인으로
-    #    덮도록 8시간으로 둔다(강제 로그아웃을 두지 않는 대신 역할·상태는 요청마다 계정 표에서 읽는다).
+    #    덮도록 8시간으로 둔다. 강제 로그아웃을 두지 않는 대신 계정 상태는 **요청마다** 계정 표에서
+    #    읽는다(``deps.with_account``) — 정지하면 이미 나간 토큰도 곧바로 막힌다.
     raw_ttl = os.getenv("PORTAL_JWT_TTL_SECONDS", str(_TTL_DEFAULT)).strip()
     try:
         ttl = max(60, int(raw_ttl))

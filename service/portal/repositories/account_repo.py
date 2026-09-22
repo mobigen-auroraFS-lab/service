@@ -19,6 +19,9 @@ LIMIT 1
 
 _EXISTS_SQL = "SELECT 1 FROM portal_user WHERE lower(login_id) = lower(%s) LIMIT 1"
 
+# 요청마다 부르는 자리(인증 의존성)라 **PK 조회 하나**로 끝낸다 — 비밀번호 해시는 싣지 않는다.
+_BY_ID_SQL = "SELECT login_id, display_name, status, role FROM portal_user WHERE user_id = %s"
+
 _INSERT_SQL = """
 INSERT INTO portal_user (user_id, login_id, display_name, password_hash)
 VALUES (%s, %s, %s, %s)
@@ -34,6 +37,10 @@ class AccountRepository(Repository):
 
     def find_by_login_id(self, login_id: str) -> dict[str, Any] | None:
         return self.one(_FIND_SQL, (login_id,))
+
+    def find_by_user_id(self, user_id: str) -> dict[str, Any] | None:
+        """토큰 주체의 계정 — 인증이 **요청마다** 상태를 보는 데 쓴다(``user_id`` 는 UUID 여야 한다)."""
+        return self.one(_BY_ID_SQL, (user_id,))
 
     def exists(self, login_id: str) -> bool:
         return self.one(_EXISTS_SQL, (login_id,)) is not None

@@ -318,25 +318,42 @@ class TestAuthContract(unittest.TestCase):
             verifier._reset_verifier_for_tests()
         self.assertEqual([], wrong, "인증 계약 위반:\n  " + "\n  ".join(wrong))
 
-    def test_missing_jwt_secret_surfaces_as_500_not_startup_failure(self) -> None:
-        """IDD IF-AUTH-03 이 적어 둔 계약 — 기동은 성공하고 첫 인증 요청이 500 이다.
+    def _enter_lifespan(self, env: dict[str, str]) -> None:
+        """기동 절차만 돌린다 — 설정 적재(``bootstrap_env``)는 대역으로 막는다.
 
-        ⚠️ ``/health`` 는 **200 을 그대로 돌려준다**. 헬스체크만 보고 정상으로 판단하면 안 된다는
-        사실이 이 테스트의 요지다(README §인증 동작에 같은 경고가 있다).
+        ⚠️ 진짜 ``bootstrap_env`` 를 돌리면 **전역 설정을 고정**해, 뒤에 도는 다른 테스트의 튜닝
+        기본값이 바뀐다(실제로 깨졌다). 여기서 볼 것은 "인증 설정을 기동 때 확인하느냐"뿐이다.
         """
-        env = {"PORTAL_AUTH_DISABLED": "0"}
-        from service.portal.auth import verifier
-        with patch.dict(os.environ, env, clear=False):
-            os.environ.pop("PORTAL_JWT_SECRET", None)
-            verifier._reset_verifier_for_tests()
-            # ⚠️ ``with TestClient(...)`` 로 열지 않는다 — 그러면 lifespan 이 돌며 ``init_settings``
-            # 가 **전역 설정을 고정**해, 뒤에 도는 다른 테스트의 튜닝 기본값이 바뀐다(실제로 깨졌다).
-            # 이 테스트가 볼 것은 기동 절차가 아니라 **요청 시점 동작**이라 lifespan 이 필요 없다.
-            client = TestClient(app, raise_server_exceptions=False)
-            self.assertEqual(200, client.get("/health").status_code)
-            self.assertEqual(500, client.get("/me",
-                                             headers={"Authorization": "Bearer x"}).status_code)
-            verifier._reset_verifier_for_tests()
+        import asyncio
+
+        from service import bootstrap
+        from service.api import lifespan
+
+        async def _run() -> None:
+            async with lifespan.lifespan(app):
+                pass
+
+        with patch.dict(os.environ, env, clear=False), \
+                patch.object(bootstrap, "bootstrap_env", lambda *_a, **_k: None), \
+                patch.object(db, "warn_if_pool_undersized", lambda: None), \
+                patch.object(db, "close_db", lambda: None):
+            if "PORTAL_JWT_SECRET" not in env:
+                os.environ.pop("PORTAL_JWT_SECRET", None)
+            asyncio.run(_run())
+
+    def test_missing_jwt_secret_fails_startup(self) -> None:
+        """IDD IF-AUTH-03 · 공통규약 — 운영 모드에 서명 키가 없으면 **서버가 뜨지 않는다**(fail-fast).
+
+        종전에는 기동이 성공하고 헬스 체크도 200 인 채 첫 인증 요청부터 500 이었다 — 배포가 성공한
+        것처럼 보이다가 사용자 요청에서 터졌다(2026-09-22 기동 시 확인으로 바꿨다).
+        """
+        with self.assertRaises(ValueError):
+            self._enter_lifespan({"PORTAL_AUTH_DISABLED": "0"})
+
+    def test_startup_passes_with_secret_or_in_dev(self) -> None:
+        """키가 있거나 개발 모드면 기동 확인을 통과한다(검사가 지나치게 막지 않는다)."""
+        self._enter_lifespan({"PORTAL_AUTH_DISABLED": "0", "PORTAL_JWT_SECRET": "k" * 32})
+        self._enter_lifespan({"PORTAL_AUTH_DISABLED": "1"})
 
 
 class TestResponseBody(unittest.TestCase):

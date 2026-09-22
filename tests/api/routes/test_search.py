@@ -106,6 +106,16 @@ class TestHealth(unittest.TestCase):
         self.assertEqual(body["status"], "ok")
         self.assertEqual(body["env"], os.getenv("PORTAL_API_ENV", "dev"))
 
+    def test_health_accepts_head_without_body(self) -> None:
+        """HEAD 로 묻는 헬스체커가 있다 — 405 면 멀쩡한 서버를 "죽었다"로 읽는다."""
+        resp = self.client.head("/health")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(b"", resp.content)
+
+    def test_head_stays_405_elsewhere(self) -> None:
+        """예외는 헬스 체크 하나뿐 — 다른 GET 창구는 선언한 메서드만 받는다(공통규약)."""
+        self.assertEqual(405, self.client.head("/topics").status_code)
+
 
 class TestSearch(unittest.TestCase):
     """``/search`` — 모달리티별 그룹 응답·버킷별 의료배제·size top-N."""
@@ -539,15 +549,56 @@ class TestPortalAuth(unittest.TestCase):
         resp = self.client.post("/auth/token", json={"username": "alice"})
         self.assertEqual(resp.status_code, 404)
 
-    def test_me_with_valid_token(self) -> None:
-        from service.portal.auth.dev_issuer import issue_dev_token
+    # 운영 모드의 토큰은 로그인으로만 나온다 — 주체가 계정 표에 있어야 하고, **요청마다** 상태를 본다.
+    _UID = "01a0c700-0000-7000-8000-00000000a11c"
 
-        token = issue_dev_token(user_id="alice")
-        me_resp = self.client.get("/me", headers={"Authorization": f"Bearer {token}"})
-        self.assertEqual(me_resp.status_code, 200)
-        body = me_resp.json()
-        self.assertEqual(body["user_id"], "alice")
+    def _me_as(self, account: dict | None):
+        from service.api import db
+        from service.portal.auth.dev_issuer import issue_access_token
+        from service.portal.repositories.account_repo import AccountRepository
+
+        token = issue_access_token(user_id=self._UID)
+        with patch.object(AccountRepository, "find_by_user_id", return_value=account) as found, \
+                patch.object(db, "run_in_db", side_effect=lambda cb: cb(None)):
+            resp = self.client.get("/me", headers={"Authorization": f"Bearer {token}"})
+        return resp, found
+
+    def test_me_with_valid_token(self) -> None:
+        resp, found = self._me_as({"login_id": "alice", "display_name": "앨리스",
+                                   "status": "active", "role": "user"})
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["user_id"], self._UID)
         self.assertEqual(body["clearance"], "authorized")
+        self.assertEqual(("alice", "앨리스", "user"),
+                         (body["login_id"], body["display_name"], body["role"]))
+        found.assert_called_once_with(self._UID)
+
+    def test_suspended_account_is_blocked_with_a_live_token(self) -> None:
+        """정지하면 **이미 나간 토큰도** 바로 막힌다 — 만료(8시간)까지 기다리지 않는다."""
+        resp, _ = self._me_as({"login_id": "alice", "display_name": None,
+                               "status": "suspended", "role": "user"})
+        self.assertEqual(resp.status_code, 401)
+        self.assertIn("정지된 계정", resp.json()["detail"])
+
+    def test_token_for_missing_account_is_rejected(self) -> None:
+        """지워진 계정의 토큰 — 계정이 있었는지 알려 주지 않고 무효 토큰과 같은 401."""
+        resp, _ = self._me_as(None)
+        self.assertEqual(resp.status_code, 401)
+        self.assertEqual("유효하지 않은 토큰", resp.json()["detail"])
+
+    def test_non_uuid_subject_never_reaches_db(self) -> None:
+        """계정 표 키는 UUID — 형식이 아닌 주체는 묻지 않고 거절한다(물으면 DB 형식 오류)."""
+        from service.api import db
+        from service.portal.auth.dev_issuer import issue_access_token
+
+        def boom(*_a: object, **_k: object) -> None:
+            raise AssertionError("UUID 가 아닌 주체로 DB 를 불렀다")
+
+        token = issue_access_token(user_id="alice")
+        with patch.object(db, "run_in_db", boom):
+            resp = self.client.get("/me", headers={"Authorization": f"Bearer {token}"})
+        self.assertEqual(resp.status_code, 401)
 
 
 class TestPortalAuthDevToken(unittest.TestCase):
