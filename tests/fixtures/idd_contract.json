@@ -2,7 +2,7 @@
   "interfaces": {
     "IF-ADMIN-01": {
       "errors": {},
-      "gubun": "현행 정본",
+      "gubun": "보류(창구 닫음)",
       "method": "GET",
       "name": "자산 계보 조회",
       "req": {
@@ -43,7 +43,7 @@
       "errors": {
         "422": "날짜 형식 오류"
       },
-      "gubun": "현행 정본",
+      "gubun": "보류(창구 닫음)",
       "method": "GET",
       "name": "접근 이력 목록",
       "req": {
@@ -133,7 +133,7 @@
       "errors": {
         "422": "날짜 형식 오류"
       },
-      "gubun": "현행 정본",
+      "gubun": "보류(창구 닫음)",
       "method": "GET",
       "name": "접근 이력 통계",
       "req": {
@@ -185,7 +185,7 @@
       "errors": {
         "422": "interval·group_by·날짜 형식 오류"
       },
-      "gubun": "현행 정본",
+      "gubun": "보류(창구 닫음)",
       "method": "GET",
       "name": "접근 이력 타임라인",
       "req": {
@@ -266,7 +266,7 @@
       "errors": {
         "422": "interval·날짜 형식 오류"
       },
-      "gubun": "현행 정본",
+      "gubun": "보류(창구 닫음)",
       "method": "GET",
       "name": "접근 이력 개요",
       "req": {
@@ -336,7 +336,7 @@
       "errors": {
         "422": "날짜 형식 오류"
       },
-      "gubun": "현행 정본",
+      "gubun": "보류(창구 닫음)",
       "method": "GET",
       "name": "계보 피드",
       "req": {
@@ -444,7 +444,7 @@
       "errors": {
         "422": "interval·group_by·날짜 형식 오류"
       },
-      "gubun": "현행 정본",
+      "gubun": "보류(창구 닫음)",
       "method": "GET",
       "name": "계보 타임라인",
       "req": {
@@ -525,7 +525,7 @@
       "errors": {
         "422": "날짜 형식 오류"
       },
-      "gubun": "현행 정본",
+      "gubun": "보류(창구 닫음)",
       "method": "GET",
       "name": "자산 통계",
       "req": {
@@ -598,7 +598,7 @@
         "400": "잘못된 snapshot_bucket 또는 relation_scope",
         "422": "날짜 형식 오류"
       },
-      "gubun": "현행 정본",
+      "gubun": "보류(창구 닫음)",
       "method": "GET",
       "name": "자산 목록(관리자)",
       "req": {
@@ -733,7 +733,7 @@
       "errors": {
         "422": "날짜 형식 오류"
       },
-      "gubun": "현행 정본",
+      "gubun": "보류(창구 닫음)",
       "method": "GET",
       "name": "모달리티별 상세",
       "req": {
@@ -800,7 +800,7 @@
       "errors": {
         "422": "interval·날짜 형식 오류"
       },
-      "gubun": "현행 정본",
+      "gubun": "보류(창구 닫음)",
       "method": "GET",
       "name": "모달리티별 개요",
       "req": {
@@ -881,7 +881,7 @@
       "errors": {
         "422": "interval·group_by·날짜 형식 오류"
       },
-      "gubun": "현행 정본",
+      "gubun": "보류(창구 닫음)",
       "method": "GET",
       "name": "자산 타임라인",
       "req": {
@@ -953,7 +953,7 @@
       "errors": {
         "404": "자산 없음 또는 status≠registered — 사유 구분 없이 통일 · UUID 형식이 아닌 asset_id 도 같은 404(2026-09-21)"
       },
-      "gubun": "현행 정본",
+      "gubun": "보류(창구 닫음)",
       "method": "GET",
       "name": "자산 상세(관리자)",
       "req": {
@@ -1007,7 +1007,7 @@
       "errors": {
         "422": "잘못된 monthly_interval"
       },
-      "gubun": "현행 정본",
+      "gubun": "보류(창구 닫음)",
       "method": "GET",
       "name": "대시보드 요약",
       "req": {
@@ -1061,7 +1061,7 @@
       "errors": {
         "422": "interval·날짜 형식 오류"
       },
-      "gubun": "현행 정본",
+      "gubun": "보류(창구 닫음)",
       "method": "GET",
       "name": "제안 관계 요약",
       "req": {
@@ -1121,7 +1121,7 @@
         "400": "잘못된 status·date_on·confidence 범위·min>max·from>to",
         "422": "날짜 형식 오류"
       },
-      "gubun": "현행 정본",
+      "gubun": "보류(창구 닫음)",
       "method": "GET",
       "name": "관계 목록",
       "req": {
@@ -1276,7 +1276,7 @@
       "errors": {
         "400": "잘못된 status"
       },
-      "gubun": "현행 정본",
+      "gubun": "보류(창구 닫음)",
       "method": "GET",
       "name": "관계종류 카탈로그",
       "req": {
@@ -2532,7 +2532,8 @@
       "resp": {
         "200": [
           "access_token",
-          "token_type"
+          "token_type",
+          "expires_in"
         ]
       },
       "resp_alt": {},
@@ -2540,6 +2541,7 @@
       "resp_meta": {
         "200": {
           "access_token": "string",
+          "expires_in": "integer",
           "token_type": "string"
         }
       },
@@ -2624,7 +2626,8 @@
       "resp": {
         "200": [
           "access_token",
-          "token_type"
+          "token_type",
+          "expires_in"
         ]
       },
       "resp_alt": {},
@@ -2632,6 +2635,7 @@
       "resp_meta": {
         "200": {
           "access_token": "string",
+          "expires_in": "integer",
           "token_type": "string"
         }
       },
@@ -3403,7 +3407,7 @@
       "errors": {
         "400": "edge_ids 빈 배열 · UUID 형식이 아닌 edge_id(2026-09-21 — 종전에는 DB 가 거절해 500 이었다)"
       },
-      "gubun": "현행 정본",
+      "gubun": "보류(창구 닫음)",
       "method": "POST",
       "name": "관계 승인",
       "req": {
@@ -3442,7 +3446,7 @@
       "errors": {
         "400": "edge_ids 빈 배열 · UUID 형식이 아닌 edge_id(2026-09-21 — 종전에는 DB 가 거절해 500 이었다)"
       },
-      "gubun": "현행 정본",
+      "gubun": "보류(창구 닫음)",
       "method": "POST",
       "name": "관계 반려",
       "req": {
@@ -3481,7 +3485,7 @@
       "errors": {
         "400": "잘못된 to_status · UUID 형식이 아닌 edge_id(2026-09-21 — 종전에는 DB 가 거절해 500 이었다)"
       },
-      "gubun": "현행 정본",
+      "gubun": "보류(창구 닫음)",
       "method": "POST",
       "name": "관계 재수정",
       "req": {
@@ -3527,7 +3531,7 @@
     },
     "IF-REVIEW-04": {
       "errors": {},
-      "gubun": "현행 정본",
+      "gubun": "보류(창구 닫음)",
       "method": "POST",
       "name": "관계종류 승격",
       "req": {

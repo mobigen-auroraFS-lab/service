@@ -22,17 +22,18 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from service.api import audit, errors, lifespan
 from service.api.routes import (
     account,
-    admin,
     assets,
     catalog,
     file_search,
     mm_meta,
-    review,
     search,
 )
+
+# 🔴 관리자·관계 검토 라우터는 **일부러 들이지 않는다**(2026-09-22 보류 결정) — 아래 등록부 주석 참조.
+#    from service.api.routes import admin, review
 from service.portal.auth import Principal, require_principal
 from service.portal.auth.config import load_portal_auth_config
-from service.portal.auth.dev_issuer import issue_dev_token
+from service.portal.auth.dev_issuer import token_response
 from service.portal.auth.schemas import DevTokenRequest
 
 app = FastAPI(title="일반 도메인 포탈 API (010 P1)", lifespan=lifespan.lifespan)
@@ -64,7 +65,7 @@ def health() -> dict[str, str]:
 
 
 @app.post("/auth/token", tags=["meta"])
-def auth_token(body: DevTokenRequest) -> dict[str, str]:
+def auth_token(body: DevTokenRequest) -> dict[str, str | int]:
     """dev JWT 발급 — ``PORTAL_AUTH_DISABLED=1`` 일 때만. 로컬 스모크·Swagger Authorize 용.
 
     운영(``PORTAL_AUTH_DISABLED=0``)에서는 404 — IdP 연동 전 dev 엔드포인트 노출 방지.
@@ -74,7 +75,7 @@ def auth_token(body: DevTokenRequest) -> dict[str, str]:
     user_id = (body.user_id or body.username or "dev-user").strip()
     if not user_id:
         raise HTTPException(status_code=400, detail="username 또는 user_id 필요")
-    return {"access_token": issue_dev_token(user_id=user_id), "token_type": "bearer"}
+    return token_response(user_id=user_id)
 
 
 @app.get("/me", tags=["meta"])
@@ -104,8 +105,17 @@ if _CORS_ORIGINS:
                         "X-Bundle-Missing"],
     )
 
-app.include_router(admin.router)
-app.include_router(review.router)
+# ── 관리자·관계 검토 창구는 **보류**(2026-09-22) ────────────────────────────────
+# 당장 쓸 화면이 없고, `/admin/*` 에는 역할 검사(RBAC)가 아직 없다 — 인증만 통과하면 누구나
+# 운영 자료(접근 이력·계보·통계)를 보고 관계를 승인·반려할 수 있다. 쓰지 않을 창구를 열어 둘
+# 이유가 없어 **등록만** 끊는다.
+#
+# 🔴 코드는 지우지 않았다 — `service/api/routes/{admin,review}.py` 와 저장소·조회 계층은 그대로
+#    있다. 되살리려면 위 import 주석과 아래 두 줄을 풀면 된다(그 전에 RBAC 를 붙일 것).
+#    IDD 에서는 구분이 **'보류(창구 닫음)'** 이고, 실측·교차검증은 라우트가 없고 404 인 것을 확인한다.
+#
+# app.include_router(admin.router)
+# app.include_router(review.router)
 app.include_router(search.router)
 # 파일 검색(시나리오 ③) — 조건으로 좁혀 훑는 창구. 위 /search 와 다른 화면이라 따로 둔다.
 app.include_router(file_search.router)

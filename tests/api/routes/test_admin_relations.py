@@ -21,6 +21,11 @@ from service.api import app
 from service.portal.repositories import asset_repo
 from service.portal.repositories.review_repo import ReviewRepository
 
+# 관리자 창구는 2026-09-22 보류로 등록을 끊었다(`service/api/__init__.py`). 테스트는 지우지 않고
+# **등록 여부로 건너뛴다** — 보류를 풀면 그대로 다시 돈다.
+ADMIN_OPEN = any(p.startswith("/admin") for p in app.openapi()["paths"])
+_SKIP_WHY = "관리자 창구 보류(2026-09-22) — 라우터 등록을 끊어 두었다"
+
 # 경로에 쓰는 id 는 **실제와 같은 UUID** 여야 한다 — 라우트가 DB 에 묻기 전에 형식을 보고
 # 아니면 404/400 으로 끊는다(2026-09-21 · `tests/api/routes/test_bad_id.py`).
 E1 = "01a08994-0000-7000-8000-0000000000e1"
@@ -61,6 +66,7 @@ def _enable_bypass(test_case: unittest.TestCase) -> None:
         test_case.addCleanup(p.stop)
 
 
+@unittest.skipUnless(ADMIN_OPEN, _SKIP_WHY)
 class TestRelationsList(unittest.TestCase):
     """GET /admin/relations — 조회 위임·status 화이트리스트·401."""
 
@@ -96,6 +102,7 @@ class TestRelationsList(unittest.TestCase):
         mock_list.assert_not_called()
 
 
+@unittest.skipUnless(ADMIN_OPEN, _SKIP_WHY)
 class TestRelationsListFilters(unittest.TestCase):
     """G7 확장(FR-701~753) — relations_list Query 파라미터 파싱·검증·전달."""
 
@@ -206,6 +213,7 @@ class TestRelationsListFilters(unittest.TestCase):
         mock_list.assert_not_called()
 
 
+@unittest.skipUnless(ADMIN_OPEN, _SKIP_WHY)
 class TestRelationKindsList(unittest.TestCase):
     """G7 확장(FR-801) — GET /admin/relation-kinds 목록·status 화이트리스트·401."""
 
@@ -237,6 +245,7 @@ class TestRelationKindsList(unittest.TestCase):
         mock_kinds.assert_not_called()
 
 
+@unittest.skipUnless(ADMIN_OPEN, _SKIP_WHY)
 class TestRelationKindsListAuth(unittest.TestCase):
     """인증 없음 → 401."""
 
@@ -259,6 +268,7 @@ class TestRelationKindsListAuth(unittest.TestCase):
         self.assertEqual(resp.status_code, 401)
 
 
+@unittest.skipUnless(ADMIN_OPEN, _SKIP_WHY)
 class TestRelationsListAuth(unittest.TestCase):
     """인증 없음(bypass off·토큰 없음) → 401."""
 
@@ -285,6 +295,7 @@ class TestRelationsListAuth(unittest.TestCase):
         self.assertEqual(resp.status_code, 401)
 
 
+@unittest.skipUnless(ADMIN_OPEN, _SKIP_WHY)
 class TestRelationsApproveReject(unittest.TestCase):
     """POST /admin/relations/{approve,reject} — per-id 결과·reviewer·감사(FR-201~203/502)."""
 
@@ -330,6 +341,7 @@ class TestRelationsApproveReject(unittest.TestCase):
         mock_bulk.assert_not_called()
 
 
+@unittest.skipUnless(ADMIN_OPEN, _SKIP_WHY)
 class TestRelationsRevise(unittest.TestCase):
     """POST /admin/relations/revise — 사람 전용 정정·to_status 화이트리스트·감사(FR-301/502)."""
 
@@ -375,6 +387,7 @@ class TestRelationsRevise(unittest.TestCase):
         mock_revise.assert_not_called()
 
 
+@unittest.skipUnless(ADMIN_OPEN, _SKIP_WHY)
 class TestRelationKindPromote(unittest.TestCase):
     """POST /admin/relation-kinds/{code}/promote — 종류 승격·감사(FR-401/502)."""
 
@@ -408,6 +421,7 @@ class TestRelationKindPromote(unittest.TestCase):
         self.assertEqual(len(promote_calls), 0)
 
 
+@unittest.skipUnless(ADMIN_OPEN, _SKIP_WHY)
 class TestRelationAuditBestEffort(unittest.TestCase):
     """FR-502 — 감사 기록 실패가 결정 트랜잭션을 깨지 않는다(best-effort·savepoint)."""
 
@@ -420,6 +434,7 @@ class TestRelationAuditBestEffort(unittest.TestCase):
                                      detail={"edge_id": E1})
 
 
+@unittest.skipUnless(ADMIN_OPEN, _SKIP_WHY)
 class TestReviewDecisionNoReindex(unittest.TestCase):
     """065 T304 — 검토 결정(승인/반려/정정) 후 관계발 주제 재색인 훅 제거(FR-404) + 결정·감사 불변.
 

@@ -28,23 +28,33 @@ from service.api import app, db  # noqa: E402
 
 BAD = "not-a-uuid"
 
+# 관리자 창구가 열려 있는지 — 2026-09-22 보류로 등록을 끊었다(`service/api/__init__.py`).
+# 표본을 지우지 않고 **등록 여부로 거른다** — 보류를 풀면 대조가 저절로 돌아온다.
+ADMIN_OPEN = any(p.startswith("/admin") for p in app.openapi()["paths"])
+
 # (설명, method, path, body, 기대 상태, 기대 응답 본문 일부)
 CASES = [
     ("자산 상세", "GET", f"/assets/{BAD}", None, 404, "자산을 찾을 수 없거나"),
-    ("관리자 자산 상세", "GET", f"/admin/assets/{BAD}", None, 404, "자산을 찾을 수 없거나"),
     ("다운로드", "GET", f"/assets/{BAD}/download", None, 404, "다운로드 대상을 찾을 수 없거나"),
     ("썸네일", "GET", f"/assets/{BAD}/thumbnail", None, 404, "썸네일 대상을 찾을 수 없거나"),
     ("묶음", "GET", f"/assets/{BAD}/bundle", None, 404, "묶음 seed 를 찾을 수 없거나"),
+]
+_ADMIN_CASES = [
+    ("관리자 자산 상세", "GET", f"/admin/assets/{BAD}", None, 404, "자산을 찾을 수 없거나"),
     ("승인", "POST", "/admin/relations/approve", {"edge_ids": [BAD]}, 400, "UUID 형식"),
     ("반려", "POST", "/admin/relations/reject", {"edge_ids": [BAD]}, 400, "UUID 형식"),
     ("정정", "POST", "/admin/relations/revise", {"edge_id": BAD, "to_status": "active"}, 400, "UUID 형식"),
 ]
+if ADMIN_OPEN:
+    CASES += _ADMIN_CASES
 
 # 미존재를 200·빈 목록으로 답하는 창구 — 형식 오류도 같게 본다.
 EMPTY_CASES = [
     ("자산의 개체 소속", f"/assets/{BAD}/mm-meta", {"items": []}),
-    ("자산 계보", f"/admin/assets/{BAD}/lineage", {"asset_id": BAD, "activities": []}),
 ]
+if ADMIN_OPEN:
+    EMPTY_CASES.append(
+        ("자산 계보", f"/admin/assets/{BAD}/lineage", {"asset_id": BAD, "activities": []}))
 
 
 class TestBadIdDoesNotReachDb(unittest.TestCase):
