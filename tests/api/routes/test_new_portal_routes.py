@@ -108,21 +108,57 @@ class TestSelectionBundle(unittest.TestCase):
         self.assertEqual(413, r.status_code)
         self.assertIn("MB", r.json()["detail"])
 
-    def test_zip_을_흘려보낸다(self) -> None:
+    def _post_targets(self, targets, missing, ids):
         with mock.patch.object(SelectionRepository, "targets", return_value={
-                "targets": [{"asset_id": A1, "fs_path": "/없는/a.txt", "file_name": "a.txt"}],
-                "missing": [A2], "total_bytes": 10}), \
+                "targets": targets, "missing": missing, "total_bytes": 10}), \
              mock.patch.object(db, "run_in_db", side_effect=_read_only), \
              mock.patch.object(db, "run_in_db_write", side_effect=_read_only), \
              mock.patch("service.api.routes.assets.record_access", return_value="acc") as rec:
-            r = self.client.post("/assets/bundle", json={"asset_ids": [A1, A2]})
+            r = self.client.post("/assets/bundle", json={"asset_ids": ids})
+        return r, rec
+
+    def test_zip_을_흘려보낸다(self) -> None:
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".txt") as fh:
+            fh.write(b"hello")
+            fh.flush()
+            r, rec = self._post_targets(
+                [{"asset_id": A1, "fs_path": fh.name, "file_name": "a.txt"}], [A2], [A1, A2])
         self.assertEqual(200, r.status_code)
         self.assertEqual("application/zip", r.headers["content-type"])
-        # 담긴 자산마다 감사 한 행(개별 다운로드와 같은 낱개).
+        self.assertEqual(("1", "1"), (r.headers["x-bundle-files"], r.headers["x-bundle-missing"]))
+        self.assertEqual(1, rec.call_count)   # 담긴 자산마다 감사 한 행(개별 다운로드와 같은 낱개)
+        self.assertEqual(["a.txt"], zipfile.ZipFile(BytesIO(r.content)).namelist())
+
+    def test_원본이_없으면_헤더가_빠진_것으로_센다(self) -> None:
+        """🔴 2026-09-22 사용자 흐름 실측 — 원본이 없는데 헤더가 '담김 3 · 빠짐 0' 이라 했다.
+
+        헤더는 화면이 받은 zip 이 온전한지 맞춰 보라고 둔 것이다. 원본이 없을 때 틀리면 쓸모가 없다.
+        감사도 **실제로 담긴 것만** 남긴다(받지도 않은 파일을 받았다고 적으면 이력이 거짓이 된다).
+        """
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".txt") as fh:
+            fh.write(b"hello")
+            fh.flush()
+            r, rec = self._post_targets(
+                [{"asset_id": A1, "fs_path": fh.name, "file_name": "a.txt"},
+                 {"asset_id": A2, "fs_path": "/없는/b.txt", "file_name": "b.txt"}],
+                [], [A1, A2])
+        self.assertEqual(200, r.status_code)
+        self.assertEqual(("1", "1"), (r.headers["x-bundle-files"], r.headers["x-bundle-missing"]))
         self.assertEqual(1, rec.call_count)
-        # 파일이 없어도 묶음은 성공한다 — 빠진 것은 목록 파일에 적힌다.
+        self.assertEqual(A1, rec.call_args.kwargs["asset_id"])
         names = zipfile.ZipFile(BytesIO(r.content)).namelist()
-        self.assertTrue(any(n.endswith("manifest.json") for n in names), names)
+        self.assertEqual(["a.txt", "_manifest.json"], names)
+
+    def test_전부_원본이_없으면_목록_파일만(self) -> None:
+        """모두 빠져도 실패로 끊지 않는다 — 무엇이 빠졌는지는 헤더와 목록 파일이 알린다."""
+        r, rec = self._post_targets(
+            [{"asset_id": A1, "fs_path": "/없는/a.txt", "file_name": "a.txt"}], [A2], [A1, A2])
+        self.assertEqual(200, r.status_code)
+        self.assertEqual(("0", "2"), (r.headers["x-bundle-files"], r.headers["x-bundle-missing"]))
+        self.assertEqual(0, rec.call_count)
+        self.assertEqual(["_manifest.json"], zipfile.ZipFile(BytesIO(r.content)).namelist())
 
 
 class TestCatalogRoutes(unittest.TestCase):
