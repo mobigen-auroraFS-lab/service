@@ -24,7 +24,7 @@ from fastapi import APIRouter, HTTPException, Query
 from psycopg import errors as pg_errors
 from pydantic import BaseModel, Field
 
-from service.portal.auth.dev_issuer import issue_access_token
+from service.portal.auth.dev_issuer import token_response
 from service.portal.auth.passwords import hash_password, needs_rehash, verify_password
 from service.portal.common.db_manager import DbManager
 from src.database.ids import uuid7
@@ -124,7 +124,7 @@ def login(payload: LoginRequest) -> dict[str, Any]:
         DbManager.write(_after_login)
     except Exception:  # noqa: BLE001 — 기록 실패가 로그인을 막지 않는다(최선 노력)
         _LOG.warning("로그인 뒤 기록 실패(무시): user_id=%s", user_id)
-    return {"access_token": issue_access_token(user_id=user_id), "token_type": "bearer"}
+    return token_response(user_id=user_id)
 
 
 # ── 즐겨찾기 — 만들지 않는다(2026-09-21 결정) ─────────────────────────────────────

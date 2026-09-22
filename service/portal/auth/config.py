@@ -4,7 +4,7 @@
     PORTAL_AUTH_DISABLED   — 1 이면 dev bypass(anonymous 허용)
     PORTAL_AUTH_BACKEND    — 현재 ``local_hs256`` 만
     PORTAL_JWT_SECRET      — HS256 서명 키(dev bypass 시 기본값 허용·운영 전 교체)
-    PORTAL_JWT_TTL_SECONDS — dev ``/auth/token`` 발급 수명(기본 3600)
+    PORTAL_JWT_TTL_SECONDS — 발급 토큰 수명(기본 28800 = 8시간 · 로그인·dev 발급기 공용)
     PORTAL_JWT_ISSUER      — 설정 시 발급·검증에 ``iss`` 핀(미설정이면 단일 secret MVP — iss 미검사).
 """
 
@@ -14,6 +14,9 @@ import os
 from dataclasses import dataclass
 
 _DEFAULT_DEV_SECRET = "dev-portal-jwt-change-in-prod"
+
+# 토큰 기본 수명(초) — 8시간. 갱신 창구가 없어 이 값이 곧 로그인 주기다.
+_TTL_DEFAULT = 28800
 _VALID_BACKENDS = frozenset({"local_hs256"})
 
 
@@ -66,11 +69,14 @@ def load_portal_auth_config() -> PortalAuthConfig:
         )
     else:
         secret = raw_secret
-    raw_ttl = os.getenv("PORTAL_JWT_TTL_SECONDS", "3600").strip()
+    # 🔴 갱신(refresh) 창구를 두지 않기로 했으므로 **수명이 곧 로그인 주기**다. 1시간이던 종전 기본값은
+    #    화면을 붙이면 근무 중에 두세 번 로그인 화면으로 튕기는 뜻이었다. 하루 일과를 한 번의 로그인으로
+    #    덮도록 8시간으로 둔다(강제 로그아웃을 두지 않는 대신 역할·상태는 요청마다 계정 표에서 읽는다).
+    raw_ttl = os.getenv("PORTAL_JWT_TTL_SECONDS", str(_TTL_DEFAULT)).strip()
     try:
         ttl = max(60, int(raw_ttl))
     except ValueError:
-        ttl = 3600
+        ttl = _TTL_DEFAULT
     issuer = os.getenv("PORTAL_JWT_ISSUER", "").strip() or None
     return PortalAuthConfig(
         auth_disabled=auth_disabled,
