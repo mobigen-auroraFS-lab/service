@@ -277,7 +277,11 @@ _BUNDLE_COPY_CHUNK = 64 * 1024
 _BUNDLE_SPOOL_MAX = 64 * 1024 * 1024
 
 
-def build_bundle_zip_stream(targets: list[dict[str, Any]]) -> tempfile.SpooledTemporaryFile:
+def build_bundle_zip_stream(
+    targets: list[dict[str, Any]],
+    *,
+    unreadable: list[dict[str, Any]] | None = None,
+) -> tempfile.SpooledTemporaryFile:
     """묶음 대상들을 zip **스트림**으로 만든다 — 묶음이 커도 메모리 사용량이 일정하다.
 
     기존 ``build_bundle_zip``(bytes)이 파일마다 ``fh.read()`` 전체 적재 + 전체 zip 을 BytesIO 로
@@ -292,6 +296,10 @@ def build_bundle_zip_stream(targets: list[dict[str, Any]]) -> tempfile.SpooledTe
 
     Args:
         targets: 담을 자산 목록(순서가 곧 zip 엔트리 순서).
+        unreadable: 주면 **원본을 열 수 없어 빠진 것**(``{asset_id, file_name}``)을 여기에도 채운다.
+            무엇이 빠졌는지는 zip 을 만들어 봐야 안다 — DB 는 파일이 디스크에 있는지 모른다.
+            호출자가 "몇 건 담았다"를 헤더·감사로 알릴 때 이 값으로 센다(2026-09-22 · 종전에는
+            DB 기준으로 세어, 원본이 없으면 "3건 담음"이라 하고 빈 zip 을 보냈다).
 
     Returns:
         위치 0 으로 되감긴 임시 파일. 일정 크기를 넘으면 자동으로 디스크로 넘어간다.
@@ -335,6 +343,8 @@ def build_bundle_zip_stream(targets: list[dict[str, Any]]) -> tempfile.SpooledTe
         spool.close()
         raise
 
+    if unreadable is not None:
+        unreadable.extend(missing)
     spool.seek(0)
     return spool
 

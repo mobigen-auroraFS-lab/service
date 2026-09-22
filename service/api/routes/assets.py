@@ -342,6 +342,7 @@ def asset_content(asset_id: str) -> dict[str, Any]:
 
     문서는 원본 파일에서, 소리·영상은 받아쓰기(``ext_meta.stt``)에서. 글자가 없는 자산(그림)은
     없는 자산과 **같은 문구의 404** 다 — 존재 여부를 흘리지 않는다.
+    ⚠️ 지금 데이터에서 받아쓰기는 소리에만 있다 — 영상은 404 다(``content`` 모듈 설명 참조).
 
     Raises:
         HTTPException: 노출 대상이 아니거나 글자가 없으면 404 · 원본 파일이 사라졌으면 410.
@@ -401,18 +402,25 @@ def selection_bundle(
             status_code=413,
             detail=f"용량이 상한을 넘습니다({mb}MB > {cap}MB) — 고른 자산을 줄이십시오")
 
+    # 🔴 zip 을 **먼저** 만든다 — 원본을 열 수 없어 빠지는 것은 만들어 봐야 안다(DB 는 디스크를 모른다).
+    #    헤더도 감사도 **실제로 담긴 것**으로 센다. 종전에는 DB 기준으로 세어, 원본이 없으면
+    #    "3건 담음 · 0건 빠짐"이라 하고 목록 파일만 든 zip 을 보냈다(2026-09-22 사용자 흐름 실측).
+    #    응답 전에 어차피 전부 만들어지므로(임시 파일에 적는다) 순서를 바꿔도 느려지지 않는다.
+    unreadable: list[dict[str, Any]] = []
+    zip_stream = build_bundle_zip_stream(targets, unreadable=unreadable)
+    gone = {u["asset_id"] for u in unreadable}
+    packed = [t for t in targets if t["asset_id"] not in gone]
+
     def _audit(repo: Any) -> None:
         """담긴 자산마다 한 행 — 개별 다운로드와 같은 낱개로 남겨야 이력이 맞물린다."""
-        for t in targets:
+        for t in packed:
             record_access(repo.conn, action="bundle", user_id=principal.user_id,
-                          asset_id=t["asset_id"], detail={"selection": len(targets)})
+                          asset_id=t["asset_id"], detail={"selection": len(packed)})
 
     try:
         DbManager.write(_audit)
     except Exception:  # noqa: BLE001 — 감사 실패가 내려받기를 막지 않는다(최선 노력)
-        _LOG.warning("선택 묶음 감사 기록 실패(무시): %d건", len(targets))
-
-    zip_stream = build_bundle_zip_stream(targets)
+        _LOG.warning("선택 묶음 감사 기록 실패(무시): %d건", len(packed))
 
     def _iter_zip() -> Iterator[bytes]:
         while True:
@@ -428,8 +436,9 @@ def selection_bundle(
             "Content-Disposition": _content_disposition(f"selection_{len(targets)}.zip"),
             # 🔴 zip 은 스트리밍이라 실패가 **본문 도중에** 드러난다 — 몇 건이 담겼고 몇 건이 빠졌는지
             #    헤더로 먼저 알려, 화면이 받은 zip 이 온전한지 스스로 맞춰 볼 수 있게 한다.
-            "X-Bundle-Files": str(len(targets)),
-            "X-Bundle-Missing": str(len(picked["missing"])),
+            # 빠진 수 = 노출 대상이 아니라 뺀 것 + 원본을 열 수 없어 빠진 것(후자는 _manifest.json 에 이름이 있다).
+            "X-Bundle-Files": str(len(packed)),
+            "X-Bundle-Missing": str(len(picked["missing"]) + len(unreadable)),
         },
         background=BackgroundTask(zip_stream.close),
     )
