@@ -95,10 +95,11 @@ TEXT_EMBED_NORMALIZE=true
 |---|---|
 | 프로파일 | `PORTAL_API_ENV`(기본 `dev`) |
 | DB | `POSTGRES_HOST` · `POSTGRES_PORT` · `POSTGRES_DB` · `POSTGRES_USER` · `POSTGRES_PASSWORD` |
-| 검색 | `OPENSEARCH_HOST` · `OPENSEARCH_PORT` |
+| 검색 | `OPENSEARCH_URL`(기본 `http://localhost:9200`) · `OPENSEARCH_INDEX`(기본 `assets`) · `OPENSEARCH_SYNC_ENABLED`(코어 설정 정합 검사용 — `true`) |
 | 인증 | `PORTAL_AUTH_DISABLED` · `PORTAL_JWT_SECRET` · `PORTAL_JWT_ISSUER` · `PORTAL_JWT_TTL_SECONDS` · `PORTAL_AUTH_BACKEND` |
 | DB 풀 | `PORTAL_DB_POOL_MIN` · `PORTAL_DB_POOL_MAX`(선택 — 미설정 시 코어 기본 1/10) |
 | 썸네일 | `THUMBNAIL_CACHE_DIR`(선택 · 기본 시스템 임시 디렉터리) |
+| CORS | `PORTAL_CORS_ORIGINS`(선택 · 쉼표로 오리진 나열 · 예 `http://localhost:5173`) — **비우면 다른 오리진을 하나도 허용하지 않는다**. 화면을 Vite 개발 서버 등 다른 오리진에서 직접 부르려면 넣는다(Vite 프록시를 쓰면 필요 없다) |
 
 > 원본 파일 위치는 별도 설정이 없습니다 — 다운로드·썸네일은 **DB 에 기록된 경로(`fs_path`)** 를 읽습니다.
 > 그 경로가 이 서버에서 접근 가능해야 합니다(적재한 기계와 다른 기계면 같은 마운트가 필요합니다).
@@ -122,7 +123,7 @@ uvicorn 워커 수 × PORTAL_DB_POOL_MAX  ≤  PostgreSQL max_connections
 | `PORTAL_AUTH_DISABLED` | 동작 |
 |---|---|
 | `1` (연구·개발) | 토큰 없이 호출 가능 → `anonymous`(public 권한). Bearer 가 있으면 검증합니다. `POST /auth/token` 으로 dev 토큰 발급 가능 |
-| `0` (운영) | Bearer **필수**(없으면 401) · `POST /auth/token` 은 404 · **`PORTAL_JWT_SECRET` 미설정이면 인증이 필요한 첫 요청이 500** |
+| `0` (운영) | Bearer **필수**(없으면 401) · `POST /auth/token` 은 404 · **`PORTAL_JWT_SECRET` 미설정이면 서버가 기동하지 않습니다**(fail-fast · 2026-09-22. 종전에는 첫 인증 요청이 500 이었습니다) |
 
 JWT 는 HS256 이고 `exp`·`sub` 를 필수로 검증합니다. `PORTAL_JWT_ISSUER` 를 설정하면 `iss` 를 고정해
 다른 서비스의 토큰 재사용을 막습니다.
@@ -172,7 +173,7 @@ python -m unittest discover -s tests
 ```
 service/
   api/            FastAPI 앱 — 앱 조립은 __init__.py, 나머지는 책임별 한 모듈
-    routes/       경로 공간별 라우터(search·file_search·assets·mm_meta·admin·review)
+    routes/       경로 공간별 라우터(search·file_search·assets·mm_meta·catalog·account · admin·review 는 등재 보류)
     db.py         DB 풀과 트랜잭션 통로(run_in_db 읽기 · run_in_db_write 쓰기)
     audit.py      접근 기록 미들웨어(응답과 분리해 뒤에서 적재)
     errors.py     예외 → HTTP 응답(검색 엔진 연결 실패 503)

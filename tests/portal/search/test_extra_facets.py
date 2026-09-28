@@ -181,5 +181,59 @@ class TestExtraFacets(unittest.TestCase):
                          refine=None, axes=list(AXES), now=NOW)
 
 
+class _ByFilterClient(_FakeClient):
+    """본문에 걸린 필터 수만큼 건수를 줄여 돌려준다 — 어느 본문의 건수가 total 로 나갔는지 가린다."""
+
+    def msearch(self, *, body: list) -> dict:
+        self.calls.append("msearch")
+        bodies = body[1::2]
+        self.bodies.extend(bodies)
+
+        def _count(b: dict) -> int:
+            clauses = b["query"]["bool"].get("filter") or []
+            return 100 - 10 * len(clauses if isinstance(clauses, list) else [clauses])
+
+        return {"responses": [{"hits": {"total": {"value": _count(b)}}, "aggregations": {}}
+                              for b in bodies]}
+
+
+class TestTotalIsWholeSet(unittest.TestCase):
+    """total 은 조건을 하나도 빼지 않은 집합의 크기다(= /file-search 의 total · 2026-09-23 결함 수정).
+
+    종전에는 마지막 축의 건수를 썼다 — 기간 축은 기간 조건을 빼고 세므로, 기간을 건 화면에
+    기간을 뺀 수가 total 로 나갔다.
+    """
+
+    FILTERS = parse_search_filters(file_ext=["jpg"], created_from="2026-09-01", created_to=None,
+                                   topic=None, subtopic=None, modality=None, tag=None)
+
+    def _full_count(self) -> int:
+        client = _ByFilterClient()
+        return extra_facets(client, "assets", query="", query_vector=[], filters=self.FILTERS,
+                            refine=None, axes=["file_size"], now=NOW)["total"]
+
+    def test_기간_축이_마지막이어도_전체_건수다(self) -> None:
+        client = _ByFilterClient()
+        out = extra_facets(client, "assets", query="", query_vector=[], filters=self.FILTERS,
+                           refine=None, axes=["file_ext", "file_size", "date_preset"], now=NOW)
+        self.assertEqual(self._full_count(), out["total"])
+        self.assertEqual(3, len(client.bodies))      # 크기 축이 전체 집합을 세므로 더 싣지 않는다
+
+    def test_조건을_빼는_축만_물으면_전체를_세는_본문을_하나_더_싣는다(self) -> None:
+        client = _ByFilterClient()
+        out = extra_facets(client, "assets", query="", query_vector=[], filters=self.FILTERS,
+                           refine=None, axes=["date_preset"], now=NOW)
+        self.assertEqual(self._full_count(), out["total"])
+        self.assertEqual(["date_preset"], list(out["axes"]))   # 덧붙인 본문은 축으로 내보내지 않는다
+        self.assertEqual(2, len(client.bodies))
+        self.assertEqual(["msearch"], client.calls)            # 그래도 왕복은 한 번
+
+    def test_빠지는_조건이_없으면_더_싣지_않는다(self) -> None:
+        client = _ByFilterClient()
+        extra_facets(client, "assets", query="", query_vector=[], filters=None,
+                     refine=None, axes=["date_preset"], now=NOW)
+        self.assertEqual(1, len(client.bodies))
+
+
 if __name__ == "__main__":
     unittest.main()

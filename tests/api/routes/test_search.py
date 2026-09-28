@@ -667,6 +667,9 @@ class TestAssetThumbnail(unittest.TestCase):
         self.assertEqual(r.headers["content-type"], "image/jpeg")
         self.assertEqual(r.content, b"\xff\xd8\xff\xe0JPG")
         self.assertIn("max-age", r.headers.get("cache-control", ""))
+        # 인증 응답이라 공유 캐시(프록시·CDN)에 남으면 안 된다.
+        self.assertIn("private", r.headers.get("cache-control", ""))
+        self.assertNotIn("public", r.headers.get("cache-control", ""))
 
     @patch("service.api.routes.assets.cached_thumbnail", return_value=b"HERO")
     @patch("service.portal.repositories.asset_repo.resolve_download_target")

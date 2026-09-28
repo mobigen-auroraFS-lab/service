@@ -197,8 +197,29 @@ def extra_facets(
     ids = semantic_ids_for(client, index, query=query, query_vector=query_vector)
     bodies = [build_axis_body(axis, query=query, semantic_ids=ids, filters=filters,
                               refine=refine, now=at) for axis in picked]
+    # 🔴 total 은 **조건을 하나도 빼지 않은** 집합의 크기다(= /file-search 의 total). 형식·기간 축은
+    #    자기 조건을 빼고 세므로 그 응답의 건수는 전체와 다르다 — 종전에는 마지막 축의 건수를 total 로
+    #    써서, 기간을 건 상태면 기간을 뺀 수가 나갔다(2026-09-23 대조). 조건을 빼지 않은 본문을 고르고,
+    #    없으면 같은 왕복에 하나 더 싣는다(크기 축은 뺄 조건이 없어 전체 집합을 센다).
+    total_at = next((i for i, axis in enumerate(picked) if not _trims(axis, filters)), None)
+    if total_at is None:
+        bodies.append(build_axis_body("file_size", query=query, semantic_ids=ids, filters=filters,
+                                      refine=refine, now=at))
+        total_at = len(bodies) - 1
+    responses = run_axis_queries(client, index, bodies)
     out: dict[str, Any] = {"axes": {}, "total": 0, "as_of": at.isoformat()}
-    for axis, found in zip(picked, run_axis_queries(client, index, bodies), strict=True):
+    for axis, found in zip(picked, responses[:len(picked)], strict=True):
         out["axes"][axis] = _items(axis, (found.get("aggregations") or {}).get(axis))
-        out["total"] = int((((found.get("hits") or {}).get("total")) or {}).get("value") or 0)
+    out["total"] = int((((responses[total_at].get("hits") or {}).get("total")) or {}).get("value") or 0)
     return out
+
+
+def _trims(axis: str, filters: SearchFilters | None) -> bool:
+    """이 축을 셀 때 실제로 빠지는 조건이 있는가 — 있으면 그 응답의 건수는 전체 total 이 아니다."""
+    if filters is None:
+        return False
+    if axis == "file_ext":
+        return bool(filters.file_exts)
+    if axis == "date_preset":
+        return filters.created_from is not None or filters.created_to is not None
+    return False

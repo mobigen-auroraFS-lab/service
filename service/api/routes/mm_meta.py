@@ -62,22 +62,32 @@ def _parse_names(raw: str | None) -> list[str]:
 
 
 def _zip_response(
-    targets: list[dict[str, Any]], *, file_name: str, extra_headers: dict[str, str]
+    targets: list[dict[str, Any]], *, name_parts: list[str], fallback: str,
+    extra_headers: dict[str, str],
 ) -> StreamingResponse:
     """zip 을 조각내어 흘려보내는 응답을 만든다.
 
     파일 읽기는 DB 트랜잭션 **밖**에서 일어나고 조각으로 흐르므로, 묶음이 아무리 커도 서버 메모리
     사용량이 일정하다. 경로가 없거나 사라진 파일은 zip 안 목록 파일에 남는다(부분 zip 계약).
 
+    🔴 ``X-Bundle-Count`` 는 **실제로 담긴 수**다 — 원본을 열 수 없어 빠진 것은 zip 을 만들어 봐야
+    안다(DB 는 디스크를 모른다). 종전에는 DB 기준으로 세어, 원본이 없으면 "12건"이라 하고 목록 파일만
+    든 zip 을 보냈다(2026-09-28 · 고른 자산 묶음은 2026-09-22 에 같은 결함을 고쳤다). 빠진 수는
+    ``X-Bundle-Missing`` 으로 함께 알린다.
+
     Args:
         targets: ``{asset_id, fs_path, file_name}`` 목록.
-        file_name: 내려줄 zip 이름(ASCII).
-        extra_headers: 함께 실을 헤더(담긴 수·잘림·용량 등).
+        name_parts: zip 이름에 넣을 조각(ASCII 로 걸러진다).
+        fallback: 남는 글자가 없을 때 쓸 이름.
+        extra_headers: 함께 실을 헤더(잘림·용량 등).
 
     Returns:
         ``application/zip`` 스트리밍 응답.
     """
-    zip_stream = build_bundle_zip_stream(targets)
+    unreadable: list[dict[str, Any]] = []
+    zip_stream = build_bundle_zip_stream(targets, unreadable=unreadable)
+    packed = len(targets) - len(unreadable)
+    file_name = mm_meta.ascii_zip_name(name_parts, fallback=fallback, count=packed)
 
     def _iter_zip() -> Iterator[bytes]:
         """zip 을 조각내어 흘려보낸다."""
@@ -87,7 +97,8 @@ def _zip_response(
                 break
             yield chunk
 
-    headers = {"Content-Disposition": f'attachment; filename="{file_name}"', **extra_headers}
+    headers = {"Content-Disposition": f'attachment; filename="{file_name}"', **extra_headers,
+               "X-Bundle-Count": str(packed), "X-Bundle-Missing": str(len(unreadable))}
     return StreamingResponse(
         _iter_zip(), media_type="application/zip", headers=headers,
         background=BackgroundTask(zip_stream.close),
@@ -375,10 +386,8 @@ def download_entities_bundle(
     if not targets:
         raise HTTPException(status_code=409, detail="내려받을 파일 경로가 없다")
     return _zip_response(
-        targets,
-        file_name=mm_meta.ascii_zip_name(
-            [entity_type or "all", *picked], fallback="meta", count=len(targets)),
-        extra_headers={"X-Bundle-Count": str(len(targets)), "X-Bundle-Bytes": str(total)},
+        targets, name_parts=[entity_type or "all", *picked], fallback="meta",
+        extra_headers={"X-Bundle-Bytes": str(total)},
     )
 
 
@@ -436,12 +445,10 @@ def download_card_bundle(
     if not targets:
         raise HTTPException(
             status_code=409, detail="내려받을 파일이 없다(구성 자산 없음 또는 경로 미상)")
-    headers = {"X-Bundle-Count": str(len(targets))}
+    headers: dict[str, str] = {}
     if truncated:
         headers["X-Bundle-Truncated"] = str(mm_meta.CARD_BUNDLE_MAX_ASSETS)
     return _zip_response(
-        targets,
-        file_name=mm_meta.ascii_zip_name(
-            [f"mm_meta_{entity_type}", name], fallback="mm_meta", count=len(targets)),
+        targets, name_parts=[f"mm_meta_{entity_type}", name], fallback="mm_meta",
         extra_headers=headers,
     )

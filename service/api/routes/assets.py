@@ -291,7 +291,9 @@ def asset_thumbnail(
     return Response(
         content=data,
         media_type="image/jpeg",
-        headers={"Cache-Control": "public, max-age=86400"},
+        # 🔴 ``private`` — 인증이 필요한 응답이라 앞단 프록시·CDN 같은 공유 캐시가 저장해 남에게 주면 안 된다
+        #    (``public`` 은 Authorization 요청의 응답도 공유 캐시에 저장을 허락한다 · 2026-09-28). 브라우저 캐시는 그대로 쓴다.
+        headers={"Cache-Control": "private, max-age=86400"},
     )
 
 
@@ -340,8 +342,9 @@ _CONTENT_404 = "자산을 찾을 수 없거나 노출 대상이 아님"
 def asset_content(asset_id: str) -> dict[str, Any]:
     """자산의 **글자 내용**을 돌려준다 — 상세 화면의 원문 영역용.
 
-    문서는 원본 파일에서, 소리·영상은 받아쓰기(``ext_meta.stt``)에서. 글자가 없는 자산(그림)은
-    없는 자산과 **같은 문구의 404** 다 — 존재 여부를 흘리지 않는다.
+    문서는 원본 파일에서, 소리·영상은 받아쓰기(``ext_meta.stt``)에서. 글자가 없는 자산(그림 · 받아쓰기 없는 소리·영상)도
+    404 지만 **문구가 다르다**(「이 자산에는 읽을 수 있는 원문이 없습니다」) — 등록 자산이면 상세(`/assets/{id}`)가
+    이미 열리므로 존재 여부를 숨길 이유가 없고, 화면은 이 문구로 '원문 없음'과 '없는 자산'을 가른다.
     ⚠️ 지금 데이터에서 받아쓰기는 소리에만 있다 — 영상은 404 다(``content`` 모듈 설명 참조).
 
     Raises:

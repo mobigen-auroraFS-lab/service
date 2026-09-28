@@ -572,6 +572,13 @@ def file_search_facet_extra(
     if unknown:
         raise HTTPException(status_code=422,
                             detail=f"알 수 없는 축입니다: {unknown} (가능: {', '.join(EXTRA_AXES)})")
+    # 종류는 /file-search 와 **같은 이름·같은 뜻**이다 — 모르는 값을 0건 칩으로 넘기지 않고 같은 422 로 끊는다
+    #   (종전에는 여기만 검사가 없어, 목록은 422 인데 칩은 조용히 전부 0 이었다 · 2026-09-23 대조).
+    unknown_mods = [m for m in (modality or []) if m not in VALID_SEARCH_MODALITIES]
+    if unknown_mods:
+        raise HTTPException(
+            status_code=422,
+            detail=f"알 수 없는 종류입니다: {unknown_mods} (가능: {', '.join(VALID_SEARCH_MODALITIES)})")
     try:
         filters = parse_search_filters(
             file_ext=file_ext, created_from=created_from, created_to=created_to,

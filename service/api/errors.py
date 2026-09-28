@@ -87,6 +87,21 @@ _FRAMEWORK_DETAIL_KO = {
 # 내부 구조를 알려 주는 셈이다. 진단에 필요한 것은 전부 서버 로그에 남긴다.
 _INTERNAL_DETAIL = "서버 내부 오류입니다 — 잠시 후 다시 시도하고, 계속되면 관리자에게 알리십시오"
 
+# 🔴 CORS 허용 오리진(``__init__`` 이 ``PORTAL_CORS_ORIGINS`` 로 채운다). 미처리 예외(500)의 응답은
+#    Starlette 구조상 **CORS 미들웨어 바깥**(ServerErrorMiddleware)에서 만들어져 허용 헤더가 붙지 않는다.
+#    그러면 다른 오리진의 화면은 500 봉투를 읽지 못하고 "CORS 오류(Failed to fetch)"만 본다
+#    (2026-09-28 재현). 그래서 500 처리기만 허용 오리진에 한해 같은 헤더를 직접 붙인다.
+CORS_ORIGINS: frozenset[str] = frozenset()
+
+
+def _cors_headers(request: Request) -> dict[str, str] | None:
+    """허용 오리진에서 온 요청이면 CORS 미들웨어가 붙였을 헤더를 돌려준다(아니면 ``None``)."""
+    origin = request.headers.get("origin")
+    if not origin or origin not in CORS_ORIGINS:
+        return None
+    return {"Access-Control-Allow-Origin": origin, "Access-Control-Allow-Credentials": "true",
+            "Vary": "Origin"}
+
 
 # ── 처리기 ──────────────────────────────────────────────────────────────────────
 
@@ -199,11 +214,13 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> Respo
         request: 들어온 요청.
         exc: 잡히지 않은 예외.
 
+    이 응답은 CORS 미들웨어를 지나지 않으므로 허용 오리진이면 CORS 헤더를 직접 붙인다(``CORS_ORIGINS``).
+
     Returns:
         500 봉투(내용은 고정 문구 — 내부 정보를 싣지 않는다).
     """
     _LOG.exception("미처리 예외(500): %s %s", request.method, request.url.path)
-    return envelope(500, _INTERNAL_DETAIL)
+    return envelope(500, _INTERNAL_DETAIL, headers=_cors_headers(request))
 
 
 async def os_unavailable_handler(request: Request, exc: Exception) -> Response:

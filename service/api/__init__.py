@@ -113,15 +113,27 @@ def me(principal: Annotated[Principal, Depends(require_principal)]) -> dict[str,
 # 🔴 비워 두면 **아무 오리진도 허용하지 않는다**(종전 동작) — 운영에서 실수로 전면 개방되지 않게
 #    기본값을 열어 두지 않는다. ``*`` 는 자격 증명과 함께 쓸 수 없어 목록으로만 받는다.
 _CORS_ORIGINS = [o.strip() for o in os.getenv("PORTAL_CORS_ORIGINS", "").split(",") if o.strip()]
+# 🔴 요청 헤더에 ``Range``·``If-Range`` 를 넣는다 — 원본 다운로드의 이어받기(206)는 이 헤더를 보내는데,
+#    ``Authorization`` 과 함께 오면 브라우저가 사전 요청(preflight)에 둘 다 적는다. 허용 목록에 없으면
+#    사전 요청이 400(「Disallowed CORS headers」)으로 끊겨 **다른 오리진에서는 이어받기가 아예 안 됐다**
+#    (2026-09-28 대조). ``Accept-Ranges`` 는 화면이 이어받기 가능 여부를 읽을 수 있게 노출한다.
+# 🔴 노출 목록에는 묶음 창구가 싣는 ``X-Bundle-*`` 를 **전부** 넣는다 — 개체 묶음(``/mm-meta/.../bundle``)의
+#    담긴 수·용량·잘림(``X-Bundle-Count``·``X-Bundle-Bytes``·``X-Bundle-Truncated``)이 빠져 있어 다른
+#    오리진에서는 잘림을 읽지 못했다(조용히 자르지 않는다는 계약이 깨짐 · 2026-09-28 대조).
+CORS_ALLOW_HEADERS: tuple[str, ...] = ("Authorization", "Content-Type", "Range", "If-Range")
+CORS_EXPOSE_HEADERS: tuple[str, ...] = ("Content-Disposition", "Content-Range", "Accept-Ranges",
+                                        "X-Bundle-Files", "X-Bundle-Missing", "X-Bundle-Count",
+                                        "X-Bundle-Bytes", "X-Bundle-Truncated")
+# 미처리 예외(500)는 CORS 미들웨어 바깥에서 응답이 만들어지므로 처리기가 직접 헤더를 붙인다(``errors``).
+errors.CORS_ORIGINS = frozenset(_CORS_ORIGINS)
 if _CORS_ORIGINS:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_CORS_ORIGINS,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type"],
-        expose_headers=["Content-Disposition", "Content-Range", "X-Bundle-Files",
-                        "X-Bundle-Missing"],
+        allow_headers=list(CORS_ALLOW_HEADERS),
+        expose_headers=list(CORS_EXPOSE_HEADERS),
     )
 
 # ── 관리자·관계 검토 창구는 **보류**(2026-09-22) ────────────────────────────────
