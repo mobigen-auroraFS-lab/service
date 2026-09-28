@@ -10,9 +10,38 @@
 
 from __future__ import annotations
 
+import os
+import threading
+import time
 from typing import Any
 
 from service.portal.common.repository import Repository
+
+# ── 태그 목록 캐시(2026-09-28) ────────────────────────────────────────────────────
+# 조건 없는 태그 목록은 등록 자산 전부의 키워드를 펴서 묶는 질의라 **2~3초** 걸린다(공용 DB 실측
+# 2.1~2.9초). 화면은 태그 모달을 열 때마다, 추천어는 글자를 칠 때마다 이 질의를 부른다. 키워드는 적재 때만
+# 바뀌므로 같은 조건의 답을 잠시 들고 있다. 🔴 대가: 적재 직후 최대 TTL 만큼 **건수가 늦다**.
+# ``PORTAL_TAGS_CACHE_SECONDS`` 로 바꾼다(기본 300초 · 0 이면 끈다). 프로세스(워커)마다 따로 든다.
+TAGS_CACHE_ENV = "PORTAL_TAGS_CACHE_SECONDS"
+TAGS_CACHE_DEFAULT = 300
+_TAGS_CACHE_MAX = 256          # 들고 있을 조건 수 — 넘으면 가장 오래된 것부터 버린다
+_TAGS_CACHE: dict[tuple, tuple[float, list[dict[str, Any]]]] = {}
+_TAGS_LOCK = threading.Lock()
+
+
+def tags_cache_seconds() -> int:
+    """캐시 수명(초). 없거나 잘못되면 기본값, 0 이하면 끔(0)."""
+    raw = os.getenv(TAGS_CACHE_ENV, "").strip()
+    try:
+        return max(0, int(raw)) if raw else TAGS_CACHE_DEFAULT
+    except ValueError:
+        return TAGS_CACHE_DEFAULT
+
+
+def clear_tags_cache() -> None:
+    """캐시를 비운다(시험 · 적재 직후 즉시 반영이 필요할 때)."""
+    with _TAGS_LOCK:
+        _TAGS_CACHE.clear()
 
 # 등록 자산의 키워드를 낱개로 펴서 센다. 주제·하위주제로 좁힐 수 있게 ``asset_topic`` 을 선택적으로 건다.
 #   ⚠️ LEFT JOIN 이 아니라 조건이 있을 때만 INNER JOIN 하도록 SQL 을 나눈다 — LEFT JOIN 으로 두면
@@ -85,7 +114,27 @@ class CatalogRepository(Repository):
 
         Returns:
             ``[{tag, count}]`` — 건수는 **자산 수**다(한 자산이 같은 태그를 여러 번 가져도 1).
+            같은 조건이면 캐시 수명(기본 300초) 동안 **같은 답**을 준다(적재 직후 건수가 늦을 수 있다).
         """
+        ttl = tags_cache_seconds()
+        key = (tuple(sorted(topics)), tuple(sorted(subtopics)), q or "", int(limit))
+        if ttl:
+            now = time.monotonic()
+            with _TAGS_LOCK:
+                hit = _TAGS_CACHE.get(key)
+            if hit and now - hit[0] < ttl:
+                return [dict(r) for r in hit[1]]      # 복사해 준다 — 호출부가 고쳐도 캐시가 안 바뀐다
+        rows = self._tags_uncached(topics=topics, subtopics=subtopics, q=q, limit=limit)
+        if ttl:
+            with _TAGS_LOCK:
+                if len(_TAGS_CACHE) >= _TAGS_CACHE_MAX:
+                    _TAGS_CACHE.pop(min(_TAGS_CACHE, key=lambda k: _TAGS_CACHE[k][0]))
+                _TAGS_CACHE[key] = (time.monotonic(), [dict(r) for r in rows])
+        return rows
+
+    def _tags_uncached(self, *, topics: list[str], subtopics: list[str], q: str | None,
+                       limit: int) -> list[dict[str, Any]]:
+        """캐시 없이 DB 에서 센다(``tags`` 참조)."""
         params: list[Any] = []
         topic_where = ""
         if topics:

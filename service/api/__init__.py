@@ -21,6 +21,7 @@ from fastapi.responses import Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from service.api import audit, errors, lifespan
+from service.api.body_limit import BodyLimitMiddleware
 from service.api.routes import (
     account,
     assets,
@@ -45,6 +46,10 @@ app.middleware("http")(audit.access_log_middleware)
 # NUL 바이트 차단 — **나중에 등록한 미들웨어가 바깥**이라, 이 검사가 접근 기록보다 먼저 돈다.
 # 못 쓸 요청을 가장 앞에서 끊고(DB·감사 어디에도 닿지 않는다), 통과한 것만 아래로 내려보낸다.
 app.middleware("http")(errors.reject_nul_bytes)
+
+# 요청 본문 크기 상한 — 넘는 본문은 받기 전에(청크 전송이면 상한까지 받아 본 뒤) 413 으로 끊는다(2026-09-28).
+#   CORS 보다 **안쪽**이라 413 에도 허용 헤더가 붙는다. 상한은 ``PORTAL_MAX_BODY_BYTES``(기본 1MiB).
+app.add_middleware(BodyLimitMiddleware)
 
 # 실패 응답 봉투 통일 — 우리 4xx·자동 검증 422·미처리 500 을 모두 같은 모양으로 내보낸다.
 # ⚠️ ``Exception`` 처리기는 응답만 대신 만들고 예외는 Starlette 이 다시 올린다(서버 로그 보존).
@@ -113,17 +118,12 @@ def me(principal: Annotated[Principal, Depends(require_principal)]) -> dict[str,
 # 🔴 비워 두면 **아무 오리진도 허용하지 않는다**(종전 동작) — 운영에서 실수로 전면 개방되지 않게
 #    기본값을 열어 두지 않는다. ``*`` 는 자격 증명과 함께 쓸 수 없어 목록으로만 받는다.
 _CORS_ORIGINS = [o.strip() for o in os.getenv("PORTAL_CORS_ORIGINS", "").split(",") if o.strip()]
-# 🔴 요청 헤더에 ``Range``·``If-Range`` 를 넣는다 — 원본 다운로드의 이어받기(206)는 이 헤더를 보내는데,
-#    ``Authorization`` 과 함께 오면 브라우저가 사전 요청(preflight)에 둘 다 적는다. 허용 목록에 없으면
-#    사전 요청이 400(「Disallowed CORS headers」)으로 끊겨 **다른 오리진에서는 이어받기가 아예 안 됐다**
-#    (2026-09-28 대조). ``Accept-Ranges`` 는 화면이 이어받기 가능 여부를 읽을 수 있게 노출한다.
-# 🔴 노출 목록에는 묶음 창구가 싣는 ``X-Bundle-*`` 를 **전부** 넣는다 — 개체 묶음(``/mm-meta/.../bundle``)의
-#    담긴 수·용량·잘림(``X-Bundle-Count``·``X-Bundle-Bytes``·``X-Bundle-Truncated``)이 빠져 있어 다른
-#    오리진에서는 잘림을 읽지 못했다(조용히 자르지 않는다는 계약이 깨짐 · 2026-09-28 대조).
-CORS_ALLOW_HEADERS: tuple[str, ...] = ("Authorization", "Content-Type", "Range", "If-Range")
-CORS_EXPOSE_HEADERS: tuple[str, ...] = ("Content-Disposition", "Content-Range", "Accept-Ranges",
-                                        "X-Bundle-Files", "X-Bundle-Missing", "X-Bundle-Count",
-                                        "X-Bundle-Bytes", "X-Bundle-Truncated")
+# 요청 헤더는 인증과 JSON 본문만 허용한다. 🔴 [2026-09-28] 파일을 내주는 창구(원본 · 썸네일 · 원문 · 묶음)를
+#    지우면서 그 창구에만 쓰이던 ``Range``·``If-Range``(이어받기)와 노출 헤더(``Content-Disposition``·
+#    ``Content-Range``·``Accept-Ranges``·``X-Bundle-*``)도 뺐다 — 파일 제공을 다시 만들 때 함께 되살린다
+#    (git ``9d11d29`` · 다른 오리진의 이어받기 사전 요청이 400 이던 까닭도 거기 적혀 있다).
+CORS_ALLOW_HEADERS: tuple[str, ...] = ("Authorization", "Content-Type")
+CORS_EXPOSE_HEADERS: tuple[str, ...] = ()
 # 미처리 예외(500)는 CORS 미들웨어 바깥에서 응답이 만들어지므로 처리기가 직접 헤더를 붙인다(``errors``).
 errors.CORS_ORIGINS = frozenset(_CORS_ORIGINS)
 if _CORS_ORIGINS:

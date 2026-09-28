@@ -1,17 +1,15 @@
-"""화면이 요구하던 창구들 — 원문 · 고른 자산 묶음 · 목록(관계 종류·태그) · 추천 · 추가 칩 · 계정.
+"""화면이 요구하던 창구들 — 목록(관계 종류·태그) · 추천 · 추가 칩 · 계정.
 
 여기서 지키는 것
-  · 노출 게이트와 오류 코드가 기존 창구와 **같은 말을 쓴다**(404·409·413·410).
+  · 오류 코드가 기존 창구와 **같은 말을 쓴다**.
   · 미구현 창구는 **조용한 성공을 주지 않는다**(501) — 화면이 "저장됐다"고 믿으면 안 된다.
-  · 묶음은 담긴 자산마다 감사 기록을 남긴다(개별 다운로드와 같은 낱개).
+  · 원문 · 고른 자산 묶음 창구는 2026-09-28 에 지웠다(파일 제공은 협의 후 재설계 · `TODO.md`).
 """
 
 from __future__ import annotations
 
 import os
 import unittest
-import zipfile
-from io import BytesIO
 from unittest import mock
 
 os.environ.setdefault("PORTAL_AUTH_DISABLED", "1")
@@ -19,13 +17,10 @@ os.environ.setdefault("PORTAL_AUTH_DISABLED", "1")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from service.api import app, db  # noqa: E402
-from service.portal.asset import selection  # noqa: E402
 from service.portal.auth import authenticate_token  # noqa: E402
 from service.portal.auth.passwords import hash_password  # noqa: E402
 from service.portal.repositories import admin_repo  # noqa: E402
 from service.portal.repositories.account_repo import AccountRepository  # noqa: E402
-from service.portal.repositories.content_repo import AssetContentRepository  # noqa: E402
-from service.portal.repositories.selection_repo import SelectionRepository  # noqa: E402
 
 A1 = "01a08fa8-0000-7000-8000-00000000a001"
 A2 = "01a08fa8-0000-7000-8000-00000000a002"
@@ -34,131 +29,6 @@ A2 = "01a08fa8-0000-7000-8000-00000000a002"
 def _read_only(cb):
     """DB seam 대역 — 커넥션 대신 ``None`` 을 넘긴다(저장소 메서드는 대역으로 갈아끼운다)."""
     return cb(None)
-
-
-class TestAssetContent(unittest.TestCase):
-    """``GET /assets/{id}/content`` — 상세 화면의 원문 영역."""
-
-    def setUp(self) -> None:
-        self.client = TestClient(app)
-
-    def _get(self, source, *, asset_id=A1):
-        with mock.patch.object(AssetContentRepository, "source_of", return_value=source), \
-             mock.patch.object(db, "run_in_db", side_effect=_read_only):
-            return self.client.get(f"/assets/{asset_id}/content")
-
-    def test_형식이_아닌_id_는_404(self) -> None:
-        self.assertEqual(404, self.client.get("/assets/not-a-uuid/content").status_code)
-
-    def test_노출_대상이_아니면_404(self) -> None:
-        self.assertEqual(404, self._get(None).status_code)
-
-    def test_글자가_없으면_404(self) -> None:
-        r = self._get({"asset_id": A1, "modality": "image", "fs_path": "/x.jpg", "stt": None})
-        self.assertEqual(404, r.status_code)
-        self.assertIn("원문", r.json()["detail"])
-
-    def test_받아쓰기를_돌려준다(self) -> None:
-        r = self._get({"asset_id": A1, "modality": "audio", "fs_path": "/x.mp3", "stt": "안녕"})
-        self.assertEqual(200, r.status_code)
-        self.assertEqual({"stt", "안녕", False}, {r.json()["source"], r.json()["text"],
-                                                 r.json()["truncated"]})
-
-    def test_원본이_사라졌으면_410(self) -> None:
-        """404(없는 자산)와 가른다 — 있는데 파일만 없어진 것은 복구 대상이다."""
-        r = self._get({"asset_id": A1, "modality": "text", "fs_path": "/없는/파일.txt", "stt": None})
-        self.assertEqual(410, r.status_code)
-
-
-class TestSelectionBundle(unittest.TestCase):
-    """``POST /assets/bundle`` — 목록에서 고른 자산들을 한 zip 으로."""
-
-    def setUp(self) -> None:
-        self.client = TestClient(app)
-
-    def _post(self, ids, picked=None):
-        picked = picked if picked is not None else {"targets": [], "missing": ids, "total_bytes": 0}
-        with mock.patch.object(SelectionRepository, "targets", return_value=picked), \
-             mock.patch.object(db, "run_in_db", side_effect=_read_only), \
-             mock.patch.object(db, "run_in_db_write", side_effect=_read_only), \
-             mock.patch("service.api.routes.assets.record_access", return_value="acc"):
-            return self.client.post("/assets/bundle", json={"asset_ids": ids})
-
-    def test_빈_목록은_400(self) -> None:
-        self.assertEqual(400, self._post([]).status_code)
-
-    def test_UUID_가_아니면_400(self) -> None:
-        r = self._post(["not-a-uuid"])
-        self.assertEqual(400, r.status_code)
-        self.assertIn("asset_ids", r.json()["detail"])
-
-    def test_건수_상한을_넘으면_400(self) -> None:
-        r = self._post([A1] * (selection.MAX_SELECTION + 1))
-        self.assertEqual(400, r.status_code)
-        self.assertIn(str(selection.MAX_SELECTION), r.json()["detail"])
-
-    def test_전부_노출_대상이_아니면_409(self) -> None:
-        """빈 zip 을 주면 사용자는 '받았는데 비었다'를 오류로 오해한다."""
-        self.assertEqual(409, self._post([A1, A2]).status_code)
-
-    def test_용량_상한을_넘으면_413(self) -> None:
-        picked = {"targets": [{"asset_id": A1, "fs_path": "/a.bin", "file_name": "a.bin"}],
-                  "missing": [], "total_bytes": selection.MAX_SELECTION_BYTES + 1}
-        r = self._post([A1], picked)
-        self.assertEqual(413, r.status_code)
-        self.assertIn("MB", r.json()["detail"])
-
-    def _post_targets(self, targets, missing, ids):
-        with mock.patch.object(SelectionRepository, "targets", return_value={
-                "targets": targets, "missing": missing, "total_bytes": 10}), \
-             mock.patch.object(db, "run_in_db", side_effect=_read_only), \
-             mock.patch.object(db, "run_in_db_write", side_effect=_read_only), \
-             mock.patch("service.api.routes.assets.record_access", return_value="acc") as rec:
-            r = self.client.post("/assets/bundle", json={"asset_ids": ids})
-        return r, rec
-
-    def test_zip_을_흘려보낸다(self) -> None:
-        import tempfile
-        with tempfile.NamedTemporaryFile(suffix=".txt") as fh:
-            fh.write(b"hello")
-            fh.flush()
-            r, rec = self._post_targets(
-                [{"asset_id": A1, "fs_path": fh.name, "file_name": "a.txt"}], [A2], [A1, A2])
-        self.assertEqual(200, r.status_code)
-        self.assertEqual("application/zip", r.headers["content-type"])
-        self.assertEqual(("1", "1"), (r.headers["x-bundle-files"], r.headers["x-bundle-missing"]))
-        self.assertEqual(1, rec.call_count)   # 담긴 자산마다 감사 한 행(개별 다운로드와 같은 낱개)
-        self.assertEqual(["a.txt"], zipfile.ZipFile(BytesIO(r.content)).namelist())
-
-    def test_원본이_없으면_헤더가_빠진_것으로_센다(self) -> None:
-        """🔴 2026-09-22 사용자 흐름 실측 — 원본이 없는데 헤더가 '담김 3 · 빠짐 0' 이라 했다.
-
-        헤더는 화면이 받은 zip 이 온전한지 맞춰 보라고 둔 것이다. 원본이 없을 때 틀리면 쓸모가 없다.
-        감사도 **실제로 담긴 것만** 남긴다(받지도 않은 파일을 받았다고 적으면 이력이 거짓이 된다).
-        """
-        import tempfile
-        with tempfile.NamedTemporaryFile(suffix=".txt") as fh:
-            fh.write(b"hello")
-            fh.flush()
-            r, rec = self._post_targets(
-                [{"asset_id": A1, "fs_path": fh.name, "file_name": "a.txt"},
-                 {"asset_id": A2, "fs_path": "/없는/b.txt", "file_name": "b.txt"}],
-                [], [A1, A2])
-        self.assertEqual(200, r.status_code)
-        self.assertEqual(("1", "1"), (r.headers["x-bundle-files"], r.headers["x-bundle-missing"]))
-        self.assertEqual(1, rec.call_count)
-        self.assertEqual(A1, rec.call_args.kwargs["asset_id"])
-        names = zipfile.ZipFile(BytesIO(r.content)).namelist()
-        self.assertEqual(["a.txt", "_manifest.json"], names)
-
-    def test_전부_원본이_없으면_목록_파일만(self) -> None:
-        """모두 빠져도 실패로 끊지 않는다 — 무엇이 빠졌는지는 헤더와 목록 파일이 알린다."""
-        r, rec = self._post_targets(
-            [{"asset_id": A1, "fs_path": "/없는/a.txt", "file_name": "a.txt"}], [A2], [A1, A2])
-        self.assertEqual(200, r.status_code)
-        self.assertEqual(("0", "2"), (r.headers["x-bundle-files"], r.headers["x-bundle-missing"]))
-        self.assertEqual(0, rec.call_count)
-        self.assertEqual(["_manifest.json"], zipfile.ZipFile(BytesIO(r.content)).namelist())
 
 
 class TestCatalogRoutes(unittest.TestCase):

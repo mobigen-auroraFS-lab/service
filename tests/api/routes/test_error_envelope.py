@@ -62,7 +62,6 @@ class TestEnvelopeShape(unittest.TestCase):
         """라우트가 던진 4xx — detail 문자열 하나뿐이다."""
         cases = [
             (404, self.client.get("/assets/not-a-uuid")),
-            (400, self.client.post("/assets/bundle", json={"asset_ids": []})),
             (400, self.client.get("/search?q=x&mode=nope")),
             (422, self.client.get("/file-search?created_from=notadate")),
         ]
@@ -94,7 +93,7 @@ class TestEnvelopeShape(unittest.TestCase):
 
     def test_broken_json_body(self) -> None:
         """깨진 본문도 같은 봉투로, 한국어로 답한다."""
-        r = self.client.post("/assets/bundle", content=b"{",
+        r = self.client.post("/auth/login", content=b"{",
                              headers={"content-type": "application/json"})
         self._assert_envelope(r, want_status=422, with_errors=True)
         self.assertIn("JSON", r.json()["detail"])
@@ -113,10 +112,9 @@ class TestEnvelopeShape(unittest.TestCase):
     def test_bad_values_are_not_reflected_whole(self) -> None:
         """🔴 보낸 값을 통째로 되돌리지 않는다 — 5MB 본문이 5MB 응답이 되면 반사 증폭이다."""
         huge = "a" * 200_000
-        r = self.client.post("/assets/bundle", json={"asset_ids": [huge] * 20})
-        self.assertEqual(400, r.status_code, r.text[:200])
+        r = self.client.post("/auth/login", json={"login_id": huge, "password": huge})
+        self.assertEqual(422, r.status_code, r.text[:200])
         self.assertLess(len(r.content), 4000, "잘못된 값이 그대로 실려 나갔다")
-        self.assertIn("외 15건", r.json()["detail"])
 
     def test_unhandled_exception_is_json(self) -> None:
         """미처리 예외 — text/plain 이 아니라 JSON 봉투이고, 내부 정보를 싣지 않는다."""
@@ -218,7 +216,8 @@ class TestEveryRouteKeepsEnvelope(unittest.TestCase):
         """안 받는 메서드는 어느 창구에서든 405 봉투다(라우터 밖으로 새지 않는다)."""
         routes = self._routes()
         # 하한은 "훑기가 헛돌지 않는다"만 본다 — 2026-09-22 관리자 창구 보류로 21개가 빠져 28개다.
-        self.assertGreater(len(routes), 20, "라우트를 못 모았다 — 훑기가 헛돈다")
+        # 문턱은 "훑기가 헛돌지 않는가"만 본다 — 2026-09-28 파일 제공 · 별칭 창구를 지워 지금 20개다.
+        self.assertGreater(len(routes), 15, "라우트를 못 모았다 — 훑기가 헛돈다")
         for path, methods in routes:
             # 지원하지 않는 메서드를 **실제로** 고른다 — 후보를 고정해 두면 PUT·DELETE 를 둘 다
             # 받는 창구(즐겨찾기)에서 지원 메서드를 보내 404 를 405 로 착각한다.

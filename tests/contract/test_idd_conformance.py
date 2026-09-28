@@ -63,7 +63,6 @@ def _external_patches(*, mm_meta_stubs: bool = True):
     from service.portal import mm_meta
     from src.search import opensearch_sync
 
-    img = str(probes.ensure_image())
     mm_stubs = (
         # 개체 카드·묶음 — 실제 행이 있어야 200 이 난다. 없으면 404 로 빠져 **대조에서 조용히
         # 사라진다**(실제로 세 엔드포인트가 그렇게 빠져 있었다).
@@ -71,14 +70,6 @@ def _external_patches(*, mm_meta_stubs: bool = True):
             "entity_type": "person", "entity_uid": "u1", "name": "이순신",
             "source": "auto", "total": 1, "modalities": [],
         }),
-        patch.object(mm_meta, "card_zip_targets", lambda *a, **k: (
-            [{"asset_id": probes.ASSET_ID, "fs_path": img, "file_name": "photo.jpg"}],
-            "card", False)),
-        patch.object(mm_meta, "entities_zip_rows", lambda *a, **k: [
-            {"asset_id": probes.ASSET_ID, "fs_path": img, "file_name": "photo.jpg",
-             "file_size": 512, "modality": "image", "entity_type": "person",
-             "entity_uid": "u1", "name": "이순신"},
-        ]),
     ) if mm_meta_stubs else ()
     return (
         *mm_stubs,
@@ -335,7 +326,7 @@ class TestAuthContract(unittest.TestCase):
 
         with patch.dict(os.environ, env, clear=False), \
                 patch.object(bootstrap, "bootstrap_env", lambda *_a, **_k: None), \
-                patch.object(db, "warn_if_pool_undersized", lambda: None), \
+                patch.object(db, "align_thread_limit_to_pool", lambda: None), \
                 patch.object(db, "close_db", lambda: None):
             if "PORTAL_JWT_SECRET" not in env:
                 os.environ.pop("PORTAL_JWT_SECRET", None)

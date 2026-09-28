@@ -25,9 +25,7 @@ from typing import Any, NamedTuple
 from psycopg import Connection
 from psycopg.rows import dict_row
 
-from service.portal.asset.download import fetch_asset_paths
 from src.config import search_constants
-from src.config.filename_util import display_file_name
 from src.config.settings import active_embed_channel, get_current_settings
 
 # 표기 키 정규화는 **코어 정본 하나**(083 태그 키·084 개체 키 공용)를 쓴다 — 여기서 새 규칙을
@@ -40,7 +38,6 @@ from src.mm_classify.read import label_names_of_assets
 # 코어 상수 주석에 있다.
 from src.mm_meta.entity_search import REASON_SEMANTIC, REASON_TEXT_MATCH
 from src.relations.graph_query import (
-    assets_of_entities,
     count_entities,
     count_entities_by_area,
     count_entities_by_type,
@@ -78,14 +75,6 @@ ENTITY_CURSOR_SORT = "confirmed_count_desc"
 # 🔴 **옛 2값 토큰은 여기서 400 으로 끊긴다 — 의도된 깨는 변경**이다. 통과시키면 반쪽 책갈피로
 # 엉뚱한 자리에서 이어져 목록에 구멍이 나는데, 오류가 없어 화면은 그것을 알 수 없다.
 ENTITY_CURSOR_ARITY = 4
-
-# 카드 한 장을 zip 으로 내보낼 때의 자산 수 상한. 묶음이 커도 응답이 무한정 커지지 않게 막는다.
-CARD_BUNDLE_MAX_ASSETS = 200
-
-# 좁힌 대상 전부를 zip 으로 받을 때의 용량 상한. **건수가 아니라 용량**으로 막는 이유: 자산 하나가
-# 영상 수십 MB 에서 텍스트 수십 KB 까지라 건수로는 예측이 안 된다. 브라우저가 메모리에 담는 구조라
-# 이 선을 넘으면 탭이 버틴다는 보장이 없다.
-ENTITIES_BUNDLE_MAX_BYTES = 500 * 1024 * 1024
 
 _LOG = logging.getLogger(__name__)
 
@@ -843,97 +832,3 @@ def _fetch_type_vocab_head(conn: Connection[Any]) -> dict[str, Any]:
         for t in (row["types"] or [])
     ]
     return {"vocab": {"name": str(row["name"]), "version": int(row["version"])}, "types": types}
-
-
-# ── 다운로드 ─────────────────────────────────────────────────────────────────
-
-
-def card_zip_targets(
-    conn: Connection[Any], *, entity_type: str, entity_uid: str
-) -> tuple[list[dict[str, Any]], str, bool] | None:
-    """카드 한 장의 구성 자산을 zip 대상으로 모은다.
-
-    노출 기준을 두 겹으로 둔다 — 구성 자산은 코어 묶음이 준 것만(화면에 보이는 것과 같은 목록)이고,
-    경로 조회가 등록 자산만 통과시킨다(비노출 자산이 zip 으로 새지 않게).
-
-    Args:
-        conn: DB 커넥션.
-        entity_type: 개체 종류.
-        entity_uid: 표기 키.
-
-    Returns:
-        ``(대상 목록, 개체 이름, 잘렸는지)``. 개체가 없으면 ``None``. 상한을 넘으면 **앞에서부터 잘라**
-        담고 잘렸음을 함께 알린다(조용히 자르지 않는다).
-    """
-    bundle = mm_meta_bundle(conn, entity_type=entity_type, entity_uid=entity_uid)
-    if bundle is None:
-        return None
-    asset_ids: list[str] = []
-    # 🔴 키 이름은 ``assets`` 다 — 틀리면 조용히 빈 목록이 되어 "받았는데 비었다"가 된다.
-    for group in bundle.get("modalities") or []:
-        for item in group.get("assets") or []:
-            aid = str(item.get("asset_id") or "")
-            if aid and aid not in asset_ids:
-                asset_ids.append(aid)
-    truncated = len(asset_ids) > CARD_BUNDLE_MAX_ASSETS
-    asset_ids = asset_ids[:CARD_BUNDLE_MAX_ASSETS]
-    paths = fetch_asset_paths(conn, asset_ids)
-    targets = [
-        {"asset_id": aid, "fs_path": paths[aid], "file_name": display_file_name(paths[aid])}
-        for aid in asset_ids
-        if aid in paths
-    ]
-    return targets, str(bundle.get("name") or entity_uid), truncated
-
-
-def entities_zip_rows(
-    conn: Connection[Any],
-    *,
-    entity_type: str | None,
-    areas: Sequence[str] | None,
-    min_bundle_size: int,
-    exclude_video: bool,
-) -> list[dict[str, Any]]:
-    """좁힌 개체들의 구성 자산을 zip 대상으로 모은다(용량 판정용 크기 포함).
-
-    화면의 좁히기 축과 다운로드 축이 **같아야** "지금 보고 있는 것을 받는다"가 성립한다. 달랐던 것이
-    옛 화면의 혼동 원인이었다.
-
-    Args:
-        conn: DB 커넥션.
-        entity_type: 종류 필터.
-        areas: 갈래 이름들(AND).
-        min_bundle_size: 노출 임계.
-        exclude_video: 참이면 영상을 뺀다(용량이 크게 준다).
-
-    Returns:
-        ``[{asset_id, modality, file_name, file_size, fs_path}]`` — 자산 id 순.
-    """
-    rows = assets_of_entities(
-        conn, entity_type=entity_type, area_names=list(areas) if areas else None,
-        min_bundle_size=min_bundle_size, statuses=None, exclude_video=exclude_video,
-    )
-    return [
-        {"asset_id": r["asset_id"], "modality": r["modality"],
-         "file_name": display_file_name(r["fs_path"]), "file_size": r["file_size"],
-         "fs_path": r["fs_path"]}
-        for r in rows
-    ]
-
-
-def ascii_zip_name(parts: Sequence[str], *, fallback: str, count: int) -> str:
-    """zip 파일명을 ASCII 로만 만든다.
-
-    한글 파일명은 브라우저·운영체제 조합에 따라 헤더에서 깨진다. 개체 이름은 표기 키가 아니라 사람이
-    읽는 이름이라 그대로 실으면 특히 위험하다.
-
-    Args:
-        parts: 파일명에 넣고 싶은 조각들(종류·갈래·개체 이름 등).
-        fallback: 남는 글자가 없을 때 쓸 이름.
-        count: 담긴 파일 수(이름 끝에 붙는다).
-
-    Returns:
-        ``<이름>_<N>files.zip``.
-    """
-    safe = "".join(c for c in "_".join(parts) if c.isascii() and c.isalnum())
-    return f"{safe or fallback}_{count}files.zip"

@@ -158,3 +158,25 @@ def uuid_list_or_400(values: Sequence[str], *, field: str) -> list[str]:
     if bad:
         raise HTTPException(status_code=400, detail=f"{field} 는 UUID 형식이어야 함: {preview(bad)}")
     return list(values)
+
+
+def cursor_detail(exc: Exception) -> str:
+    """커서 해독 실패(코어 ``CursorError``)를 **화면에 띄울 한 문장**으로 만든다.
+
+    코어 문구 가운데 일부는 ``: `` 뒤에 파이썬 진단을 붙인다 — 「커서를 읽을 수 없다: 'utf-8' codec
+    can't decode…」처럼 예외 원문이거나, 보낸 값의 ``repr`` 이다. 앞은 사람이 읽는 말이고 뒤는 서버 로그의
+    몫이라 앞만 남기고, 다음에 할 일을 덧붙인다(2026-09-28 · 종전에는 코어 몫으로 남겨 두었다).
+    ``: `` 가 없는 문구(「…조건이 이번 요청과 다르다 — 처음부터 다시 받아야 한다」 등)는 그대로 둔다.
+
+    Args:
+        exc: 코어가 올린 커서 오류.
+
+    Returns:
+        봉투의 ``detail`` 에 실을 한국어 한 문장.
+    """
+    msg = str(exc)
+    head, sep, _ = msg.partition(": ")
+    if not sep:
+        return msg
+    return f"{head} — 받은 next_cursor 를 그대로 보내거나 처음부터 다시 받아야 한다"
+

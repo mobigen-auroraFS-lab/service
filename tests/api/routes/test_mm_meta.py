@@ -81,7 +81,6 @@ class TestWiring(unittest.TestCase):
         self.assertIs(mm_meta.count_entities, gq.count_entities)
         self.assertIs(mm_meta.count_entities_by_type, gq.count_entities_by_type)
         self.assertIs(mm_meta.count_entities_by_area, gq.count_entities_by_area)
-        self.assertIs(mm_meta.assets_of_entities, gq.assets_of_entities)
         self.assertIs(mm_meta.mm_meta_bundle, gq.mm_meta_bundle)
         # DB 조회는 저장소로 옮겼다 — 코어 함수를 그대로 쓰는지는 그 자리에서 본다.
         self.assertIs(asset_repo.mm_meta_of_asset, gq.mm_meta_of_asset)
@@ -371,47 +370,6 @@ class TestCard(unittest.TestCase):
         self.assertEqual(card["modalities"][0]["assets"][1]["forms"], [])  # 라벨 없으면 빈 목록
         self.assertEqual(card["form_counts"], [{"name": "기록·자료", "count": 1}])
         self.assertEqual(card["description"], "섬")
-
-
-class TestZipHelpers(unittest.TestCase):
-    """다운로드 정책 — 상한·잘림·파일명."""
-
-    def test_card_targets_truncate_and_report(self) -> None:
-        ids = [f"a{i}" for i in range(mm_meta.CARD_BUNDLE_MAX_ASSETS + 5)]
-        bundle = {"name": "제주도", "modalities": [
-            {"assets": [{"asset_id": i} for i in ids]}]}
-        with (
-            patch.object(mm_meta, "mm_meta_bundle", return_value=bundle),
-            patch.object(mm_meta, "fetch_asset_paths",
-                         side_effect=lambda _c, a: {i: f"/x/{i}.txt" for i in a}),
-        ):
-            targets, name, truncated = mm_meta.card_zip_targets(
-                object(), entity_type="장소", entity_uid="제주도")
-        self.assertEqual(len(targets), mm_meta.CARD_BUNDLE_MAX_ASSETS)
-        self.assertTrue(truncated)
-        self.assertEqual(name, "제주도")
-
-    def test_assets_without_path_are_dropped(self) -> None:
-        bundle = {"name": "n", "modalities": [{"assets": [{"asset_id": "a1"}, {"asset_id": "a2"}]}]}
-        with (
-            patch.object(mm_meta, "mm_meta_bundle", return_value=bundle),
-            patch.object(mm_meta, "fetch_asset_paths", return_value={"a1": "/x/a1.txt"}),
-        ):
-            targets, _n, truncated = mm_meta.card_zip_targets(
-                object(), entity_type="장소", entity_uid="n")
-        self.assertEqual([t["asset_id"] for t in targets], ["a1"])
-        self.assertFalse(truncated)
-
-    def test_zip_name_is_ascii_only(self) -> None:
-        self.assertEqual(mm_meta.ascii_zip_name(["장소", "제주도"], fallback="meta", count=3),
-                         "meta_3files.zip")
-        self.assertEqual(mm_meta.ascii_zip_name(["place", "jeju"], fallback="meta", count=2),
-                         "placejeju_2files.zip")
-
-    def test_parse_names_splits_and_trims(self) -> None:
-        self.assertEqual(routes_mm_meta._parse_names(" 한식 , 영화 ,, "), ["한식", "영화"])
-        self.assertEqual(routes_mm_meta._parse_names(None), [])
-        self.assertEqual(routes_mm_meta._parse_names(""), [])
 
 
 class TestRouteReadScope(unittest.TestCase):

@@ -227,6 +227,14 @@ def file_search(
         ),
     ),
     limit: int = Query(50, ge=1, le=_PAGE_SIZE_MAX, description="이 페이지의 행 수"),
+    with_facets: bool = Query(
+        True,
+        description=(
+            "칩(facets)을 함께 셀지. 기본 true. 🔴 다음 쪽(cursor · offset)을 받을 때는 false 로 보내라 —"
+            " 칩 · 총계는 쪽과 무관해 첫 쪽 것을 그대로 쓰면 되고, 서버는 칩 집계를 건너뛴다(응답 facets 는 {})."
+            " total 은 그대로 센다"
+        ),
+    ),
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
     """조건으로 좁힌 파일을 한 페이지씩 돌려준다 — 전체 개수와 좁히기 칩을 함께.
@@ -249,6 +257,7 @@ def file_search(
             🔴 **조건이 하나라도 바뀌면 400** 이다(099 G7) — 커서에 조건 지문이 함께 들어 있다.
             종전에는 막지 못해, 전체 훑기 커서를 ``modality=text`` 에 쓰면 첫 건이 통째로 빠졌다.
         limit: 이 페이지의 행 수.
+        with_facets: 칩을 함께 셀지. 거짓이면 코어에 셀 축을 비워 넘겨 칩 질의를 건너뛴다(``facets`` 는 ``{}`` · 총계는 센다).
         principal: 인증 주체.
 
     Returns:
@@ -404,13 +413,16 @@ def file_search(
     #   같은 조건인지 대조한다 — 조건이 바뀐 커서로 이어 읽으면 오류 없이 자료가 빠지기 때문이다
     #   (실측 2026-09-17: 전체 훑기 커서를 modality=text 에 쓰자 첫 건이 통째로 누락).
     scope = _cursor_scope(q=q, refine=refine, filters=filters, applied_dates=applied_dates)
+    # [2026-09-28] 칩을 세지 않을 때는 코어에 **셀 축을 비워** 넘긴다 — 총계 질의 하나만 돈다(칩 질의 생략).
+    #   다음 쪽마다 칩 · 총계를 다시 세던 부하를 화면이 끌 수 있게 한다. 기본(true)은 종전과 같다.
+    facet_axes: dict[str, Any] = {} if with_facets else {"axes": ()}
     try:
         if use_cursor:
             found = browse_files(
                 get_client(), get_current_settings().opensearch.index,
                 query=q, query_vector=query_vector, filters=filters,
                 sort=sort, cursor=cursor, size=limit, facet_size=FACET_SIZE_DEFAULT,
-                refine=refine, scope=scope,
+                refine=refine, scope=scope, **facet_axes,
             )
         else:
             found = search_files(
@@ -419,13 +431,12 @@ def file_search(
                 from_=page_from, size=page_size, sort=sort,
                 rank_depth=RANK_DEPTH_DEFAULT, total_cap=TOTAL_CAP_DEFAULT,
                 sort_depth=SORT_DEPTH_DEFAULT, facet_size=FACET_SIZE_DEFAULT,
-                refine=refine,
+                refine=refine, **facet_axes,
             )
-    # TODO(코어): 커서 해독 실패 문구에 파이썬 예외 원문이 붙는다(`src/search/cursor.py`) —
-    #   상태 코드·봉투는 정상이라 서비스에서 가리지 않고 코어 담당자에게 남겨 둔다(`TODO.md`).
     except CursorError as exc:
         # 커서가 깨졌거나 정렬이 어긋났다 — **조용히 다른 자리에서 이어 주지 않는다**(097 §2-3).
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        #   문구의 파이썬 진단(예외 원문 · 입력 repr)은 떼고 할 일을 붙인다(``params.cursor_detail``).
+        raise HTTPException(status_code=400, detail=params.cursor_detail(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except _OS_CONN_ERRORS as exc:

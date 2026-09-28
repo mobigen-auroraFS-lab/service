@@ -1,4 +1,4 @@
-"""개체(멀티모달 메타) 화면이 읽는 표 — 목록 · 모수 · 칩 · 카드 · 묶음 대상."""
+"""개체(멀티모달 메타) 화면이 읽는 표 — 목록 · 모수 · 칩 · 카드."""
 
 from __future__ import annotations
 
@@ -23,10 +23,3 @@ class EntityRepository(Repository):
     def card(self, *, entity_type: str, entity_uid: str) -> dict[str, Any] | None:
         return mm_meta.fetch_card(self._conn, entity_type=entity_type, entity_uid=entity_uid)
 
-    def zip_rows(self, **kw: Any) -> Any:
-        """좁힌 개체들의 구성 자산(묶음 대상)."""
-        return mm_meta.entities_zip_rows(self._conn, **kw)
-
-    def card_zip_targets(self, **kw: Any) -> Any:
-        """카드 한 장의 구성 자산."""
-        return mm_meta.card_zip_targets(self._conn, **kw)

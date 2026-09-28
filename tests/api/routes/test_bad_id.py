@@ -35,9 +35,6 @@ ADMIN_OPEN = any(p.startswith("/admin") for p in app.openapi()["paths"])
 # (설명, method, path, body, 기대 상태, 기대 응답 본문 일부)
 CASES = [
     ("자산 상세", "GET", f"/assets/{BAD}", None, 404, "자산을 찾을 수 없거나"),
-    ("다운로드", "GET", f"/assets/{BAD}/download", None, 404, "다운로드 대상을 찾을 수 없거나"),
-    ("썸네일", "GET", f"/assets/{BAD}/thumbnail", None, 404, "썸네일 대상을 찾을 수 없거나"),
-    ("묶음", "GET", f"/assets/{BAD}/bundle", None, 404, "묶음 seed 를 찾을 수 없거나"),
 ]
 _ADMIN_CASES = [
     ("관리자 자산 상세", "GET", f"/admin/assets/{BAD}", None, 404, "자산을 찾을 수 없거나"),

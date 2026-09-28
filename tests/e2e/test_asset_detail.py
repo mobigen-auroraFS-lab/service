@@ -221,48 +221,6 @@ class TestPortalE2E(unittest.TestCase):
             self.assertEqual(set(c.keys()), {"channel", "chunk_count"})
 
     # ── T027: 단일 Range 무결성 + 묶음 zip (SC-004) ─────────────────────────
-    def test_single_download_range_integrity_and_bundle_zip(self):
-        """SC-004: Range 부분 요청 바이트 무결성 + 묶음 zip 엔트리 수(누락 0)·2회 결정성."""
-        from fastapi.testclient import TestClient
-
-        from service.api import app
-
-        # 알려진 1000바이트 패턴 — 부분 요청 바이트를 원본 슬라이스와 정확히 비교한다.
-        payload = bytes(i % 256 for i in range(1000))
-        a_id = self._make_portal_asset(content=payload)
-        b_id = self._make_portal_asset(content=bytes((i * 3) % 256 for i in range(500)))
-        self._link_symmetric(a_id, b_id)  # seed A 의 active 이웃 = B 1건
-
-        # with 문으로 lifespan(load_dotenv→init_settings) 발화. 핸들러는 자체 PostgresUtil 로 조회.
-        with TestClient(app) as client:
-            # (1) 전체 다운로드: 200 + 전체 바이트 일치.
-            full = client.get(f"/assets/{a_id}/download")
-            self.assertEqual(full.status_code, 200)
-            self.assertEqual(full.content, payload, "전체 다운로드 본문이 원본과 일치해야 한다")
-
-            # (2) Range 부분 요청: 206 + Content-Range + 본문 == 원본[100:200] (무결성, SC-004).
-            partial = client.get(
-                f"/assets/{a_id}/download", headers={"Range": "bytes=100-199"}
-            )
-            self.assertEqual(partial.status_code, 206)
-            self.assertEqual(partial.headers["content-range"], "bytes 100-199/1000")
-            self.assertEqual(
-                partial.content, payload[100:200], "부분 요청 본문이 원본 슬라이스와 정확히 일치해야 한다"
-            )
-
-            # (3) 묶음 zip: seed(A) + active 이웃(B) = 2 엔트리, 누락 manifest 없음.
-            bundle1 = client.get(f"/assets/{a_id}/bundle")
-            self.assertEqual(bundle1.status_code, 200)
-            self.assertEqual(bundle1.headers["content-type"], "application/zip")
-            names1 = zipfile.ZipFile(io.BytesIO(bundle1.content)).namelist()
-            self.assertNotIn("_manifest.json", names1, "모든 원본이 존재하므로 누락 manifest 가 없어야 한다")
-            self.assertEqual(len(names1), 2, "seed + active 이웃 1건 = zip 엔트리 2개(누락 0)")
-
-            # (4) 2회 호출 결정성: 동일 엔트리 집합 + 동일 바이트(타임스탬프 고정·결정적 정렬).
-            bundle2 = client.get(f"/assets/{a_id}/bundle")
-            names2 = zipfile.ZipFile(io.BytesIO(bundle2.content)).namelist()
-            self.assertEqual(set(names1), set(names2), "2회 호출 동일 엔트리 집합(결정성)")
-            self.assertEqual(bundle1.content, bundle2.content, "2회 호출 동일 zip 바이트(결정성)")
 
 
 if __name__ == "__main__":

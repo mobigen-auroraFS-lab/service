@@ -1,29 +1,31 @@
 """개체(멀티모달 메타) 화면 라우트 — 얇게. 조립은 ``service/portal/mm_meta.py``, 읽기는 코어 seam.
 
-**이 파일이 하는 일은 넷뿐이다**: 파라미터 검증, 트랜잭션 안에서 조립 함수 호출, HTTP 상태 코드,
-다운로드 헤더. 세는 규칙·노출 기준·정렬 같은 판단은 하나도 여기 없다(코어) — 그리고 응답 키 이름과
+**이 파일이 하는 일은 셋뿐이다**: 파라미터 검증, 트랜잭션 안에서 조립 함수 호출, HTTP 상태 코드. 세는 규칙·노출 기준·정렬 같은 판단은 하나도 여기 없다(코어) — 그리고 응답 키 이름과
 상한·문구는 정형 계층에 있다(백엔드).
 
 **화면 개념 두 축**(spec 087): 개체를 좁히는 축은 **종류**(타입)와 **갈래**(개체에 붙은 분류 라벨)다.
 둘 다 개체에 붙어 있어 좁혀도 개체가 쪼개지지 않는다. 자산에 붙는 라벨로 좁히던 옛 화면은 한 개체가
 갈래마다 나뉘어 보였다(실측: 한 지명이 여섯 건인데 갈래별로 다섯·하나·하나로 갈라졌다).
 
-**라우트 순서**: ``/mm-meta/facets``·``/mm-meta/types``·``/mm-meta/bundle`` 은 세그먼트가 하나라
+**라우트 순서**: ``/mm-meta/facets`` 는 세그먼트가 하나라
 ``/mm-meta/{entity_type}/{entity_uid}``(둘)와 겹치지 않는다 — 선언 순서에 의존하지 않는다.
+
+🔴 **옛 별칭 ``/mm-meta/types`` 는 지웠다**(2026-09-28) — 칩 창구(``/mm-meta/facets``)에 흡수된 뒤 이름만
+남아 있었고 화면은 쓰지 않는다(IDD IF-ENTITY-03 보류).
+
+🔴 **개체 묶음 zip 창구는 없다**(2026-09-28 삭제) — ``/mm-meta/bundle``·``/mm-meta/{type}/{uid}/bundle`` 은
+파일 제공 방식을 다른 쪽과 협의한 뒤 다시 설계한다(`TODO.md` · IDD IF-ENTITY-04·06 보류).
+되살릴 때 원본 전제는 ``service/portal/asset/__init__.py`` 의 「원본 파일 전제」를 따른다(묶음 대상도 원본이 바뀌고 사라질 수 있다).
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from fastapi.responses import StreamingResponse
-from starlette.background import BackgroundTask
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from service.api import params
 from service.portal import mm_meta
-from service.portal.asset.download import build_bundle_zip_stream
 from service.portal.auth import require_principal
 from service.portal.common.db_manager import DbManager
 from src.mm_meta.rules import MIN_BUNDLE_SIZE
@@ -39,10 +41,7 @@ router = APIRouter(tags=["entity"], dependencies=[Depends(require_principal)])
 # 질의와 좁히기를 합쳐도 절 수가 한계에 닿지 않는 값이다.
 _QUERY_MAX_LEN = 300
 
-# zip 전송 조각 크기 — 자산 다운로드와 같은 값(같은 이유: 묶음이 커도 서버 메모리가 일정하다).
-_STREAM_CHUNK = 64 * 1024
-
-# 노출 임계 — 구성 자산이 이 수 미만인 개체는 목록·칩·다운로드에서 **모두** 감춘다.
+# 노출 임계 — 구성 자산이 이 수 미만인 개체는 목록·칩에서 **모두** 감춘다.
 # 🔴 목록과 칩이 **같은 값**을 써야 한다: 칩에 "다섯"이라 적혀 있는데 눌러서 세 건이 나오면 사용자가
 #    숫자를 믿지 않게 된다("적힌 숫자 = 누르면 나오는 수" 원칙 · 2026-09-08 판정으로 통일).
 #    값 자체는 코어에서 읽는다 — 판정 배치가 대상을 고를 때 같은 값을 써야 판정과 노출이 안 어긋난다.
@@ -59,50 +58,6 @@ def _parse_names(raw: str | None) -> list[str]:
         이름 목록. 조건이 없으면 빈 목록.
     """
     return [x.strip() for x in (raw or "").split(",") if x.strip()]
-
-
-def _zip_response(
-    targets: list[dict[str, Any]], *, name_parts: list[str], fallback: str,
-    extra_headers: dict[str, str],
-) -> StreamingResponse:
-    """zip 을 조각내어 흘려보내는 응답을 만든다.
-
-    파일 읽기는 DB 트랜잭션 **밖**에서 일어나고 조각으로 흐르므로, 묶음이 아무리 커도 서버 메모리
-    사용량이 일정하다. 경로가 없거나 사라진 파일은 zip 안 목록 파일에 남는다(부분 zip 계약).
-
-    🔴 ``X-Bundle-Count`` 는 **실제로 담긴 수**다 — 원본을 열 수 없어 빠진 것은 zip 을 만들어 봐야
-    안다(DB 는 디스크를 모른다). 종전에는 DB 기준으로 세어, 원본이 없으면 "12건"이라 하고 목록 파일만
-    든 zip 을 보냈다(2026-09-28 · 고른 자산 묶음은 2026-09-22 에 같은 결함을 고쳤다). 빠진 수는
-    ``X-Bundle-Missing`` 으로 함께 알린다.
-
-    Args:
-        targets: ``{asset_id, fs_path, file_name}`` 목록.
-        name_parts: zip 이름에 넣을 조각(ASCII 로 걸러진다).
-        fallback: 남는 글자가 없을 때 쓸 이름.
-        extra_headers: 함께 실을 헤더(잘림·용량 등).
-
-    Returns:
-        ``application/zip`` 스트리밍 응답.
-    """
-    unreadable: list[dict[str, Any]] = []
-    zip_stream = build_bundle_zip_stream(targets, unreadable=unreadable)
-    packed = len(targets) - len(unreadable)
-    file_name = mm_meta.ascii_zip_name(name_parts, fallback=fallback, count=packed)
-
-    def _iter_zip() -> Iterator[bytes]:
-        """zip 을 조각내어 흘려보낸다."""
-        while True:
-            chunk = zip_stream.read(_STREAM_CHUNK)
-            if not chunk:
-                break
-            yield chunk
-
-    headers = {"Content-Disposition": f'attachment; filename="{file_name}"', **extra_headers,
-               "X-Bundle-Count": str(packed), "X-Bundle-Missing": str(len(unreadable))}
-    return StreamingResponse(
-        _iter_zip(), media_type="application/zip", headers=headers,
-        background=BackgroundTask(zip_stream.close),
-    )
 
 
 @router.get("/mm-meta")
@@ -213,7 +168,8 @@ def list_mm_meta(
             # 입력 오류이지 서버 오류가 아니다 — **조용히 다른 자리에서 이어 주지 않는다**.
             #   조건이 바뀐 커서도 여기서 끊긴다(실측 2026-09-17: q 를 바꾼 채 이어 읽자 1쪽에
             #   있던 개체들이 통째로 빠졌다 — 오류가 없어 화면은 그것을 알 수 없었다).
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            #   문구의 파이썬 진단(예외 원문 · 입력 repr)은 떼고 할 일을 붙인다(``params.cursor_detail``).
+            raise HTTPException(status_code=400, detail=params.cursor_detail(exc)) from exc
     # 🔴 집합 판정이 **DB 읽기보다 먼저**다 — 화이트리스트를 SQL 에 얹어야 상한 밖 개체도 검색·좁히기로
     #    닿는다(2026-09-15 실측: 「숭례문」이 색인에 있는데 상위 200 을 먼저 자르는 바람에 0건이었다).
     #    엔진 왕복이라 DB 트랜잭션 **밖**에서 한다(커넥션을 쥔 채 네트워크를 기다리지 않게).
@@ -307,90 +263,6 @@ def mm_meta_facets(
     )
 
 
-@router.get("/mm-meta/types")
-def mm_meta_types() -> dict[str, Any]:
-    """타입 어휘와 종류별 개체 수 — ``/mm-meta/facets`` 의 **부분 응답 별칭**.
-
-    이 창구는 위 칩 창구에 흡수됐다(2026-09-08 판정). 프론트가 옮겨 갈 때까지 이름만 살려 둔다 —
-    옛 전화번호를 착신 전환해 두는 것과 같다.
-
-    TODO: 폐기 기한이 없다 — 프론트가 옮겨 간 뒤 이 별칭(`/mm-meta/types` · 묶음의 `labels`)을 뺀다.
-
-    Returns:
-        ``{vocab, types}`` — 칩 창구 응답에서 갈래 축을 뺀 것. 어휘 행이 없으면 ``vocab`` 은 ``None``,
-        ``types`` 는 빈 목록이다(코드 프리셋으로 채우지 않는다 — 화면이 폴백하면 "등록 안 했는데 왜
-        보이나"를 조사하게 된다).
-    """
-    facets = DbManager.read(
-        lambda repo: repo.entity.facets(
-            entity_type=None, areas=None, min_bundle_size=_MIN_BUNDLE_SIZE,
-        )
-    )
-    return {"vocab": facets["vocab"], "types": facets["types"]}  # type: ignore[index]
-
-
-@router.get("/mm-meta/bundle")
-def download_entities_bundle(
-    entity_type: str | None = Query(None, description="종류(타입) 필터"),
-    areas: str | None = Query(None, description="갈래(개체 라벨) — 모두 가진 개체만(AND · 쉼표 구분)"),
-    labels: str | None = Query(
-        None,
-        description="⚠️ 옛 이름 — `areas` 와 같은 뜻이다. 프론트가 옮겨 갈 때까지 함께 받는다",
-        deprecated=True,
-    ),
-    exclude_video: bool = Query(False, description="영상 제외(용량이 크게 준다)"),
-) -> Response:
-    """지금 좁힌 **개체들의 구성 자산 전부**를 한 zip 으로 내려준다.
-
-    화면의 좁히기 축과 다운로드 축이 같아야 "지금 보고 있는 것을 받는다"가 성립한다.
-
-    옛 이름 ``labels`` 를 함께 받는 이유: 이름만 바꾸고 무시하면 프론트가 계속 그것을 보내면서
-    **좁혀지지 않은 전량**을 내려받게 된다. 목록 창구의 옛 ``labels``(자산 라벨)와는 뜻이 달라 거기서는
-    별칭을 두지 않는다.
-
-    Args:
-        entity_type: 종류 필터.
-        areas: 갈래 이름들(쉼표 구분).
-        labels: ``areas`` 의 옛 이름(둘 다 오면 ``areas`` 우선).
-        exclude_video: 영상 제외 여부.
-
-    Returns:
-        zip 스트리밍 응답. 헤더에 담긴 파일 수와 총 용량을 함께 싣는다.
-
-    Raises:
-        HTTPException: 좁힌 결과가 비면 404 · 용량 상한 초과면 413 · 경로를 아는 파일이 하나도 없으면 409.
-    """
-    picked = _parse_names(areas) or _parse_names(labels)
-    rows: list[dict[str, Any]] = DbManager.read(
-        lambda repo: repo.entity.zip_rows(
-            entity_type=entity_type, areas=picked,
-            min_bundle_size=_MIN_BUNDLE_SIZE, exclude_video=exclude_video,
-        )
-    )
-    if not rows:
-        raise HTTPException(status_code=404, detail="이 조건에 해당하는 자료가 없습니다")
-    total = sum(int(r["file_size"]) for r in rows)
-    if total > mm_meta.ENTITIES_BUNDLE_MAX_BYTES:
-        mb = 1024 * 1024
-        raise HTTPException(
-            status_code=413,
-            detail=(
-                f"용량이 상한을 넘습니다({total // mb}MB > "
-                f"{mm_meta.ENTITIES_BUNDLE_MAX_BYTES // mb}MB) — 더 좁히거나 영상을 제외하세요"
-            ),
-        )
-    targets = [
-        {"asset_id": r["asset_id"], "fs_path": r["fs_path"], "file_name": r["file_name"]}
-        for r in rows if r["fs_path"]
-    ]
-    if not targets:
-        raise HTTPException(status_code=409, detail="내려받을 파일 경로가 없다")
-    return _zip_response(
-        targets, name_parts=[entity_type or "all", *picked], fallback="meta",
-        extra_headers={"X-Bundle-Bytes": str(total)},
-    )
-
-
 @router.get("/mm-meta/{entity_type}/{entity_uid}")
 def mm_meta_card(
     entity_type: str,
@@ -416,39 +288,3 @@ def mm_meta_card(
     if card is None:
         raise HTTPException(status_code=404, detail="해당 멀티모달 메타가 없다")
     return card  # type: ignore[return-value]
-
-
-@router.get("/mm-meta/{entity_type}/{entity_uid}/bundle")
-def download_card_bundle(
-    entity_type: str,
-    entity_uid: str,
-) -> Response:
-    """개체 카드의 구성 자산을 한 zip 으로 내려준다.
-
-    Args:
-        entity_type: 개체 종류.
-        entity_uid: 표기 키.
-
-    Returns:
-        zip 스트리밍 응답. 상한을 넘겨 잘렸으면 헤더로도 알린다(조용히 자르지 않는다).
-
-    Raises:
-        HTTPException: 개체가 없으면 404 · 구성 자산이 없거나 전부 경로 미상이면 409(빈 zip 을 주면
-            사용자가 "받았는데 비었다"를 오류로 오해한다).
-    """
-    result = DbManager.read(
-        lambda repo: repo.entity.card_zip_targets(
-            entity_type=entity_type, entity_uid=entity_uid))
-    if result is None:
-        raise HTTPException(status_code=404, detail="해당 멀티모달 메타가 없다")
-    targets, name, truncated = result  # type: ignore[misc]
-    if not targets:
-        raise HTTPException(
-            status_code=409, detail="내려받을 파일이 없다(구성 자산 없음 또는 경로 미상)")
-    headers: dict[str, str] = {}
-    if truncated:
-        headers["X-Bundle-Truncated"] = str(mm_meta.CARD_BUNDLE_MAX_ASSETS)
-    return _zip_response(
-        targets, name_parts=[f"mm_meta_{entity_type}", name], fallback="mm_meta",
-        extra_headers=headers,
-    )

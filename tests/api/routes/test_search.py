@@ -2,15 +2,13 @@
 
 전략(plan 010 D-7, G4)
     FastAPI ``TestClient`` 로 라우팅·상태코드·계약·의료배제만 검증한다. 소비 서비스 함수
-    (``search_hybrid``/``fetch_asset_detail``/``resolve_download_target``/
-    ``collect_bundle_assets``/``build_bundle_zip``)와 DB 실행 seam(``db.run_in_db``)을
+    (``search_hybrid``/``fetch_asset_detail``)와 DB 실행 seam(``db.run_in_db``)을
     ``unittest.mock.patch`` 로 대체해 **DB·LLM·네트워크 없이** 순수 단위로 돈다.
 
 검증 대상
     - T022: ``/health`` 200 · ``/search`` 정상(query+results(모달리티별)+meta) · 버킷별 의료
       배제(FR-014) · size top-N.
-    - T023: ``/assets/{id}`` 200/404 · ``/assets/{id}/download`` Range→206+Content-Range·
-      원본 없음→404/410(FR-009) · ``/assets/{id}/bundle`` → application/zip · seed 게이트 404.
+    - T023: ``/assets/{id}`` 200/404. (다운로드 · 썸네일 · 묶음 창구는 2026-09-28 에 지웠다.)
 
 주의: ``TestClient(app)`` 를 ``with`` 없이 쓰면 lifespan(init_settings)이 돌지 않으므로
 ``.env``·DB 없이 라우팅만 검증된다(부트스트랩은 G5 실DB e2e 책임).
@@ -412,114 +410,6 @@ class TestAssetDetail(unittest.TestCase):
         self.assertEqual(resp.status_code, 404)
 
 
-class TestDownload(unittest.TestCase):
-    """``/assets/{id}/download`` — 전체/Range/누락/게이트."""
-
-    def setUp(self) -> None:
-        _enable_portal_test_auth_bypass(self)
-        self.client = TestClient(app)
-        # 알려진 10바이트 임시 원본 — Range 바이트 무결성 검증용.
-        self.tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
-        self.tmp.write(b"0123456789")
-        self.tmp.close()
-        self.addCleanup(lambda: os.path.exists(self.tmp.name) and os.unlink(self.tmp.name))
-
-    def _target(self, fs_path: str) -> dict:
-        return {
-            "asset_id": "a1",
-            "fs_path": fs_path,
-            "fs_uri": f"file://{fs_path}",
-            "file_size": 10,
-            "modality": "text",
-            "file_name": "sample.txt",
-        }
-
-    @patch("service.portal.repositories.asset_repo.resolve_download_target")
-    def test_download_full_returns_200(self, mock_resolve) -> None:
-        mock_resolve.return_value = self._target(self.tmp.name)
-        resp = self.client.get(f"/assets/{A1}/download")
-        self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.content, b"0123456789")
-        self.assertEqual(resp.headers["accept-ranges"], "bytes")
-        self.assertIn("sample.txt", resp.headers["content-disposition"])
-
-    @patch("service.portal.repositories.asset_repo.resolve_download_target")
-    def test_download_range_returns_206(self, mock_resolve) -> None:
-        # Range 부분 요청 → 206 + Content-Range + 정확한 바이트 구간(SC-004 단위 근사).
-        mock_resolve.return_value = self._target(self.tmp.name)
-        resp = self.client.get(
-            f"/assets/{A1}/download", headers={"Range": "bytes=2-5"}
-        )
-        self.assertEqual(resp.status_code, 206)
-        self.assertEqual(resp.headers["content-range"], "bytes 2-5/10")
-        self.assertEqual(resp.content, b"2345")
-        self.assertEqual(resp.headers["accept-ranges"], "bytes")
-
-    @patch("service.portal.repositories.asset_repo.resolve_download_target")
-    def test_download_range_unsatisfiable_returns_416(self, mock_resolve) -> None:
-        # 파일 크기 초과 범위 → parse_range_header ValueError → 416.
-        mock_resolve.return_value = self._target(self.tmp.name)
-        resp = self.client.get(
-            f"/assets/{A1}/download", headers={"Range": "bytes=100-200"}
-        )
-        self.assertEqual(resp.status_code, 416)
-
-    @patch("service.portal.repositories.asset_repo.resolve_download_target")
-    def test_download_missing_file_returns_404_or_410(self, mock_resolve) -> None:
-        # FR-009: DB 엔 있으나 원본 파일이 사라짐 → 자산 노출 없이 404/410.
-        mock_resolve.return_value = self._target("/no/such/file/at/all.txt")
-        resp = self.client.get(f"/assets/{A1}/download")
-        self.assertIn(resp.status_code, (404, 410))
-
-    @patch("service.portal.repositories.asset_repo.resolve_download_target")
-    def test_download_none_returns_404(self, mock_resolve) -> None:
-        # 비registered/의료/없음 게이트 → None → 404.
-        mock_resolve.return_value = None
-        resp = self.client.get(f"/assets/{NOPE}/download")
-        self.assertEqual(resp.status_code, 404)
-
-
-class TestBundle(unittest.TestCase):
-    """``/assets/{id}/bundle`` — zip 응답 / seed 게이트 404."""
-
-    def setUp(self) -> None:
-        _enable_portal_test_auth_bypass(self)
-        self.client = TestClient(app)
-
-    @staticmethod
-    def _mk_stream(targets):
-        s = io.BytesIO(b"PK\x03\x04zipbytes")
-        TestBundle._last_stream = s
-        return s
-
-    @patch("service.api.routes.assets.build_bundle_zip_stream", side_effect=_mk_stream.__func__)
-    @patch("service.portal.repositories.asset_repo.collect_bundle_assets")
-    @patch("service.portal.repositories.asset_repo.resolve_download_target")
-    def test_bundle_returns_zip(self, mock_resolve, mock_collect, mock_zip) -> None:
-        # seed 가 게이트(registered·비의료) 통과 → ego-network zip 스트리밍(069 P1-2: StreamingResponse).
-        mock_resolve.return_value = {"asset_id": "seed", "fs_path": "/x/seed.txt"}
-        mock_collect.return_value = [
-            {"asset_id": "seed", "fs_path": "/x/seed.txt", "file_name": "seed.txt"}
-        ]
-        resp = self.client.get(f"/assets/{SEED}/bundle")
-        self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.headers["content-type"], "application/zip")
-        self.assertIn("attachment", resp.headers["content-disposition"])
-        self.assertEqual(resp.content, b"PK\x03\x04zipbytes")
-        mock_collect.assert_called_once()
-        # 리뷰 🟡2 회귀: 응답 송신 후 BackgroundTask 가 스트림을 명시 close(FD 정리 — GC 의존 금지).
-        self.assertTrue(TestBundle._last_stream.closed)
-
-    @patch("service.portal.repositories.asset_repo.collect_bundle_assets")
-    @patch("service.portal.repositories.asset_repo.resolve_download_target")
-    def test_bundle_seed_gated_returns_404(self, mock_resolve, mock_collect) -> None:
-        # 의료/비registered/없는 seed → resolve None → 404, collect 미호출.
-        mock_resolve.return_value = None
-        resp = self.client.get(f"/assets/{MEDSEED}/bundle")
-        self.assertEqual(resp.status_code, 404)
-        mock_collect.assert_not_called()
-
-
 class TestPortalAuth(unittest.TestCase):
     """042 JWT · /me · 보호 라우트 401."""
 
@@ -645,69 +535,6 @@ class TestPortalOpenApiSecurity(unittest.TestCase):
         self.assertIn({"HTTPBearer": []}, search.get("security", []))
         params = search.get("parameters", [])
         self.assertFalse(any(p.get("name") == "authorization" for p in params))
-
-
-class TestAssetThumbnail(unittest.TestCase):
-    """GET /assets/{id}/thumbnail — 썸네일 게이트(의료 배제·유형·파일 부재)·응답 계약(057-후속)."""
-
-    def setUp(self) -> None:
-        _enable_portal_test_auth_bypass(self)
-        self.client = TestClient(app)
-
-    @patch("service.api.routes.assets.cached_thumbnail", return_value=b"\xff\xd8\xff\xe0JPG")
-    @patch("service.portal.repositories.asset_repo.resolve_download_target")
-    def test_image_returns_jpeg(self, mock_resolve, _gen) -> None:
-        import tempfile
-
-        with tempfile.NamedTemporaryFile(suffix=".png") as f:
-            mock_resolve.return_value = {
-                "asset_id": "a1", "fs_path": f.name, "modality": "image", "file_name": "a.png"}
-            r = self.client.get(f"/assets/{A1}/thumbnail")
-        self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.headers["content-type"], "image/jpeg")
-        self.assertEqual(r.content, b"\xff\xd8\xff\xe0JPG")
-        self.assertIn("max-age", r.headers.get("cache-control", ""))
-        # 인증 응답이라 공유 캐시(프록시·CDN)에 남으면 안 된다.
-        self.assertIn("private", r.headers.get("cache-control", ""))
-        self.assertNotIn("public", r.headers.get("cache-control", ""))
-
-    @patch("service.api.routes.assets.cached_thumbnail", return_value=b"HERO")
-    @patch("service.portal.repositories.asset_repo.resolve_download_target")
-    def test_size_query_passed_through(self, mock_resolve, mock_cached) -> None:
-        # ?size=detail → cached_thumbnail(size="detail") 로 전달(상세 히어로 640).
-        import tempfile
-
-        with tempfile.NamedTemporaryFile(suffix=".png") as f:
-            mock_resolve.return_value = {"asset_id": "a1", "fs_path": f.name, "modality": "image"}
-            r = self.client.get(f"/assets/{A1}/thumbnail?size=detail")
-        self.assertEqual(r.status_code, 200)
-        self.assertEqual(mock_cached.call_args.kwargs.get("size"), "detail")
-
-    @patch("service.portal.repositories.asset_repo.resolve_download_target", return_value=None)
-    def test_medical_or_missing_returns_404(self, _resolve) -> None:
-        # 의료/비registered/없음 → resolve_download_target None → 404 (의료 썸네일=PHI 원천 차단)
-        self.assertEqual(self.client.get(f"/assets/{A1}/thumbnail").status_code, 404)
-
-    @patch("service.portal.repositories.asset_repo.resolve_download_target")
-    def test_audio_returns_404(self, mock_resolve) -> None:
-        mock_resolve.return_value = {"asset_id": "a1", "fs_path": "/x/a.mp3", "modality": "audio"}
-        self.assertEqual(self.client.get(f"/assets/{A1}/thumbnail").status_code, 404)
-
-    @patch("service.portal.repositories.asset_repo.resolve_download_target")
-    def test_missing_file_returns_410(self, mock_resolve) -> None:
-        mock_resolve.return_value = {
-            "asset_id": "a1", "fs_path": "/nonexistent/x.png", "modality": "image"}
-        self.assertEqual(self.client.get(f"/assets/{A1}/thumbnail").status_code, 410)
-
-    @patch("service.api.routes.assets.cached_thumbnail", return_value=None)
-    @patch("service.portal.repositories.asset_repo.resolve_download_target")
-    def test_generation_failure_returns_404(self, mock_resolve, _gen) -> None:
-        import tempfile
-
-        with tempfile.NamedTemporaryFile(suffix=".png") as f:
-            mock_resolve.return_value = {"asset_id": "a1", "fs_path": f.name, "modality": "image"}
-            r = self.client.get(f"/assets/{A1}/thumbnail")
-        self.assertEqual(r.status_code, 404)
 
 
 if __name__ == "__main__":
