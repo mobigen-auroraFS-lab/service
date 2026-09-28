@@ -1,243 +1,288 @@
-# dataplatform-service
+# service
 
-멀티모달 데이터 통합 플랫폼의 **HTTP API**입니다. 하이브리드 검색·자산 상세·다운로드·썸네일·
-관계 검토 서빙을 제공합니다.
+멀티모달 데이터 통합 플랫폼의 HTTP API 서버입니다. FastAPI 로 만들었습니다.
 
-> 국책과제 **RS-2025-02215256** 산출물.
+## 이 레포지토리는 무엇인가
 
-## 세 레포의 관계
+웹 화면이 호출하는 API 를 제공합니다. 검색, 자산 상세 조회, 파일 내려받기, 자산 간 관계
+조회, 계정과 로그인을 담당합니다.
 
-| 레포 | 파이썬 패키지 | 역할 |
-|---|---|---|
-| dataplatform-core | `src.*` | 규약·계약·순수 로직 + DB 스키마 정본 |
-| dataplatform-pipeline | `processing.*` | 처리 파이프라인(Airflow) |
-| **dataplatform-service**(이 레포) | `service.*` | HTTP API |
+검색 기능 자체는 core 라이브러리에 있습니다. 이 레포는 그 함수를 호출하고, 결과를 화면이
+쓰기 쉬운 JSON 으로 만들어 돌려줍니다.
 
-**이 레포는 코어를 필요로 합니다.** 코어가 없으면 `service.*` 이 import 되지 않습니다.
+데이터베이스와 검색 색인은 읽기만 합니다. 자산을 등록하거나 색인을 바꾸는 일은
+pipeline 레포가 합니다.
 
-## 설계 — 2계층
-
-| 계층 | 위치 | 책임 |
-|---|---|---|
-| 전송 | `service/api/` | FastAPI 라우팅·요청/응답 모델·미들웨어·예외 처리 |
-| 로직 | `service/portal/` | 검색 조립·자산 조회·다운로드·썸네일·인증·권한 |
-
-검색·관계 조회·임베딩 같은 도메인 로직은 코어(`src.*`)에 위임합니다. 이 레포는 **서빙**만 합니다.
-
-## 요구사항
-
-| 항목 | 버전 |
+| 저장소 | 하는 일 |
 |---|---|
-| Python | **3.13 이상** |
-| PostgreSQL | 17 + `pgvector` (코어 스키마) |
-| OpenSearch | `analysis-nori` 플러그인 |
+| [core](https://github.com/mobigen-auroraFS-lab/core) | 공통 코드 · 데이터베이스 스키마 |
+| [pipeline](https://github.com/mobigen-auroraFS-lab/pipeline) | 파일 수집 · 분류 · 메타데이터 추출 · 색인 · 자산 간 관계 생성 |
+| **service** (이 레포) | 웹 화면이 사용하는 HTTP API |
 
-## 설치
+## 디렉터리 구조
 
-**코어를 먼저 설치합니다.**
+```
+service/
+  api/                # FastAPI 앱
+    __init__.py       # 앱 조립. 상태 확인·로그인 토큰 경로도 여기 있습니다
+    routes/           # 경로별 라우터
+      search.py         # 종류별로 묶어 보여주는 검색
+      file_search.py    # 파일 목록 형태의 검색
+      assets.py         # 자산 상세, 내려받기, 미리보기, 본문
+      mm_meta.py        # 개체 목록과 상세
+      catalog.py        # 태그·관계 종류 목록
+      account.py        # 회원가입·로그인
+      admin.py          # 운영 통계 — 등재 보류
+      review.py         # 관계 검토 — 등재 보류
+    db.py             # DB 연결 풀과 트랜잭션 통로
+    audit.py          # 접근 기록. 응답과 분리해 뒤에서 남깁니다
+    errors.py         # 예외를 HTTP 응답으로 옮김
+    lifespan.py       # 기동·종료 순서
+    params.py         # 여러 경로가 함께 쓰는 요청 검증
+
+  portal/             # 실제 조회와 가공
+    asset/            # 자산 상세, 내려받기, 미리보기, 본문
+    auth/             # 로그인, 토큰, 비밀번호
+    search/           # 검색 결과 묶기, 정렬 기준, 칩 집계
+    history/          # 접근 기록, 처리 이력
+    repositories/     # 데이터베이스 접근
+    common/           # 여러 곳이 함께 쓰는 조각
+
+  bootstrap.py        # 시작할 때 core 설정을 읽어 들입니다
+
+tests/                # 단위 테스트
+```
+
+`api/` 는 경로와 파라미터만 다루고 실제 일은 `portal/` 에서 합니다. 화면이 바뀌어 응답
+모양을 고칠 때는 `portal/` 을 봅니다.
+
+`admin.py` 와 `review.py` 는 코드에 있지만 앱에 등재하지 않았습니다. 해당 경로로 요청하면
+404 가 돌아옵니다.
+
+## 주요 API
+
+| 경로 | 용도 |
+|---|---|
+| `GET /health` | 서버 상태 확인 |
+| `POST /auth/signup` | 회원가입 |
+| `POST /auth/login` | 로그인 |
+| `GET /auth/login-id/availability` | 아이디 사용 가능 여부 |
+| `GET /me` | 내 정보 |
+| `POST /auth/token` | 개발용 토큰 발급 |
+| `GET /search` | 종류별로 묶어 보여주는 검색 |
+| `GET /file-search` | 파일 목록 형태의 검색. 주제·종류·태그로 좁히고 정렬 |
+| `GET /file-search/suggest` | 검색어 제안 |
+| `GET /file-search/facet-extra` | 추가 칩 집계 |
+| `GET /assets/{id}` | 자산 상세 |
+| `GET /assets/{id}/content` | 본문 |
+| `GET /assets/{id}/download` | 원본 파일 내려받기 |
+| `GET /assets/{id}/thumbnail` | 미리보기 이미지 |
+| `GET /assets/{id}/bundle` | 이 자산과 관계된 자산 목록 |
+| `GET /assets/unclassified` | 분류되지 않은 자산 |
+| `POST /assets/bundle` | 고른 자산 여러 개를 zip 하나로 내려받기 |
+| `GET /topics` | 주제 목록. 대주제와 세부주제를 자산 수와 함께 |
+| `GET /topics/{topic}` | 그 주제에 속한 자산 |
+| `GET /mm-meta` | 개체 목록 |
+| `GET /mm-meta/{type}/{uid}` | 개체 상세 |
+| `GET /mm-meta/types` · `/facets` · `/bundle` | 개체 타입·칩·묶음 |
+| `GET /tags` · `/relation-kinds` | 태그·관계 종류 목록 |
+
+서버를 띄운 뒤 `/docs` 로 접속하면 전체 목록과 파라미터를 확인할 수 있습니다.
+
+## 사용 환경
+
+### 하드웨어
+
+**세 레포 중 가장 가볍습니다.** 무거운 처리는 pipeline 이 미리 끝내 두었고, 이 서버는 그
+결과를 읽어 내보내기 때문입니다.
+
+| 구분 | 최소 | 권장 |
+|---|---|---|
+| CPU | 1 코어 | 2 코어 |
+| 메모리 | 2 GB | 4 GB |
+| 디스크 | 10 GB | — |
+| GPU | 불필요 | 불필요 |
+
+운영 클러스터에서 최대 2코어·4GB 까지 허용해 두었는데, 자산 2만 건에 검색이 붙은 상태에서
+실제 사용량은 0.43GB 였습니다. 동시 접속자가 늘면 CPU 를 먼저 올리십시오. 디스크는 로그와
+미리보기 이미지 캐시로만 씁니다.
+
+GPU 는 필요 없습니다. 검색어를 벡터로 바꾸는 일은 임베딩 서버에 요청합니다. 이때 **문서를
+색인할 때 쓴 것과 같은 모델**이어야 합니다. 다르면 오류 없이 엉뚱한 결과가 나옵니다.
+
+원본 파일을 보관하는 폴더가 이 서버에서도 보여야 합니다. 파일 내려받기와 미리보기가
+데이터베이스에 적힌 경로를 그대로 읽기 때문입니다. 마운트가 없으면 검색은 되는데 파일만
+열리지 않습니다.
+
+### 소프트웨어
+
+| 항목 | 요구 버전 | 개발 확인 |
+|---|---|---|
+| Python | 3.13 이상 | 3.13.13 |
+| core 라이브러리 | v0.7.0 이상 | — |
+| FastAPI | 0.115 이상 | 0.136.0 |
+| uvicorn | 0.30 이상 | 0.44.0 |
+| pydantic | 2.7 이상 | 2.13.1 |
+| PyJWT | 2.8 이상 | 2.12.1 |
+| argon2-cffi | 23.1 이상 | 25.1.0 |
+| opencv-python | 4.9 이상 | — |
+| PostgreSQL | 17 + pgvector 확장 | 17.9 |
+| OpenSearch | 3.x | 3.6.0 |
+
+## 설치 방법
 
 ```bash
-# ① 코어 — 나란히 clone 해서 참조형으로 설치(개발) 또는 태그로 설치형
-git clone <이 레포와 같은 계정>/dataplatform-core.git   # 예: gh repo clone <owner>/dataplatform-core
-pip install -e ./dataplatform-core
-
-# ② 이 레포
+pip install "meta-extract @ git+https://github.com/mobigen-auroraFS-lab/core.git@v0.7.0"
 pip install -e .
 ```
 
-코어를 설치하면 psycopg·opensearch-py 등이 전이로 따라옵니다. 이 레포의 `pyproject.toml` 에는
-코어가 제공하지 않는 것(fastapi·uvicorn·PyJWT·pydantic·opencv)만 있습니다.
+검색 결과가 나오려면 데이터베이스에 스키마가 만들어져 있고 pipeline 이 자산을 적재해 둔
+상태여야 합니다. `/health` 는 그 전에도 응답합니다.
 
-## 환경변수
+## 실행 및 운영 방법
 
-템플릿이 있습니다 — 복사해서 값만 채우면 됩니다:
+### 설정
 
-```bash
-cp .env.example .env.dev      # .env.dev 는 커밋되지 않습니다(.gitignore)
-```
-
-### 설정을 주는 두 가지 방법
-
-| 방법 | 어디에 | 우선순위 |
-|---|---|---|
-| **A. `.env.<환경>` 파일** | **실행하는 디렉터리** → 없으면 레포 루트 순으로 찾습니다 | 낮음 |
-| **B. 환경변수 직접 주입** | 배포·컨테이너·CI(`export` · `env_file:` · `env:`) | **높음**(A 를 덮어씁니다) |
-
-방법 B 로 파일 값을 그대로 올리려면:
-
-```bash
-set -a; . ./.env.dev; set +a
-```
-
-### 🔴 필수 — 없으면 기동 시점에 실패합니다
-
-백엔드는 코어 설정을 **서빙 역할**로 초기화합니다(`service/bootstrap.py` → 코어 `bootstrap_env(env, repo_root=…, role="serving")`).
-그래서 코어의 필수 11개 중 **적재 전용 5개**(`ENCODING`·`CHUNK_SIZE`·`OVERLAP_SIZE`·`SUMMARY_MAX_CHARS`·`TOP_K_KEYWORDS` —
-요약·청킹이 읽는 값)는 요구하지 않고, 다음 **6개**만 필수입니다(미설정 시 `ValueError: 필수 환경변수 누락: <이름>`
-으로 즉시 중단 — 잘못된 설정으로 조용히 도는 것을 막는 fail-fast). `/health` 만 확인할 때는 값이 형식만 맞으면 되고
-DB·LLM 에 접속하지 않습니다.
+core 가 요구하는 값 중 파일 적재에만 쓰는 다섯 개(`ENCODING`·`CHUNK_SIZE`·
+`OVERLAP_SIZE`·`SUMMARY_MAX_CHARS`·`TOP_K_KEYWORDS`)는 이 레포에서 요구하지 않습니다.
+나머지 여섯 개가 필요합니다.
 
 ```dotenv
-META_MODEL=              # 온프레미스 LLM 모델 이름(검색 결과 검증·질의 정규화 LLM 방식·개체 판정이 켜져 있을 때 사용)
-OPENAI_BASE_URL=         # OpenAI 호환 엔드포인트(= 온프레미스 LLM 서버)
-OPENAI_API_KEY=
-TEXT_EMBED_MODEL=        # 질의를 벡터로 바꾸는 임베딩 모델 — 문서 색인과 같아야 합니다
+META_MODEL=                 # LLM 모델 이름
+OPENAI_BASE_URL=            # LLM 서버 주소
+OPENAI_API_KEY=             # LLM 서버 인증 키
+TEXT_EMBED_MODEL=           # 검색어 임베딩 모델. 색인할 때 쓴 것과 같아야 합니다
 TEXT_EMBED_CHUNK_SIZE=512
 TEXT_EMBED_NORMALIZE=true
 ```
 
-> 적재 전용 5개를 그래도 넣어 두면 그 값이 읽힙니다(형식 검증 포함). 없으면 코어가 정한 자리값이 들어가며 백엔드는
-> 그 값을 어디에서도 읽지 않습니다.
+이 레포 고유 설정입니다.
 
-### 그 외
-
-| 구분 | 변수 |
+| 변수 | 용도 |
 |---|---|
-| 프로파일 | `PORTAL_API_ENV`(기본 `dev`) |
-| DB | `POSTGRES_HOST` · `POSTGRES_PORT` · `POSTGRES_DB` · `POSTGRES_USER` · `POSTGRES_PASSWORD` |
-| 검색 | `OPENSEARCH_URL`(기본 `http://localhost:9200`) · `OPENSEARCH_INDEX`(기본 `assets`) · `OPENSEARCH_SYNC_ENABLED`(코어 설정 정합 검사용 — `true`) |
-| 인증 | `PORTAL_AUTH_DISABLED` · `PORTAL_JWT_SECRET` · `PORTAL_JWT_ISSUER` · `PORTAL_JWT_TTL_SECONDS` · `PORTAL_AUTH_BACKEND` |
-| DB 풀 | `PORTAL_DB_POOL_MIN` · `PORTAL_DB_POOL_MAX`(선택 — 미설정 시 코어 기본 1/10) |
-| 썸네일 | `THUMBNAIL_CACHE_DIR`(선택 · 기본 시스템 임시 디렉터리) |
-| CORS | `PORTAL_CORS_ORIGINS`(선택 · 쉼표로 오리진 나열 · 예 `http://localhost:5173`) — **비우면 다른 오리진을 하나도 허용하지 않는다**. 화면을 Vite 개발 서버 등 다른 오리진에서 직접 부르려면 넣는다(Vite 프록시를 쓰면 필요 없다) |
+| `PORTAL_API_ENV` | `dev` 또는 `prod`. 기본값 `dev` |
+| `PORTAL_AUTH_DISABLED` | `1` 이면 토큰 없이 호출할 수 있습니다 |
+| `PORTAL_AUTH_BACKEND` | 계정 확인 방식 |
+| `PORTAL_JWT_SECRET` | 토큰 서명 키 |
+| `PORTAL_JWT_ISSUER` | 토큰 발급자 |
+| `PORTAL_JWT_TTL_SECONDS` | 토큰 유효 시간 |
+| `PORTAL_CORS_ORIGINS` | 다른 주소에서 호출을 허용할 목록. 쉼표로 나열 |
+| `PORTAL_DB_POOL_MIN` · `PORTAL_DB_POOL_MAX` | DB 연결 풀 크기 |
+| `PORTAL_MM_META_FORM_SKILLS` | 개체 화면에 쓸 분류 기준 |
+| `THUMBNAIL_CACHE_DIR` | 미리보기 이미지 저장 폴더. 없으면 임시 폴더를 씁니다 |
 
-> 원본 파일 위치는 별도 설정이 없습니다 — 다운로드·썸네일은 **DB 에 기록된 경로(`fs_path`)** 를 읽습니다.
-> 그 경로가 이 서버에서 접근 가능해야 합니다(적재한 기계와 다른 기계면 같은 마운트가 필요합니다).
+### 다른 주소에서 호출할 때
 
-### DB 커넥션 풀 (동시성)
+`PORTAL_CORS_ORIGINS` 를 비워 두면 **다른 주소에서 오는 요청을 하나도 받지 않습니다.**
+개발용 프런트엔드 서버에서 직접 부르려면 그 주소를 적습니다.
 
-모든 라우트가 동기 함수라 Starlette 의 스레드풀(기본 **40개**)에서 돌아갑니다. 반면 코어의
-커넥션 풀 기본값은 **max 10** 입니다. 동시 요청이 10을 넘으면 남은 스레드가 커넥션을 기다리다
-`PoolTimeout` 으로 떨어집니다 — **부하가 걸려야 드러나는** 고장이라 기동 시 경고를 남깁니다.
-
-`PORTAL_DB_POOL_MAX` 로 풀을 키워 맞추십시오. 지켜야 하는 부등식:
-
-```
-uvicorn 워커 수 × PORTAL_DB_POOL_MAX  ≤  PostgreSQL max_connections
+```dotenv
+PORTAL_CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 ```
 
-> ⚠️ 같은 DB 를 파이프라인과 공유하면 그쪽 커넥션까지 합쳐 계산해야 합니다.
+프런트엔드 개발 서버의 프록시 기능을 쓰면 이 설정이 필요 없습니다.
 
-### 인증 동작 (중요)
+### DB 연결 풀
 
-| `PORTAL_AUTH_DISABLED` | 동작 |
+**동시 요청이 많아지면 연결이 모자라 실패합니다.** 요청 처리는 최대 40개까지 동시에
+돌아가는데 데이터베이스 연결은 기본 10개뿐이라, 11번째부터는 연결을 기다리다 시간 초과로
+떨어집니다. 부하가 걸려야 드러나는 종류라 기동할 때 경고를 남깁니다.
+
+`PORTAL_DB_POOL_MAX` 로 풀을 키우되 아래를 넘지 않게 맞춥니다.
+
+```
+uvicorn 워커 수 × PORTAL_DB_POOL_MAX ≤ PostgreSQL 최대 연결 수
+```
+
+같은 데이터베이스를 pipeline 과 함께 쓴다면 그쪽 연결까지 더해 계산해야 합니다.
+
+### 실행
+
+```bash
+set -a; . ./.env.dev; set +a
+
+uvicorn service.api:app --host 127.0.0.1 --port 8001                # 개발
+uvicorn service.api:app --host 0.0.0.0 --port 8001 --workers 2      # 운영
+```
+
+계속 띄워 두려면 systemd 나 supervisor 같은 프로세스 관리자에 등록합니다.
+
+`PORTAL_AUTH_DISABLED` 가 `0` 인데 `PORTAL_JWT_SECRET` 이 비어 있으면 **서버가 뜨지
+않습니다.** 설정이 빠진 채로 도는 것보다 낫기 때문입니다.
+
+### 운영 시 확인할 것
+
+| 상황 | 할 일 |
 |---|---|
-| `1` (연구·개발) | 토큰 없이 호출 가능 → `anonymous`(public 권한). Bearer 가 있으면 검증합니다. `POST /auth/token` 으로 dev 토큰 발급 가능 |
-| `0` (운영) | Bearer **필수**(없으면 401) · `POST /auth/token` 은 404 · **`PORTAL_JWT_SECRET` 미설정이면 서버가 기동하지 않습니다**(fail-fast · 2026-09-22. 종전에는 첫 인증 요청이 500 이었습니다) |
+| core 를 새 버전으로 올렸을 때 | core 재설치 → 테스트 → 재시작. 임베딩 모델이 바뀌었으면 pipeline 재색인이 먼저입니다 |
+| 검색 결과가 비어 있을 때 | pipeline 의 색인 상태, 임베딩 서버 응답, OpenSearch 연결을 확인하십시오 |
+| 파일 내려받기가 실패할 때 | 원본 보관 폴더가 이 서버에 마운트되어 있는지 확인하십시오 |
+| 동시 접속이 늘 때 | `PORTAL_DB_POOL_MAX` 와 PostgreSQL 최대 연결 수를 함께 확인하십시오 |
 
-JWT 는 HS256 이고 `exp`·`sub` 를 필수로 검증합니다. `PORTAL_JWT_ISSUER` 를 설정하면 `iss` 를 고정해
-다른 서비스의 토큰 재사용을 막습니다.
-
-## 실행
-
-```bash
-set -a; . ./.env.dev; set +a                          # 설정을 환경으로 올린다
-uvicorn service.api:app --host 127.0.0.1 --port 8001
-```
-
-백그라운드로 돌리고 pid·로그를 관리하려면 프로세스 매니저(systemd·supervisor 등)를 쓰거나
-간단히 `nohup … &` 로 띄우십시오.
-
-> ⚠️ `--host 0.0.0.0` 은 모든 네트워크 인터페이스에 노출됩니다. 신뢰된 네트워크가 아니면
-> 리버스 프록시 뒤에 두고 인증을 활성화(`PORTAL_AUTH_DISABLED=0`)하십시오.
-
-전제: 코어에서 **DB 스키마 생성 + 닫힌 taxonomy 시드**가 끝나 있어야 하고, 파이프라인이 자산을
-적재·색인해 둔 상태여야 검색 결과가 나옵니다.
-
-## 확인
+## 실행 예제
 
 ```bash
-curl "http://127.0.0.1:8001/health"
-curl "http://127.0.0.1:8001/search?q=김치%20담그기&modalities=video,text&size=10"
+$ curl -s http://127.0.0.1:8001/health
+{"status":"ok"}
 ```
 
-> ⚠️ **새 화면은 `GET /file-search` 를 쓴다**(대체 창구 — 같은 단어 절·점수식 · 개수·칩·페이징·정렬 · 12배 빠름). `/search` 는 기존 화면과 과제 산출물 근거로 남는다.
-
-`GET /search` 는 결과를 **모달리티별 그룹**(text·image·video·audio)으로 반환하며 섹션마다 독립
-랭킹입니다. 주제·기간·확장자·출처 필터와 주제 facet 을 함께 제공합니다.
-
-> 🔴 **이어 읽기(cursor) 규칙**(2026-09-17 · `/file-search`·`/mm-meta` 공통): `next_cursor` 는
-> **그때의 조건에만** 유효합니다. 검색어·좁히기·칩 필터·기간(개체는 종류·갈래)을 하나라도 바꾸면
-> 커서를 **버리고 처음부터** 받으십시오 — 서버가 조건을 대조해 **400** 으로 끊습니다(종전에는 막지
-> 못해 조건이 바뀐 커서가 200 으로 이어지고 자료가 조용히 빠졌습니다). 쪽 크기(`limit`)만 바꾸거나
-> 같은 칸의 값을 **다른 순서로** 고른 요청은 같은 조건이라 그대로 이어집니다.
-
-## 테스트
+파일 검색입니다. 주제를 두 개 지정하면 둘 중 하나에 해당하는 자산을 찾습니다.
 
 ```bash
-python -m unittest discover -s tests
+$ curl -s "http://127.0.0.1:8001/file-search?q=김치&topic=음식&topic=전통문화&modality=video&sort=updated_desc&offset=20&limit=20"
+{
+  "query": "김치",
+  "total": 57,
+  "offset": 20,
+  "limit": 20,
+  "sort": "updated_desc",
+  "items": [
+    {"asset_id": "...", "modality": "video", "file_name": "...", "score": 0.71,
+     "topics": ["음식"], "tags": ["..."]}
+  ],
+  "facets": {
+    "topic": [{"value": "음식", "count": 41}],
+    "modality": [{"value": "video", "count": 57}]
+  },
+  "filters": {"topics": ["음식", "전통문화"], "modalities": ["video"]}
+}
 ```
 
-## 구조
+`facets` 는 화면에서 결과를 더 좁힐 때 쓰는 목록입니다. 각 항목의 개수는 검색 엔진이
+계산한 값입니다.
 
-```
-service/
-  api/            FastAPI 앱 — 앱 조립은 __init__.py, 나머지는 책임별 한 모듈
-    routes/       경로 공간별 라우터(search·file_search·assets·mm_meta·catalog·account · admin·review 는 등재 보류)
-    db.py         DB 풀과 트랜잭션 통로(run_in_db 읽기 · run_in_db_write 쓰기)
-    audit.py      접근 기록 미들웨어(응답과 분리해 뒤에서 적재)
-    errors.py     예외 → HTTP 응답(검색 엔진 연결 실패 503)
-    lifespan.py   기동·종료 순서(감사 기록 비우기 → 풀 닫기)
-    params.py     공용 요청 검증 의존성(날짜·시계열 단위)
-  portal/         조회 계층 — 패키지는 재수출하지 않는다(소비처가 모듈을 직접 가리킨다)
-    asset/        자산 상세·집계·파일 메타·다운로드·썸네일
-    search/       검색 결과 그룹화·튜닝 프리셋·권한 투영
-    history/      접근 기록·처리 계보
-    common/       여러 도메인이 함께 쓰는 조각(확장자 SQL·시계열 피벗·검토 어휘)
-    auth/         인증·권한
-    mm_meta.py    개체 화면 정형 계층
-    dashboard.py  운영 대시보드 조립
-  bootstrap.py    코어 bootstrap_env 호출(자기 레포 루트의 .env · 서빙 역할)
-tests/            소스와 같은 구조(api/·portal/) + e2e/(실 DB) + contract/(IDD 계약 대조)
-```
+응답의 건수와 점수는 데이터에 따라 달라집니다. 자산 식별자는 UUID v7 입니다.
 
-> IDD 계약 대조(`tests/contract`)는 `tests/fixtures/idd_contract.json` 을 기준으로 봅니다.
-> `IDD.xlsx` 를 고쳤으면 `python scripts/regen_idd_contract.py` 로 JSON 을 갱신해 함께 커밋하십시오.
+## 기타
 
-## 설계 제약
+- **테스트** — `python -m unittest discover -s tests` 와 `ruff check service tests`.
+- **core 와의 경계** — 검색 순위를 정하는 방식처럼 pipeline 과 이 레포가 같은 답을 내야
+  하는 것은 core 에 둡니다. 화면이 바뀌면 함께 바뀌는 것은 이 레포에 둡니다.
 
-- **학습 기반 방식을 쓰지 않습니다** — 사전학습 모델은 추론 전용입니다.
-- 배포는 네이티브입니다(Dockerfile·compose 를 두지 않습니다). 공유 스토리지는 호스트 파일시스템 경로로 접근합니다.
-- 코드·주석·로그는 한국어로 작성합니다.
+## 자주 겪는 문제
 
-## 트러블슈팅
+| 증상 | 원인 |
+|---|---|
+| `필수 환경변수 누락` | 위 여섯 개 중 빠진 것이 있습니다 |
+| `No module named 'src'` | core 라이브러리가 설치되지 않았습니다 |
+| 기동하다 멈춤 | `PORTAL_JWT_SECRET` 이 비어 있습니다 |
+| 화면에서 부르면 막힘 | `PORTAL_CORS_ORIGINS` 에 그 주소가 없습니다 |
+| 부하가 걸리면 시간 초과 | DB 연결 풀이 모자랍니다 |
+| 404 가 나옴 | `/admin` 과 `/review` 는 등재하지 않았습니다 |
+| 검색 결과가 비어 있음 | 색인이 없거나, 검색어 임베딩 모델이 색인할 때와 다릅니다 |
+| 503 이 나옴 | 임베딩 서버나 OpenSearch 에 연결하지 못했습니다 |
 
-### `ValueError: 필수 환경변수 누락: META_MODEL`
+## 제3자 오픈소스
 
-설정이 **하나도** 로드되지 않았다는 뜻입니다. 값이 틀린 게 아니라 대개 `.env` 파일을 못 찾은 것입니다.
+전체 목록과 라이선스 전문은 `NOTICE` 파일에 있습니다.
 
-1. `.env.dev` 가 **실행하는 디렉터리** 또는 레포 루트에 있는지 확인하십시오(`cp .env.example .env.dev`).
-2. `--env dev` 로 실행했는지 확인하십시오 — `--env prod` 는 `.env.prod` 를 찾습니다.
-3. 그래도 안 되면 환경변수를 직접 주입하십시오: `set -a; . ./.env.dev; set +a`
-   (§환경변수 › 방법 B — 설치 방식과 무관하게 항상 동작합니다).
+| 구성요소 | 라이선스 |
+|---|---|
+| FastAPI · pydantic · PyJWT | MIT |
+| uvicorn | BSD 3-Clause |
+| OpenSearch 클라이언트 · OpenCV | Apache License 2.0 |
+| argon2-cffi | MIT |
+| psycopg | LGPL 3.0 |
 
-### 코어를 못 찾습니다 (`ModuleNotFoundError: No module named 'src'`)
-
-이 레포는 코어(`dataplatform-core`)를 필요로 합니다. §설치 순서대로 **코어를 먼저** 설치하십시오.
-
-### 401 이 반환됩니다
-
-`PORTAL_AUTH_DISABLED=0`(운영)이면 Bearer 토큰이 필수입니다. 연구·개발이면 `1` 로 두십시오.
-운영 모드의 토큰은 **로그인(`POST /auth/login`)** 으로만 받습니다.
-
-토큰이 유효한데도 401 이면 계정 상태를 보십시오 — 인증은 **요청마다** 계정 표(`portal_user`)를
-읽어, 정지된 계정(`status='suspended'`)이나 지워진 계정의 토큰을 곧바로 막습니다(만료를 기다리지
-않습니다). 개발 모드의 개발용 토큰(`/auth/token`)은 계정 표에 없어도 통과합니다.
-
-> `0` 인데 `PORTAL_JWT_SECRET` 이 없으면 **서버가 기동하지 않습니다**(fail-fast · 2026-09-22).
-> 종전에는 기동이 성공하고 `/health` 도 200 인 채 인증 요청마다 500 이 났습니다.
-
-### 검색 결과가 비어 있습니다
-
-적재·색인이 끝나 있어야 합니다. 파이프라인 레포에서 수집을 돌리고 `OPENSEARCH_SYNC_ENABLED=true`
-인지 확인하십시오. 다운로드·썸네일이 404 면 DB 에 기록된 원본 경로(`fs_path`)가 **이 서버에서 접근 가능한지** 보십시오
-(적재한 기계와 다르면 같은 경로로 마운트돼 있어야 합니다).
-
-## 이 레포에 대해
-
-이 레포는 이 프로젝트의 **공개 개발 레포**입니다 — 소스는 여기서 직접 개발합니다(2026-08-06 이후). 코드·테스트와
-"어떻게 돌리나"(이 README)만 담고, **왜 이렇게 설계했나**(기획·설계 문서·설계 변경 이력·결정 기록)는 별도 비공개
-문서 레포에 있습니다. 그래서 커밋 메시지는 짧고, 근거는 `근거: 설계이력 YYYY-MM-DD` 한 줄로 그 문서를 가리킵니다.
-
-- 코어는 git 태그(`vMAJOR.MINOR.PATCH`)를 기준으로 설치합니다. 코어 공개 API 변경은 코어 `CHANGELOG.md` 에 있습니다.
-- 문의는 과제 담당자에게 해주십시오.
+psycopg 는 LGPL 입니다. 파이썬에서 불러 쓰는 것은 이 소프트웨어의 라이선스에 영향을 주지
+않지만, 사용 사실을 `NOTICE` 에 밝혀야 합니다.
