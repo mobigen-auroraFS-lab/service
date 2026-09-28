@@ -17,14 +17,26 @@ from service.portal.common.repository import Repository
 # 등록 자산의 키워드를 낱개로 펴서 센다. 주제·하위주제로 좁힐 수 있게 ``asset_topic`` 을 선택적으로 건다.
 #   ⚠️ LEFT JOIN 이 아니라 조건이 있을 때만 INNER JOIN 하도록 SQL 을 나눈다 — LEFT JOIN 으로 두면
 #      주제가 여럿인 자산이 키워드마다 여러 번 세어져 건수가 부풀어 오른다.
+# 🔴 **검색 필터와 같은 열쇠로 묶는다**(2026-09-28). 검색은 태그를 NFKC → 공백 제거 → 소문자로 맞춘
+#    열쇠(코어 ``normalize_text_key``)로 거르므로 ``역사기록``·``역사 기록`` 이 한 태그다. 원문으로 묶으면
+#    목록에는 둘이 따로(23 · 9) 나오는데 어느 쪽을 눌러도 32건이 나와 "적힌 숫자 = 누르면 나오는 수"가
+#    깨졌다(공용 DB 읽기 전용 대조: 전통건축 원문 2,424 · 열쇠 2,644 = 검색 칩 2,644).
+#    보일 이름은 그 열쇠에서 가장 많이 쓰인 표기다(같으면 정렬상 앞선 것).
+#    ⚠️ 코어는 ``casefold`` 를 쓰고 여기는 ``lower`` 다 — 한글·영문에서는 같고, ß 같은 드문 글자만 갈린다.
 _TAGS_BASE = """
-SELECT k.kw AS tag, COUNT(DISTINCT a.asset_id) AS count
-FROM asset a
-JOIN asset_metadata m ON m.asset_id = a.asset_id
-JOIN LATERAL jsonb_array_elements_text(COALESCE(m.ext_meta->'keywords', '[]'::jsonb)) k(kw) ON TRUE
-{topic_join}
-WHERE a.status = 'registered'{topic_where}{like_where}
-GROUP BY k.kw
+WITH kw AS (
+  SELECT a.asset_id, k.kw,
+         lower(regexp_replace(normalize(k.kw, NFKC), '\\s', '', 'g')) AS key
+  FROM asset a
+  JOIN asset_metadata m ON m.asset_id = a.asset_id
+  JOIN LATERAL jsonb_array_elements_text(COALESCE(m.ext_meta->'keywords', '[]'::jsonb)) k(kw) ON TRUE
+  {topic_join}
+  WHERE a.status = 'registered'{topic_where}{like_where}
+)
+SELECT mode() WITHIN GROUP (ORDER BY kw) AS tag, COUNT(DISTINCT asset_id) AS count
+FROM kw
+WHERE key <> ''
+GROUP BY key
 ORDER BY count DESC, tag ASC
 LIMIT %s
 """
@@ -108,8 +120,11 @@ class CatalogRepository(Repository):
         pattern = like_pattern(q)
         rows = self.rows(_TOPIC_SUGGEST_SQL, (pattern, pattern, int(limit)))
         out = [{"value": r["value"], "kind": r["kind"], "count": int(r["count"])} for r in rows]
-        remaining = int(limit) - len(out)
-        if remaining > 0:
-            for tag in self.tags(topics=[], subtopics=[], q=q, limit=remaining):
-                out.append({"value": tag["tag"], "kind": "tag", "count": tag["count"]})
+        # 🔴 두 출처를 **합친 뒤** 건수순으로 자른다. 종전에는 주제·하위주제로 상한을 먼저 채우고 남는
+        #    자리에만 태그를 붙여, 주제가 상한만큼 걸리면 건수가 훨씬 많은 태그도 빠졌다(2026-09-23 대조).
+        #    각 출처를 상한만큼 받아 합치면 합친 목록의 상위 N 이 정확하다.
+        out.extend({"value": t["tag"], "kind": "tag", "count": int(t["count"])}
+                   for t in self.tags(topics=[], subtopics=[], q=q, limit=int(limit)))
+        # 같은 건수는 값 → 종류 순으로 못 박는다(같은 요청이 늘 같은 순서를 내게).
+        out.sort(key=lambda r: (-r["count"], r["value"], r["kind"]))
         return out[:int(limit)]

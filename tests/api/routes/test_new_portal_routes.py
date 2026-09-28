@@ -209,6 +209,54 @@ class TestSuggestAndFacetExtra(unittest.TestCase):
         self.assertEqual(200, r.status_code)
         self.assertEqual(1, r.json()["total"])
 
+    def test_태그_목록은_검색_필터와_같은_열쇠로_묶는다(self) -> None:
+        """`역사기록`·`역사 기록` 은 검색에서 한 태그다 — 목록도 한 줄이어야 적힌 숫자 = 누르면 나오는 수(2026-09-28)."""
+        from service.portal.repositories.catalog_repo import CatalogRepository
+
+        seen: list[str] = []
+        repo = CatalogRepository.__new__(CatalogRepository)
+        with mock.patch.object(CatalogRepository, "rows",
+                               side_effect=lambda sql, params: seen.append(sql) or []):
+            repo.tags(topics=["역사·문화유산"], subtopics=[], q="역사", limit=5)
+        sql = " ".join(seen[0].split())
+        self.assertIn("normalize(k.kw, NFKC)", sql)          # 코어 normalize_text_key 와 같은 순서: NFKC →
+        self.assertIn("regexp_replace(", sql)                  #   공백 제거 →
+        self.assertIn("lower(", sql)                           #   소문자
+        self.assertIn("GROUP BY key", sql)                     # 원문(kw)이 아니라 열쇠로 묶는다
+        self.assertIn("COUNT(DISTINCT asset_id)", sql)         # 두 표기를 다 단 자산도 한 번
+        self.assertIn("JOIN asset_topic t", sql)               # 주제로 좁히는 길은 그대로
+        self.assertIn("k.kw ILIKE %s", sql)
+
+    def test_추천은_출처를_합쳐_건수순으로_자른다(self) -> None:
+        """주제가 상한만큼 걸려도 건수가 더 많은 태그가 빠지면 안 된다(2026-09-23 결함 수정)."""
+        from service.portal.repositories.catalog_repo import CatalogRepository
+
+        repo = CatalogRepository.__new__(CatalogRepository)
+        topics = [{"value": "한국사", "kind": "topic", "count": 5},
+                  {"value": "한식", "kind": "subtopic", "count": 2}]
+        with mock.patch.object(CatalogRepository, "rows", return_value=topics), \
+             mock.patch.object(CatalogRepository, "tags",
+                               return_value=[{"tag": "한옥", "count": 9}, {"tag": "한복", "count": 2}]):
+            out = repo.suggest(q="한", limit=2)
+        self.assertEqual([("한옥", "tag", 9), ("한국사", "topic", 5)],
+                         [(r["value"], r["kind"], r["count"]) for r in out])
+
+    def test_추천은_같은_건수면_값_순이다(self) -> None:
+        from service.portal.repositories.catalog_repo import CatalogRepository
+
+        repo = CatalogRepository.__new__(CatalogRepository)
+        with mock.patch.object(CatalogRepository, "rows",
+                               return_value=[{"value": "한식", "kind": "subtopic", "count": 2}]), \
+             mock.patch.object(CatalogRepository, "tags", return_value=[{"tag": "한복", "count": 2}]):
+            out = repo.suggest(q="한", limit=10)
+        self.assertEqual(["한복", "한식"], [r["value"] for r in out])
+
+    def test_칩의_모르는_종류도_422(self) -> None:
+        """목록(/file-search)과 같은 닫힌 어휘 — 칩만 조용히 0건이면 두 숫자가 갈린다(2026-09-23)."""
+        r = self.client.get("/file-search/facet-extra?modality=문서")
+        self.assertEqual(422, r.status_code)
+        self.assertIn("알 수 없는 종류", r.json()["detail"])
+
     def test_모르는_축은_422(self) -> None:
         self.assertEqual(422, self.client.get("/file-search/facet-extra?axis=bogus").status_code)
 
