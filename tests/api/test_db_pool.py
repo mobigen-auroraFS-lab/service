@@ -82,32 +82,33 @@ class TestNewDb(unittest.TestCase):
         self.assertEqual(kwargs["config"].max_pool_size, 25)
 
 
-class TestPoolWarning(unittest.TestCase):
-    """스레드풀 > 커넥션풀 경고 — 관측용이라 어떤 경우에도 기동을 막지 않는다."""
+class TestThreadLimitAlignment(unittest.TestCase):
+    """스레드 상한을 풀 상한에 맞춘다(2026-09-28) — 어떤 경우에도 기동을 막지 않는다."""
 
-    def test_warns_when_threads_exceed_pool(self) -> None:
+    def _run(self, env: dict[str, str], tokens: int = 40) -> MagicMock:
         limiter = MagicMock()
-        limiter.total_tokens = 40
+        limiter.total_tokens = tokens
         with patch("anyio.to_thread.current_default_thread_limiter", return_value=limiter), \
-             patch.dict("os.environ", {papi.POOL_MAX_ENV: "10"}), \
-             self.assertLogs(papi._LOG, level="WARNING") as cm:
-            papi.warn_if_pool_undersized()
+             patch.dict("os.environ", env):
+            papi.align_thread_limit_to_pool()
+        return limiter
+
+    def test_스레드가_풀보다_많으면_풀에_맞춘다(self) -> None:
+        self.assertEqual(10, self._run({papi.POOL_MAX_ENV: "10"}).total_tokens)
+
+    def test_이미_작으면_그대로(self) -> None:
+        self.assertEqual(8, self._run({papi.POOL_MAX_ENV: "10"}, tokens=8).total_tokens)
+
+    def test_배포가_정한_값을_쓴다_풀보다_크면_경고(self) -> None:
+        with self.assertLogs(papi._LOG, level="WARNING") as cm:
+            lim = self._run({papi.POOL_MAX_ENV: "10", papi.THREAD_LIMIT_ENV: "30"})
+        self.assertEqual(30, lim.total_tokens)
         self.assertIn("커넥션 풀 상한", "".join(cm.output))
-
-    def test_silent_when_matched(self) -> None:
-        limiter = MagicMock()
-        limiter.total_tokens = 40
-        with patch("anyio.to_thread.current_default_thread_limiter", return_value=limiter), \
-             patch.dict("os.environ", {papi.POOL_MAX_ENV: "40"}):
-            with patch.object(papi._LOG, "warning") as warn:
-                papi.warn_if_pool_undersized()
-        warn.assert_not_called()
 
     def test_never_raises(self) -> None:
         # async 컨텍스트 밖·anyio 미가용 등에서 예외가 새면 기동이 죽는다.
         with patch("anyio.to_thread.current_default_thread_limiter", side_effect=RuntimeError):
-            papi.warn_if_pool_undersized()  # 예외 없이 반환하면 통과
-
+            papi.align_thread_limit_to_pool()  # 예외 없이 반환하면 통과
 
 if __name__ == "__main__":
     unittest.main()

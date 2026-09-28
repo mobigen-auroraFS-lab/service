@@ -36,28 +36,13 @@ class TestCorsHeaders(unittest.TestCase):
     def test_인증_헤더만(self) -> None:
         self.assertEqual(200, self._preflight("authorization"))
 
-    def test_이어받기_Range_가_막히지_않는다(self) -> None:
-        """종전에는 authorization,range 사전 요청이 400 이라 다른 오리진에서 이어받기가 안 됐다(2026-09-28)."""
-        self.assertEqual(200, self._preflight("authorization,range"))
-        self.assertEqual(200, self._preflight("authorization,range,if-range"))
+    def test_JSON_본문_요청(self) -> None:
+        self.assertEqual(200, self._preflight("authorization,content-type"))
 
-    def test_화면이_읽을_응답_헤더를_노출한다(self) -> None:
-        r = _client().get("/x", headers={"Origin": ORIGIN})
-        exposed = {h.strip().lower() for h in r.headers["access-control-expose-headers"].split(",")}
-        for name in ("content-disposition", "content-range", "accept-ranges",
-                     "x-bundle-files", "x-bundle-missing"):
-            self.assertIn(name, exposed)
-
-    def test_묶음_창구가_싣는_X_헤더는_모두_노출한다(self) -> None:
-        """개체 묶음의 잘림(X-Bundle-Truncated)이 빠져 다른 오리진에서 못 읽었다(2026-09-28)."""
-        import pathlib
-        import re
-
-        routes = pathlib.Path(__file__).resolve().parents[2] / "service" / "api" / "routes"
-        sent = {m for f in routes.glob("*.py") for m in re.findall(r'"(X-[A-Za-z-]+)"', f.read_text())}
-        self.assertTrue(sent)
-        self.assertEqual(set(), sent - set(CORS_EXPOSE_HEADERS))
-
+    def test_파일_전송_헤더는_열지_않는다(self) -> None:
+        """다운로드 창구를 지웠다(2026-09-28) — 이어받기 헤더도, 노출 헤더도 두지 않는다."""
+        self.assertEqual(400, self._preflight("authorization,range"))
+        self.assertEqual((), CORS_EXPOSE_HEADERS)
 
 class TestServerErrorCors(unittest.TestCase):
     """미처리 예외(500)도 허용 오리진이면 CORS 헤더가 붙어야 화면이 봉투를 읽는다(2026-09-28 재현)."""

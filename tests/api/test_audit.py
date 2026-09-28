@@ -35,8 +35,9 @@ class DeriveActionTest(unittest.TestCase):
     def test_routes(self):
         self.assertEqual(derive_access_action("GET", "/search"), ("search", None))
         self.assertEqual(derive_access_action("GET", f"/assets/{_UUID}"), ("asset_view", _UUID))
-        self.assertEqual(derive_access_action("GET", f"/assets/{_UUID}/download"), ("download", _UUID))
-        self.assertEqual(derive_access_action("GET", f"/assets/{_UUID}/bundle"), ("bundle", _UUID))
+        # 다운로드·묶음·원문 창구는 지웠다(2026-09-28) — 그 경로는 기록 대상이 아니다.
+        for tail in ("download", "bundle", "content", "thumbnail"):
+            self.assertIsNone(derive_access_action("GET", f"/assets/{_UUID}/{tail}"))
 
     def test_non_uuid_segment_none(self):
         # 2026-07-15 B3: 비-UUID 세그먼트(컬렉션/예약·오타)는 단건 감사 아님 — 과거엔 'unclassified' 를

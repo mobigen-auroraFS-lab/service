@@ -35,6 +35,8 @@ from src.relations.graph_query import fetch_relations_for_asset
 # asset + metadata 1행. LEFT JOIN — 메타 없어도 자산 행 유지(core/ext NULL 가능).
 # 경로에서 표시용 파일명을 파생한다. 경로는 항상 존재하며
 # 검색 색인(opensearch_sync)·review 등 전 표면이 fs_path basename 을 파일명으로 쓰는 관례와 일치한다.
+# ⚠️ [2026-09-28] 파일 변경 감지 연동 뒤에는 fs_path 가 원본 위치(루트 기준 경로 · id 접두 없음)이고 RENAME 으로
+#    바뀐다 — 파일명 · 확장자도 따라 바뀐다(``asset_id`` 는 그대로). ``service/portal/asset/__init__.py`` 「원본 파일 전제」.
 # 🔴 [2026-09-21] ``file_size``·``created_at``·``updated_at`` 을 함께 읽는다 — 화면의 상세가
 #    크기·등록일을 보여 주는데 목록을 거치지 않고 링크로 바로 열면 그 값을 얻을 데가 없었다.
 _FETCH_ASSET_SQL = """

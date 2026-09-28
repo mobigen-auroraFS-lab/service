@@ -413,6 +413,36 @@ class TestFileSearchCursor(unittest.TestCase):
         r = self.client.get("/file-search", params={"cursor": "!!!", "sort": "created_desc"})
         self.assertEqual(r.status_code, 400)
 
+    @patch("service.api.routes.file_search.browse_files")
+    def test_커서_오류_문구에_파이썬_진단이_새지_않는다(self, mock_browse) -> None:
+        """코어 문구의 ``: `` 뒤(예외 원문 · 입력 repr)는 떼고 할 일을 붙인다(2026-09-28)."""
+        from src.search.cursor import CursorError
+        mock_browse.side_effect = CursorError(
+            "커서를 읽을 수 없다: 'utf-8' codec can't decode byte 0xff in position 0")
+        r = self.client.get("/file-search", params={"cursor": "!!!", "sort": "created_desc"})
+        self.assertEqual(r.status_code, 400)
+        detail = r.json()["detail"]
+        self.assertNotIn("codec", detail)
+        self.assertTrue(detail.startswith("커서를 읽을 수 없다 — "), detail)
+        # ``: `` 가 없는 문구는 그대로 간다.
+        mock_browse.side_effect = CursorError("커서가 가리키는 조회 조건이 이번 요청과 다르다 — 처음부터 다시 받아야 한다")
+        r = self.client.get("/file-search", params={"cursor": "!!!", "sort": "created_desc"})
+        self.assertEqual("커서가 가리키는 조회 조건이 이번 요청과 다르다 — 처음부터 다시 받아야 한다", r.json()["detail"])
+
+    @patch("service.api.routes.file_search.browse_files")
+    def test_칩을_빼면_코어에_셀_축을_비워_넘긴다(self, mock_browse) -> None:
+        """다음 쪽마다 칩 · 총계를 다시 세던 부하를 끈다 — 총계는 그대로 센다(2026-09-28)."""
+        mock_browse.return_value = {**_browsed(), "facets": {}}
+        r = self.client.get("/file-search", params={"cursor": "abc", "sort": "created_desc",
+                                                     "with_facets": "false"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual((), mock_browse.call_args.kwargs["axes"])
+        self.assertEqual({}, r.json()["facets"])
+        mock_browse.reset_mock()
+        mock_browse.return_value = _browsed()
+        self.client.get("/file-search", params={"cursor": "abc", "sort": "created_desc"})
+        self.assertNotIn("axes", mock_browse.call_args.kwargs)     # 기본은 종전과 같다(코어 기본 축 전부)
+
     @patch("service.portal.repositories.search_repo.project_rows")
     @patch("service.api.routes.file_search.browse_files")
     def test_커서_경로에도_권한_가리기가_걸린다(self, mock_browse, mock_project) -> None:

@@ -25,6 +25,7 @@ _LOCK = threading.Lock()
 # AnyIO 스레드풀(기본 40개)에서 돌린다. 반면 코어 ``PostgresConfig`` 의 풀 기본값은 **max 10**
 # 이고 환경변수로 열려 있지 않다 — 동시 요청이 10을 넘으면 남은 스레드가 커넥션을 기다리다
 # ``PoolTimeout`` 으로 떨어진다. 부하가 걸려야 드러나는 종류의 고장이라 평소엔 보이지 않는다.
+# 🔴 [2026-09-28] 그래서 기동할 때 스레드 상한을 풀 상한에 맞춘다(``align_thread_limit_to_pool``).
 #
 # 기본값을 두지 않는다 — 미설정이면 코어 기본값을 그대로 써서 **종전 동작이 바뀌지 않는다**.
 # 값을 정하는 것은 배포 결정이다: **워커 수 × max ≤ PostgreSQL max_connections** 를 지켜야
@@ -92,35 +93,46 @@ def new_db() -> object:
     return PostgresUtil(config=config, dsn=dsn or None)
 
 
-def warn_if_pool_undersized() -> None:
-    """동기 핸들러 동시 실행 상한(스레드풀)이 커넥션 풀보다 크면 기동 시점에 한 번 알린다.
+THREAD_LIMIT_ENV = "PORTAL_THREAD_LIMIT"
 
-    둘이 어긋나도 **평소에는 아무 일도 없다** — 동시 요청이 풀 크기를 넘는 순간에만 커넥션
-    대기가 쌓이고 ``PoolTimeout`` 으로 떨어진다. 부하를 걸어 보기 전에는 드러나지 않는 종류라
-    기동할 때 알려 둔다. **막지는 않는다** — 배포가 의도한 값일 수 있다.
+
+def align_thread_limit_to_pool() -> None:
+    """동기 핸들러 동시 실행 상한(스레드풀)을 커넥션 풀 상한에 **맞춘다**(기동 시 한 번).
+
+    🔴 [2026-09-28] 종전에는 경고만 했다(스레드 40 > 풀 10). 둘이 어긋나면 동시 요청이 풀을 넘는 순간
+    남은 스레드가 커넥션을 기다리다 ``PoolTimeout`` 으로 **실패**한다 — 부하를 걸어야 드러나는 고장이다.
+    요청마다 계정 상태를 DB 에서 읽으므로 거의 모든 요청이 커넥션을 쓴다. 스레드 상한을 풀과 같게 두면
+    넘치는 요청은 실패하지 않고 **스레드 앞에서 줄을 선다**.
+
+    ``PORTAL_THREAD_LIMIT`` 를 주면 그 값을 쓴다(배포가 정한 값 · 풀보다 크면 종전처럼 경고만).
+    어떤 경우에도 기동을 막지 않는다 — 못 읽으면 조용히 넘어간다.
     """
     try:
         from anyio.to_thread import current_default_thread_limiter
 
         from src.database.postgres_util import PostgresConfig
 
-        threads = int(current_default_thread_limiter().total_tokens)
+        limiter = current_default_thread_limiter()
+        threads = int(limiter.total_tokens)
         _, max_size = pool_size_override()
         if max_size is None:
             max_size = PostgresConfig().max_pool_size
-    except Exception:  # noqa: BLE001 — 관측용이다. 못 읽으면 조용히 넘어간다(기동을 막지 않는다).
+        raw = os.getenv(THREAD_LIMIT_ENV, "").strip()
+        wanted = int(raw) if raw.isdigit() and int(raw) > 0 else None
+    except Exception:  # noqa: BLE001 — 관측·조정용이다. 못 읽으면 조용히 넘어간다(기동을 막지 않는다).
+        return
+    if wanted is not None:
+        limiter.total_tokens = wanted
+        if wanted > max_size:
+            _LOG.warning(
+                "%s=%d 이 DB 커넥션 풀 상한(%d)보다 큽니다 — 동시 요청이 %d 를 넘으면 커넥션 대기가 "
+                "쌓입니다(워커 수 × 풀 상한 ≤ PostgreSQL max_connections).",
+                THREAD_LIMIT_ENV, wanted, max_size, max_size)
         return
     if threads > max_size:
-        _LOG.warning(
-            "동시 실행 스레드 상한(%d)이 DB 커넥션 풀 상한(%d)보다 큽니다 — 동시 요청이 %d 를 "
-            "넘으면 커넥션 대기가 쌓입니다. %s 로 풀을 키우거나 스레드 상한을 낮추십시오 "
-            "(워커 수 × 풀 상한 ≤ PostgreSQL max_connections).",
-            threads,
-            max_size,
-            max_size,
-            POOL_MAX_ENV,
-        )
-
+        limiter.total_tokens = max_size
+        _LOG.info("동시 실행 스레드 상한을 %d → %d(DB 커넥션 풀 상한)로 맞췄습니다 — 넘치는 요청은 줄을 섭니다 "
+                  "(%s 로 풀을 키우면 함께 올라갑니다).", threads, max_size, POOL_MAX_ENV)
 
 def get_db() -> object:
     """앱 전체가 공유하는 DB 접근 객체를 돌려준다(첫 호출 때 연결 풀이 한 번 열린다)."""

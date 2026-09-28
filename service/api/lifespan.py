@@ -35,7 +35,7 @@ async def lifespan(_app: FastAPI):
     #    사용자 요청마다 500 이 났다. 이제는 서버가 아예 뜨지 않는다(키가 없으면 ValueError).
     #    ⚠️ ``bootstrap_env`` **뒤**여야 한다 — 서명 키가 ``.env.{ENV}`` 에서 들어올 수 있다.
     load_portal_auth_config()
-    db.warn_if_pool_undersized()
+    db.align_thread_limit_to_pool()
     yield
     # 종료 시 남은 감사 기록 작업을 먼저 비운다(응답과 분리돼 뒤에서 돌던 것들).
     await audit.drain_pending()

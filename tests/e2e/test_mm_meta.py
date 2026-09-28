@@ -188,59 +188,8 @@ class TestMmMetaE2E(unittest.TestCase):
         self.assertTrue(all(r["bundle_size"] >= 1 for r in rows))
 
     # ── ⑤ zip ────────────────────────────────────────────────────────────────
-    def test_카드_zip_이_열리고_헤더_수와_맞는다(self) -> None:
-        items = self._list()[:3]
-        if not items:
-            self.skipTest("노출 개체가 없다")
-        for item in items:
-            with self.subTest(uid=item["entity_uid"]):
-                resp = self.client.get(
-                    f"/mm-meta/{item['entity_type']}/{item['entity_uid']}/bundle")
-                if resp.status_code == 409:
-                    continue  # 경로를 아는 파일이 하나도 없는 개체 — 뜻에 맞는 코드다
-                self.assertEqual(resp.status_code, 200, resp.text)
-                count = int(resp.headers["X-Bundle-Count"])
-                with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
-                    names = zf.namelist()
-                    missing = 0
-                    if "_manifest.json" in names:
-                        missing = len(json.loads(zf.read("_manifest.json"))["missing"])
-                    entries = [n for n in names if n != "_manifest.json"]
-                    self.assertEqual(len(entries) + missing, count)
-                    self.assertIsNone(zf.testzip(), "zip 이 손상됐다")
-
-    def test_묶음_zip_은_좁히면_받아지고_안_좁히면_상한을_알린다(self) -> None:
-        whole = self.client.get("/mm-meta/bundle")
-        # 전체는 용량 상한을 넘거나(413) 받아지거나(200) 자료가 없다(404) — 500 이면 안 된다.
-        self.assertIn(whole.status_code, (200, 404, 413), whole.text[:200])
-        areas = [a for a in self._facets()["areas"] if a["entities"] > 0]
-        if not areas:
-            self.skipTest("노출 개체가 있는 갈래가 없다")
-        narrowed = self.client.get("/mm-meta/bundle",
-                                   params={"areas": areas[-1]["name"], "exclude_video": "true"})
-        self.assertIn(narrowed.status_code, (200, 404, 409, 413), narrowed.text[:200])
-        if narrowed.status_code == 200:
-            with zipfile.ZipFile(io.BytesIO(narrowed.content)) as zf:
-                self.assertIsNone(zf.testzip())
-
-    def test_옛_파라미터_이름도_같은_결과를_준다(self) -> None:
-        """프론트가 옛 이름을 계속 보내도 **좁혀지지 않은 전량**을 받지 않게 별칭을 둔다."""
-        areas = [a for a in self._facets()["areas"] if a["entities"] > 0]
-        if not areas:
-            self.skipTest("노출 개체가 있는 갈래가 없다")
-        name = areas[-1]["name"]
-        new = self.client.get("/mm-meta/bundle", params={"areas": name})
-        old = self.client.get("/mm-meta/bundle", params={"labels": name})
-        self.assertEqual(new.status_code, old.status_code)
-        self.assertEqual(new.headers.get("X-Bundle-Count"), old.headers.get("X-Bundle-Count"))
 
     # ── ⑥ 오류 경로 ───────────────────────────────────────────────────────────
-    def test_없는_개체는_404_없는_갈래_묶음은_404(self) -> None:
-        self.assertEqual(self.client.get("/mm-meta/장소/__없는개체__").status_code, 404)
-        self.assertEqual(
-            self.client.get("/mm-meta/bundle", params={"areas": "__없는갈래__"}).status_code, 404)
-        self.assertEqual(
-            self.client.get("/mm-meta/장소/__없는개체__/bundle").status_code, 404)
 
     def test_없는_갈래로_좁히면_빈_목록이고_오류가_아니다(self) -> None:
         self.assertEqual(self._list(areas="__없는갈래__"), [])
@@ -379,13 +328,6 @@ class TestMmMetaE2E(unittest.TestCase):
     def test_깨진_커서는_400_이고_500_이_아니다(self) -> None:
         resp = self.client.get("/mm-meta", params={"limit": 10, "cursor": "!!!깨짐!!!"})
         self.assertEqual(resp.status_code, 400, resp.text)
-
-    def test_타입_별칭이_칩_응답의_부분과_같다(self) -> None:
-        alias = self.client.get("/mm-meta/types")
-        self.assertEqual(alias.status_code, 200, alias.text)
-        facets = self._facets()
-        self.assertEqual(alias.json(), {"vocab": facets["vocab"], "types": facets["types"]})
-
 
 if __name__ == "__main__":
     unittest.main()

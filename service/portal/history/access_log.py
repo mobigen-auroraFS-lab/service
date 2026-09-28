@@ -58,7 +58,8 @@ def derive_access_action(method: str, path: str) -> tuple[str, str | None] | Non
     ``/assets/`` 뒤 첫 세그먼트는 **UUID 형식일 때만** 자산 단건으로 간주한다 — ``/assets/unclassified``
     컬렉션처럼 UUID 가 아닌 경로 조각을 자산 id 로 오인하면 기록 INSERT 가
     매번 실패하고, 최선 노력 방식이라 조용히 삼켜진다(감사 유실 + 경고만 쌓임). 컬렉션 조회 기록이
-    필요해지면 asset_id 없는 별도 action 으로 설계한다(현재는 단건·검색·다운로드·묶음만 감사).
+    필요해지면 asset_id 없는 별도 action 으로 설계한다(현재는 단건·검색만 감사 — 다운로드·묶음·원문 창구는
+    2026-09-28 삭제, 파일 제공을 협의해 다시 만들 때 기록 대상도 함께 되살린다).
 
     Args:
         method: HTTP 메서드. **GET 이 아니면 곧바로 기록 대상에서 뺀다**(조회만 감사한다).
@@ -80,14 +81,6 @@ def derive_access_action(method: str, path: str) -> tuple[str, str | None] | Non
             return None  # 비-UUID(unclassified 등 컬렉션/예약 세그먼트) — 단건 감사 아님(B3)
         if len(parts) == 1:
             return ("asset_view", asset_id)
-        if len(parts) == 2 and parts[1] == "download":
-            return ("download", asset_id)
-        if len(parts) == 2 and parts[1] == "bundle":
-            return ("bundle", asset_id)
-        # [2026-09-21] 원문 열람 — 상세(asset_view)와 구분한다. 요약이 아니라 **본문 글자**를
-        # 가져가는 접근이라, 감사에서 같은 이름으로 묶으면 무엇을 읽었는지 구분되지 않는다.
-        if len(parts) == 2 and parts[1] == "content":
-            return ("content", asset_id)
     return None
 
 
