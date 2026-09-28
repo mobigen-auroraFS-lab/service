@@ -4,8 +4,12 @@
 
 ## 이 레포지토리는 무엇인가
 
-웹 화면이 호출하는 API 를 제공합니다. 검색, 자산 상세 조회, 파일 내려받기, 자산 간 관계
-조회, 계정과 로그인을 담당합니다.
+웹 화면이 호출하는 API 를 제공합니다. 검색, 자산 상세 조회, 개체 조회, 계정과 로그인을
+담당합니다.
+
+**파일을 내주는 API 는 지금 없습니다.** 원본 내려받기, 묶음 zip, 미리보기 이미지, 본문은
+파일 제공 방식을 다른 쪽과 협의한 뒤 다시 만듭니다(2026-09-28 삭제 · 지우기 직전 구현은
+git `9d11d29`). 다시 만들 때 따를 원본 파일 전제는 `service/portal/asset/__init__.py` 에 적어 두었습니다.
 
 검색 기능 자체는 core 라이브러리에 있습니다. 이 레포는 그 함수를 호출하고, 결과를 화면이
 쓰기 쉬운 JSON 으로 만들어 돌려줍니다.
@@ -28,7 +32,7 @@ service/
     routes/           # 경로별 라우터
       search.py         # 종류별로 묶어 보여주는 검색
       file_search.py    # 파일 목록 형태의 검색
-      assets.py         # 자산 상세, 내려받기, 미리보기, 본문
+      assets.py         # 자산 상세, 주제, 자산의 개체
       mm_meta.py        # 개체 목록과 상세
       catalog.py        # 태그·관계 종류 목록
       account.py        # 회원가입·로그인
@@ -41,7 +45,7 @@ service/
     params.py         # 여러 경로가 함께 쓰는 요청 검증
 
   portal/             # 실제 조회와 가공
-    asset/            # 자산 상세, 내려받기, 미리보기, 본문
+    asset/            # 자산 상세, 집계, 파일 메타
     auth/             # 로그인, 토큰, 비밀번호
     search/           # 검색 결과 묶기, 정렬 기준, 칩 집계
     history/          # 접근 기록, 처리 이력
@@ -74,17 +78,13 @@ tests/                # 단위 테스트
 | `GET /file-search/suggest` | 검색어 제안 |
 | `GET /file-search/facet-extra` | 추가 칩 집계 |
 | `GET /assets/{id}` | 자산 상세 |
-| `GET /assets/{id}/content` | 본문 |
-| `GET /assets/{id}/download` | 원본 파일 내려받기 |
-| `GET /assets/{id}/thumbnail` | 미리보기 이미지 |
-| `GET /assets/{id}/bundle` | 이 자산과 관계된 자산 목록 |
+| `GET /assets/{id}/mm-meta` | 이 자산에서 나온 개체 |
 | `GET /assets/unclassified` | 분류되지 않은 자산 |
-| `POST /assets/bundle` | 고른 자산 여러 개를 zip 하나로 내려받기 |
 | `GET /topics` | 주제 목록. 대주제와 세부주제를 자산 수와 함께 |
 | `GET /topics/{topic}` | 그 주제에 속한 자산 |
 | `GET /mm-meta` | 개체 목록 |
 | `GET /mm-meta/{type}/{uid}` | 개체 상세 |
-| `GET /mm-meta/types` · `/facets` · `/bundle` | 개체 타입·칩·묶음 |
+| `GET /mm-meta/facets` | 개체 칩 집계 |
 | `GET /tags` · `/relation-kinds` | 태그·관계 종류 목록 |
 
 서버를 띄운 뒤 `/docs` 로 접속하면 전체 목록과 파라미터를 확인할 수 있습니다.
@@ -104,15 +104,11 @@ tests/                # 단위 테스트
 | GPU | 불필요 | 불필요 |
 
 운영 클러스터에서 최대 2코어·4GB 까지 허용해 두었는데, 자산 2만 건에 검색이 붙은 상태에서
-실제 사용량은 0.43GB 였습니다. 동시 접속자가 늘면 CPU 를 먼저 올리십시오. 디스크는 로그와
-미리보기 이미지 캐시로만 씁니다.
+실제 사용량은 0.43GB 였습니다. 동시 접속자가 늘면 CPU 를 먼저 올리십시오. 디스크는 로그로만
+씁니다.
 
 GPU 는 필요 없습니다. 검색어를 벡터로 바꾸는 일은 임베딩 서버에 요청합니다. 이때 **문서를
 색인할 때 쓴 것과 같은 모델**이어야 합니다. 다르면 오류 없이 엉뚱한 결과가 나옵니다.
-
-원본 파일을 보관하는 폴더가 이 서버에서도 보여야 합니다. 파일 내려받기와 미리보기가
-데이터베이스에 적힌 경로를 그대로 읽기 때문입니다. 마운트가 없으면 검색은 되는데 파일만
-열리지 않습니다.
 
 ### 소프트웨어
 
@@ -125,7 +121,6 @@ GPU 는 필요 없습니다. 검색어를 벡터로 바꾸는 일은 임베딩 �
 | pydantic | 2.7 이상 | 2.13.1 |
 | PyJWT | 2.8 이상 | 2.12.1 |
 | argon2-cffi | 23.1 이상 | 25.1.0 |
-| opencv-python | 4.9 이상 | — |
 | PostgreSQL | 17 + pgvector 확장 | 17.9 |
 | OpenSearch | 3.x | 3.6.0 |
 
@@ -169,7 +164,9 @@ TEXT_EMBED_NORMALIZE=true
 | `PORTAL_CORS_ORIGINS` | 다른 주소에서 호출을 허용할 목록. 쉼표로 나열 |
 | `PORTAL_DB_POOL_MIN` · `PORTAL_DB_POOL_MAX` | DB 연결 풀 크기 |
 | `PORTAL_MM_META_FORM_SKILLS` | 개체 화면에 쓸 분류 기준 |
-| `THUMBNAIL_CACHE_DIR` | 미리보기 이미지 저장 폴더. 없으면 임시 폴더를 씁니다 |
+| `PORTAL_THREAD_LIMIT` | 동시에 처리할 요청 수. 없으면 기동할 때 DB 연결 풀 크기에 맞춥니다 |
+| `PORTAL_MAX_BODY_BYTES` | 요청 본문 상한. 기본 1MiB, 넘으면 413 |
+| `PORTAL_TAGS_CACHE_SECONDS` | `/tags` 와 검색어 제안이 쓰는 태그 목록을 들고 있을 시간. 기본 300초, `0` 이면 끕니다 |
 
 ### 다른 주소에서 호출할 때
 
@@ -184,11 +181,12 @@ PORTAL_CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 
 ### DB 연결 풀
 
-**동시 요청이 많아지면 연결이 모자라 실패합니다.** 요청 처리는 최대 40개까지 동시에
-돌아가는데 데이터베이스 연결은 기본 10개뿐이라, 11번째부터는 연결을 기다리다 시간 초과로
-떨어집니다. 부하가 걸려야 드러나는 종류라 기동할 때 경고를 남깁니다.
+요청 처리는 원래 최대 40개까지 동시에 돌아가는데 데이터베이스 연결은 기본 10개뿐이라,
+11번째부터는 연결을 기다리다 시간 초과로 떨어졌습니다. 그래서 기동할 때 동시 처리 수를 연결
+풀 크기에 맞춥니다(2026-09-28). 넘치는 요청은 실패하지 않고 줄을 서서 기다립니다.
 
-`PORTAL_DB_POOL_MAX` 로 풀을 키우되 아래를 넘지 않게 맞춥니다.
+동시 접속이 늘면 `PORTAL_DB_POOL_MAX` 로 풀을 키웁니다. 동시 처리 수도 함께 따라 올라갑니다.
+아래를 넘지 않게 맞춥니다.
 
 ```
 uvicorn 워커 수 × PORTAL_DB_POOL_MAX ≤ PostgreSQL 최대 연결 수
@@ -216,7 +214,6 @@ uvicorn service.api:app --host 0.0.0.0 --port 8001 --workers 2      # 운영
 |---|---|
 | core 를 새 버전으로 올렸을 때 | core 재설치 → 테스트 → 재시작. 임베딩 모델이 바뀌었으면 pipeline 재색인이 먼저입니다 |
 | 검색 결과가 비어 있을 때 | pipeline 의 색인 상태, 임베딩 서버 응답, OpenSearch 연결을 확인하십시오 |
-| 파일 내려받기가 실패할 때 | 원본 보관 폴더가 이 서버에 마운트되어 있는지 확인하십시오 |
 | 동시 접속이 늘 때 | `PORTAL_DB_POOL_MAX` 와 PostgreSQL 최대 연결 수를 함께 확인하십시오 |
 
 ## 실행 예제
@@ -249,7 +246,8 @@ $ curl -s "http://127.0.0.1:8001/file-search?q=김치&topic=음식&topic=전통�
 ```
 
 `facets` 는 화면에서 결과를 더 좁힐 때 쓰는 목록입니다. 각 항목의 개수는 검색 엔진이
-계산한 값입니다.
+계산한 값입니다. 다음 쪽을 받을 때처럼 칩이 필요 없으면 `with_facets=false` 를 붙여 집계를
+건너뜁니다(`facets` 가 비어서 옵니다).
 
 응답의 건수와 점수는 데이터에 따라 달라집니다. 자산 식별자는 UUID v7 입니다.
 
@@ -267,10 +265,11 @@ $ curl -s "http://127.0.0.1:8001/file-search?q=김치&topic=음식&topic=전통�
 | `No module named 'src'` | core 라이브러리가 설치되지 않았습니다 |
 | 기동하다 멈춤 | `PORTAL_JWT_SECRET` 이 비어 있습니다 |
 | 화면에서 부르면 막힘 | `PORTAL_CORS_ORIGINS` 에 그 주소가 없습니다 |
-| 부하가 걸리면 시간 초과 | DB 연결 풀이 모자랍니다 |
-| 404 가 나옴 | `/admin` 과 `/review` 는 등재하지 않았습니다 |
+| 부하가 걸리면 응답이 느려짐 | DB 연결 풀이 모자라 요청이 줄을 서고 있습니다 |
+| 404 가 나옴 | `/admin` · `/review` 는 등재하지 않았고, 파일 제공 경로(내려받기·미리보기·본문·묶음)는 지웠습니다 |
 | 검색 결과가 비어 있음 | 색인이 없거나, 검색어 임베딩 모델이 색인할 때와 다릅니다 |
 | 503 이 나옴 | 임베딩 서버나 OpenSearch 에 연결하지 못했습니다 |
+| 413 이 나옴 | 요청 본문이 `PORTAL_MAX_BODY_BYTES` 를 넘었습니다 |
 
 ## 제3자 오픈소스
 
@@ -280,7 +279,7 @@ $ curl -s "http://127.0.0.1:8001/file-search?q=김치&topic=음식&topic=전통�
 |---|---|
 | FastAPI · pydantic · PyJWT | MIT |
 | uvicorn | BSD 3-Clause |
-| OpenSearch 클라이언트 · OpenCV | Apache License 2.0 |
+| OpenSearch 클라이언트 | Apache License 2.0 |
 | argon2-cffi | MIT |
 | psycopg | LGPL 3.0 |
 

@@ -17,7 +17,6 @@ dependencies = [
     "fastapi>=0.115.0",       # service/api/* (ASGI 앱)
     "uvicorn>=0.30.0",        # ASGI 서버(실행 진입 uvicorn service.api:app)
     "python-dotenv>=1.0.1",   # service/bootstrap.py (.env 로드)
-    "opencv-python>=4.9.0",   # service/portal/asset/thumbnail.py (cv2 — 코어 미제공)
     "PyJWT>=2.8.0",           # service/portal/auth/* (jwt — 코어 미제공·현재 목록에 없던 구멍)
     "argon2-cffi>=23.1.0",   # service/portal/auth/passwords.py (비밀번호 해시 — bcrypt 는 72바이트 절단 탓에 쓰지 않는다)
     "pydantic>=2.7.0",        # service/api/* (요청/응답 모델 — fastapi 전이지만 직접 import 라 명시)
