@@ -11,6 +11,8 @@
 
 ⚠️ **미구현 인터페이스는 대조 대상이 아니다** — 계약만 있고 라우트가 없으면 조용히 건너뛴다.
    구현되면 자동으로 대조 범위에 들어온다.
+⚠️ **자리만 있는 인터페이스**(구분 '보류(자리만 · 501)' · 파일 제공 7창구)도 ①~④ 대상이 아니다 — 시트의
+   계약은 다시 만들 때의 목표라 지금 코드와 맞지 않는다. 대신 경로가 있고 501 을 내는지만 본다(⑤).
 """
 from __future__ import annotations
 
@@ -92,10 +94,33 @@ def _external_patches(*, mm_meta_stubs: bool = True):
     )
 
 
+PLACEHOLDER_GUBUN = "보류(자리만 · 501)"
+
+
 def implemented() -> list[tuple[str, dict]]:
-    """IDD 계약 중 **앱에 실제 등록된** 것만 추린다."""
+    """IDD 계약 중 **앱에 실제 등록되고 구현된** 것만 추린다(자리만 있는 창구는 뺀다)."""
     return [(api, s) for api, s in sorted(CONTRACT.items())
-            if s["url"] in PATHS and s["method"].lower() in PATHS[s["url"]]]
+            if s["url"] in PATHS and s["method"].lower() in PATHS[s["url"]]
+            and s["gubun"] != PLACEHOLDER_GUBUN]
+
+
+class TestPlaceholders(unittest.TestCase):
+    """⑤ 자리만 있는 창구 — 경로 · 메서드가 등록돼 있고, 불렀을 때 501 공용 봉투인가."""
+
+    def test_placeholders_answer_501(self) -> None:
+        from service.api.routes.files import NOT_READY_DETAIL
+        held = [(api, s) for api, s in sorted(CONTRACT.items()) if s["gubun"] == PLACEHOLDER_GUBUN]
+        self.assertEqual(7, len(held), "자리만 있는 창구는 파일 제공 7개다")
+        client = TestClient(app)
+        for api, spec in held:
+            with self.subTest(api=api):
+                self.assertIn(spec["method"].lower(), PATHS.get(spec["url"], {}), f"{api} 경로가 등록돼 있지 않다")
+                url = (spec["url"].replace("{asset_id}", probes.ASSET_ID)
+                       .replace("{entity_type}", "person").replace("{entity_uid}", "u1"))
+                body = {"asset_ids": [probes.ASSET_ID]} if spec["method"] == "POST" else None
+                r = client.request(spec["method"], url, json=body)
+                self.assertEqual(501, r.status_code, r.text)
+                self.assertEqual(NOT_READY_DETAIL, r.json()["detail"])
 
 
 class TestContractFreshness(unittest.TestCase):

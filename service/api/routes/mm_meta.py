@@ -13,9 +13,9 @@
 🔴 **옛 별칭 ``/mm-meta/types`` 는 지웠다**(2026-09-28) — 칩 창구(``/mm-meta/facets``)에 흡수된 뒤 이름만
 남아 있었고 화면은 쓰지 않는다(IDD IF-ENTITY-03 보류).
 
-🔴 **개체 묶음 zip 창구는 없다**(2026-09-28 삭제) — ``/mm-meta/bundle``·``/mm-meta/{type}/{uid}/bundle`` 은
-파일 제공 방식을 다른 쪽과 협의한 뒤 다시 설계한다(`TODO.md` · IDD IF-ENTITY-04·06 보류).
-되살릴 때 원본 전제는 ``service/portal/asset/__init__.py`` 의 「원본 파일 전제」를 따른다(묶음 대상도 원본이 바뀌고 사라질 수 있다).
+🔴 **개체 묶음 zip 창구는 자리만 있다**(2026-09-28) — ``/mm-meta/bundle``·``/mm-meta/{type}/{uid}/bundle`` 은
+``routes/files.py`` 에 경로 · 파라미터만 있고 부르면 501 이다. 파일 제공 방식을 다른 쪽과 협의한 뒤 다시 설계한다
+(`TODO.md` · IDD IF-ENTITY-04·06 '보류(자리만 · 501)'). 구현할 때 원본 전제는 ``service/portal/asset/__init__.py`` 의 「원본 파일 전제」를 따른다(묶음 대상도 원본이 바뀌고 사라질 수 있다).
 """
 
 from __future__ import annotations

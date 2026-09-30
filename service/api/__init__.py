@@ -27,6 +27,7 @@ from service.api.routes import (
     assets,
     catalog,
     file_search,
+    files,
     mm_meta,
     search,
 )
@@ -152,6 +153,8 @@ app.include_router(search.router)
 app.include_router(file_search.router)
 app.include_router(assets.router)
 app.include_router(mm_meta.router)
+# 파일 제공(원본 · 미리보기 · 원문 · 묶음 zip) — 자리만 있고 모두 501(제공 방식 협의 대기 · `routes/files.py`).
+app.include_router(files.router)
 # 목록 창구(관계 종류·태그) — 화면이 "고를 값"을 받아 가는 자리. 검색 결과 칩과 쓰임이 다르다.
 app.include_router(catalog.router)
 # 계정(가입·로그인) — 로그인 전에 부르므로 인증을 걸지 않는다.
