@@ -1,0 +1,212 @@
+{
+ "k": 8,
+ "files": 20,
+ "cleanup": {
+  "access_log": 10208,
+  "asset": 20
+ },
+ "audit": {
+  "bundle": 9720,
+  "asset_view": 488
+ },
+ "results": {
+  "single": {
+   "기준": {
+    "file-search": {
+     "n": 54,
+     "p50_ms": 89,
+     "p95_ms": 146,
+     "max_ms": 155
+    },
+    "detail": {
+     "n": 54,
+     "p50_ms": 70,
+     "p95_ms": 106,
+     "max_ms": 118
+    },
+    "tags": {
+     "n": 54,
+     "p50_ms": 21,
+     "p95_ms": 26,
+     "max_ms": 31
+    },
+    "me": {
+     "n": 54,
+     "p50_ms": 2,
+     "p95_ms": 3,
+     "max_ms": 3
+    },
+    "bundles": {
+     "done": 0,
+     "per_s": 0.0,
+     "mean_s": null
+    },
+    "errors": 0
+   },
+   "부하": {
+    "file-search": {
+     "n": 107,
+     "p50_ms": 127,
+     "p95_ms": 236,
+     "max_ms": 329
+    },
+    "detail": {
+     "n": 107,
+     "p50_ms": 118,
+     "p95_ms": 277,
+     "max_ms": 428
+    },
+    "tags": {
+     "n": 107,
+     "p50_ms": 26,
+     "p95_ms": 110,
+     "max_ms": 128
+    },
+    "me": {
+     "n": 107,
+     "p50_ms": 2,
+     "p95_ms": 6,
+     "max_ms": 12
+    },
+    "bundles": {
+     "done": 192,
+     "per_s": 9.6,
+     "mean_s": 0.83
+    },
+    "errors": 0
+   }
+  },
+  "split": {
+   "기준": {
+    "file-search": {
+     "n": 48,
+     "p50_ms": 94,
+     "p95_ms": 106,
+     "max_ms": 134
+    },
+    "detail": {
+     "n": 48,
+     "p50_ms": 138,
+     "p95_ms": 190,
+     "max_ms": 193
+    },
+    "tags": {
+     "n": 48,
+     "p50_ms": 22,
+     "p95_ms": 29,
+     "max_ms": 35
+    },
+    "me": {
+     "n": 48,
+     "p50_ms": 2,
+     "p95_ms": 3,
+     "max_ms": 3
+    },
+    "bundles": {
+     "done": 0,
+     "per_s": 0.0,
+     "mean_s": null
+    },
+    "errors": 0
+   },
+   "부하": {
+    "file-search": {
+     "n": 120,
+     "p50_ms": 114,
+     "p95_ms": 186,
+     "max_ms": 210
+    },
+    "detail": {
+     "n": 120,
+     "p50_ms": 93,
+     "p95_ms": 162,
+     "max_ms": 180
+    },
+    "tags": {
+     "n": 120,
+     "p50_ms": 24,
+     "p95_ms": 45,
+     "max_ms": 91
+    },
+    "me": {
+     "n": 120,
+     "p50_ms": 2,
+     "p95_ms": 3,
+     "max_ms": 6
+    },
+    "bundles": {
+     "done": 190,
+     "per_s": 9.5,
+     "mean_s": 0.86
+    },
+    "errors": 0
+   }
+  },
+  "split-pool4": {
+   "기준": {
+    "file-search": {
+     "n": 45,
+     "p50_ms": 130,
+     "p95_ms": 210,
+     "max_ms": 220
+    },
+    "detail": {
+     "n": 45,
+     "p50_ms": 83,
+     "p95_ms": 193,
+     "max_ms": 199
+    },
+    "tags": {
+     "n": 45,
+     "p50_ms": 24,
+     "p95_ms": 32,
+     "max_ms": 48
+    },
+    "me": {
+     "n": 45,
+     "p50_ms": 2,
+     "p95_ms": 3,
+     "max_ms": 3
+    },
+    "bundles": {
+     "done": 0,
+     "per_s": 0.0,
+     "mean_s": null
+    },
+    "errors": 0
+   },
+   "부하": {
+    "file-search": {
+     "n": 114,
+     "p50_ms": 117,
+     "p95_ms": 268,
+     "max_ms": 812
+    },
+    "detail": {
+     "n": 114,
+     "p50_ms": 77,
+     "p95_ms": 180,
+     "max_ms": 609
+    },
+    "tags": {
+     "n": 114,
+     "p50_ms": 23,
+     "p95_ms": 53,
+     "max_ms": 174
+    },
+    "me": {
+     "n": 114,
+     "p50_ms": 2,
+     "p95_ms": 3,
+     "max_ms": 6
+    },
+    "bundles": {
+     "done": 104,
+     "per_s": 5.2,
+     "mean_s": 1.59
+    },
+    "errors": 0
+   }
+  }
+ }
+}
