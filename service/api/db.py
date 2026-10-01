@@ -131,8 +131,7 @@ def align_thread_limit_to_pool() -> None:
         return
     if threads > max_size:
         limiter.total_tokens = max_size
-        _LOG.info("동시 실행 스레드 상한을 %d → %d(DB 커넥션 풀 상한)로 맞췄습니다 — 넘치는 요청은 줄을 섭니다 "
-                  "(%s 로 풀을 키우면 함께 올라갑니다).", threads, max_size, POOL_MAX_ENV)
+        _LOG.info("스레드 상한 %d → %d (DB 풀 상한에 맞춤 · %s 로 풀을 키우면 함께 오른다)", threads, max_size, POOL_MAX_ENV)
 
 def get_db() -> object:
     """앱 전체가 공유하는 DB 접근 객체를 돌려준다(첫 호출 때 연결 풀이 한 번 열린다)."""

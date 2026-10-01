@@ -42,6 +42,8 @@ service/
     db.py             # DB 연결 풀과 트랜잭션 통로
     audit.py          # 접근 기록. 응답과 분리해 뒤에서 남깁니다
     errors.py         # 예외를 HTTP 응답으로 옮김
+    logging_config.py # 로그 설정(수준 · 형식 · 표준출력) · 요청 ID
+    request_log.py    # 요청마다 ID 를 매기고 한 줄을 남깁니다
     lifespan.py       # 기동·종료 순서
     params.py         # 여러 경로가 함께 쓰는 요청 검증
 
@@ -179,6 +181,10 @@ TEXT_EMBED_NORMALIZE=true
 | `PORTAL_THREAD_LIMIT` | 동시에 처리할 요청 수. 없으면 기동할 때 DB 연결 풀 크기에 맞춥니다 |
 | `PORTAL_MAX_BODY_BYTES` | 요청 본문 상한. 기본 1MiB, 넘으면 413 |
 | `PORTAL_TAGS_CACHE_SECONDS` | `/tags` 와 검색어 제안이 쓰는 태그 목록을 들고 있을 시간. 기본 300초, `0` 이면 끕니다 |
+| `PORTAL_LOG_LEVEL` | 로그 수준. `DEBUG` · `INFO`(기본) · `WARNING` · `ERROR` |
+| `PORTAL_LOG_FORMAT` | 로그 형식. `text`(기본) · `json`(한 줄이 JSON 한 건 — 로그 수집기용) |
+| `PORTAL_SLOW_REQUEST_MS` | 이 시간(ms)을 넘긴 요청을 WARNING 으로 남깁니다. 기본 3000, `0` 이면 끕니다 |
+| `PORTAL_LOG_CONFIGURE` | `0` 이면 앱이 로그를 세우지 않습니다(외부 설정을 쓸 때 · 테스트) |
 
 ### 다른 주소에서 호출할 때
 
@@ -220,6 +226,27 @@ uvicorn service.api:app --host 0.0.0.0 --port 8001 --workers 2      # 운영
 `PORTAL_AUTH_DISABLED` 가 `0` 인데 `PORTAL_JWT_SECRET` 이 비어 있으면 **서버가 뜨지
 않습니다.** 설정이 빠진 채로 도는 것보다 낫기 때문입니다.
 
+### 로그
+
+로그는 **표준출력**으로 나갑니다. 파일 보관·회전·수집은 프로세스 관리자(systemd · supervisor)나 컨테이너
+런타임이 맡습니다. uvicorn 의 로그도 같은 형식으로 모입니다.
+
+```text
+10-01 08:46:14 INFO  access: GET /file-search 200 283.1ms 192.0.2.10 [c8aa0311ef85]
+```
+
+- **요청마다 한 줄**: `메서드 경로 상태 걸린시간 접속한쪽주소`. **쿼리 문자열 · 요청 본문 · 토큰은 남기지 않습니다**(검색어 · 커서가 로그에 쌓이지
+  않게). uvicorn 의 접근 로그(URL 전체가 찍힙니다)는 끕니다.
+- **요청 ID**: 요청 안에서 남긴 모든 줄 끝에 `[ID]`(12자리)가 붙고 응답 머리 `X-Request-ID` 로도 돌려줍니다. 기동 · 종료처럼 요청 밖의 줄에는 붙지 않습니다. 화면에서 오류가 났을 때 그 값으로 서버 로그를 찾습니다.
+  앞단(프록시)이 `X-Request-ID` 를 보내면 그 값을 쓰고(영문·숫자·`._-` 64자까지), 아니면 새로 만듭니다. 다른 오리진에서 화면이 읽을 수 있게
+  CORS 노출 헤더에 넣어 두었습니다. `text` 는 읽기 쉽게 줄인 형식(날짜·시각만, 로거는 끝 이름만)이고, `json` 은 줄이지 않고 전부 싣습니다.
+- **수준**: 5xx 는 `ERROR`, 기준(`PORTAL_SLOW_REQUEST_MS`)을 넘긴 요청은 `WARNING`(`느린 요청`), `/health` 는 `DEBUG`, 나머지는 `INFO`.
+- **미처리 예외(500)**: 앱은 요청 ID 와 예외 종류만 한 줄 남기고, 스택은 uvicorn 이 한 번 남깁니다(같은 스택을 두 번 찍지 않습니다).
+  검색 엔진 · 임베딩 같은 바깥 서비스의 연결 실패는 경고 한 줄이고, 스택은 `DEBUG` 일 때만 붙습니다.
+- **운영 권장**: `PORTAL_LOG_FORMAT=json` · `PORTAL_LOG_LEVEL=INFO`. 문제를 쫓을 때만 잠시 `DEBUG` 로 올립니다.
+- 라이브러리가 파이썬 경고로 내는 것(예: JWT 키 길이)도 같은 형식 한 줄로 나옵니다.
+- DB 접근 이력(`access_log` 표)은 **감사 자료**라 이 로그와 별개입니다.
+
 ### 운영 시 확인할 것
 
 | 상황 | 할 일 |
@@ -227,6 +254,8 @@ uvicorn service.api:app --host 0.0.0.0 --port 8001 --workers 2      # 운영
 | core 를 새 버전으로 올렸을 때 | core 재설치 → 테스트 → 재시작. 임베딩 모델이 바뀌었으면 pipeline 재색인이 먼저입니다 |
 | 검색 결과가 비어 있을 때 | pipeline 의 색인 상태, 임베딩 서버 응답, OpenSearch 연결을 확인하십시오 |
 | 동시 접속이 늘 때 | `PORTAL_DB_POOL_MAX` 와 PostgreSQL 최대 연결 수를 함께 확인하십시오 |
+| 화면에서 오류가 났다고 할 때 | 응답 머리의 `X-Request-ID` 를 받아 그 값으로 로그를 찾으십시오 |
+| 느리다는 말이 나올 때 | `느린 요청` 줄(WARNING)에서 경로와 걸린 시간을 보십시오. 기준은 `PORTAL_SLOW_REQUEST_MS` 입니다 |
 
 ## 실행 예제
 

@@ -13,7 +13,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-_DEFAULT_DEV_SECRET = "dev-portal-jwt-change-in-prod"
+# 32바이트 이상 — HS256 권장 길이에 못 미치면 PyJWT 가 토큰을 만들 때마다 경고를 낸다(개발 전용 기본값 · 운영은 반드시 교체).
+_DEFAULT_DEV_SECRET = "dev-portal-jwt-change-in-prod-0000000"
 
 # 토큰 기본 수명(초) — 8시간. 갱신 창구가 없어 이 값이 곧 로그인 주기다.
 _TTL_DEFAULT = 28800

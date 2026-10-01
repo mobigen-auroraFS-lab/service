@@ -663,7 +663,7 @@ def _matching_keys(query: str) -> EntityMatchSet:
         query_vector = embed_query_for_media_search(query, channel=active_embed_channel())
     except (RuntimeError, ValueError) as exc:
         # 임베딩 서버 장애와 엔진 장애는 **다른 원인**이라 문구를 나눈다(뭉개면 운영자가 엉뚱한 곳을 본다).
-        _LOG.warning("개체 질의 임베딩 실패: %s", exc, exc_info=True)
+        _LOG.warning("개체 질의 임베딩 실패: %s", exc, exc_info=_LOG.isEnabledFor(logging.DEBUG))
         raise EntitySearchUnavailable("임베딩 서버에 연결할 수 없습니다") from exc
 
     from src.search.opensearch_sync import get_client
@@ -674,7 +674,7 @@ def _matching_keys(query: str) -> EntityMatchSet:
             query=query, query_vector=query_vector,
         )
     except _OS_CONN_ERRORS as exc:
-        _LOG.warning("개체 집합 판정 — 검색 엔진 연결 실패: %s", exc, exc_info=True)
+        _LOG.warning("개체 집합 판정 — 검색 엔진 연결 실패: %s", exc, exc_info=_LOG.isEnabledFor(logging.DEBUG))
         raise EntitySearchUnavailable("검색 엔진에 연결할 수 없습니다") from exc
 
 
