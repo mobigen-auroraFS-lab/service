@@ -25,6 +25,7 @@ from typing import Any, NamedTuple
 from psycopg import Connection
 from psycopg.rows import dict_row
 
+from service.portal.common.stage_timer import stage
 from src.config import search_constants
 from src.config.settings import active_embed_channel, get_current_settings
 
@@ -660,7 +661,8 @@ def _matching_keys(query: str) -> EntityMatchSet:
     # 🔴 채널을 반드시 넘긴다. 개체 벡터는 배치가 활성 채널로 만들었다 — 다른 모델의 벡터를 견주면
     #    유사도가 뜻을 잃는다(실측: 채널을 빼면 `발효`→훈민정음 0.09 처럼 무관한 결과가 나왔다).
     try:
-        query_vector = embed_query_for_media_search(query, channel=active_embed_channel())
+        with stage("embed"):
+            query_vector = embed_query_for_media_search(query, channel=active_embed_channel())
     except (RuntimeError, ValueError) as exc:
         # 임베딩 서버 장애와 엔진 장애는 **다른 원인**이라 문구를 나눈다(뭉개면 운영자가 엉뚱한 곳을 본다).
         _LOG.warning("개체 질의 임베딩 실패: %s", exc, exc_info=_LOG.isEnabledFor(logging.DEBUG))
@@ -669,10 +671,11 @@ def _matching_keys(query: str) -> EntityMatchSet:
     from src.search.opensearch_sync import get_client
 
     try:
-        return match_entity_keys(
-            get_client(), search_constants.ENTITY_INDEX_DEFAULT,
-            query=query, query_vector=query_vector,
-        )
+        with stage("engine"):
+            return match_entity_keys(
+                get_client(), search_constants.ENTITY_INDEX_DEFAULT,
+                query=query, query_vector=query_vector,
+            )
     except _OS_CONN_ERRORS as exc:
         _LOG.warning("개체 집합 판정 — 검색 엔진 연결 실패: %s", exc, exc_info=_LOG.isEnabledFor(logging.DEBUG))
         raise EntitySearchUnavailable("검색 엔진에 연결할 수 없습니다") from exc

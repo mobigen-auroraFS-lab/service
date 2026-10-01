@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from service.api import audit, db
+from service.api import audit, db, warmup
 
 ENV = os.getenv("PORTAL_API_ENV", "dev")
 
@@ -36,6 +36,7 @@ async def lifespan(_app: FastAPI):
     #    ⚠️ ``bootstrap_env`` **뒤**여야 한다 — 서명 키가 ``.env.{ENV}`` 에서 들어올 수 있다.
     load_portal_auth_config()
     db.align_thread_limit_to_pool()
+    warmup.start()          # 뒤에서 — 첫 사용자가 DB 연결 · 태그 캐시를 만드는 시간을 치르지 않게(기동은 막지 않는다)
     yield
     # 종료 시 남은 감사 기록 작업을 먼저 비운다(응답과 분리돼 뒤에서 돌던 것들).
     await audit.drain_pending()

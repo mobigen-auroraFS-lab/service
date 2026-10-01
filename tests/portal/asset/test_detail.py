@@ -20,15 +20,16 @@ from unittest.mock import MagicMock, patch
 def _conn_for_detail(asset_row, channel_rows):
     """``conn.cursor(row_factory=dict_row)`` 컨텍스트매니저를 흉내내는 mock conn.
 
-    같은 cur 가 두 번 쓰인다: ① asset+metadata 조회는 ``fetchone`` ② 임베딩 채널 집계는
-    ``fetchall``. 둘은 서로 다른 메서드라 한 cur 에 모두 세팅해도 충돌하지 않는다.
+    asset+metadata 와 임베딩 채널 집계는 **한 질의**다(2026-10-01) — 채널 목록은 행의 ``embedding_channels`` 칸으로 온다.
     ``execute`` 인자는 call_args_list 로 캡처해 SQL 검사에 쓴다.
     """
     conn = MagicMock()
     cur = MagicMock()
     cur.__enter__.return_value = cur
+    if asset_row is not None:
+        asset_row = {**asset_row, "embedding_channels": channel_rows}
     cur.fetchone.return_value = asset_row
-    cur.fetchall.return_value = channel_rows
+    cur.fetchall.return_value = []
     conn.cursor.return_value = cur
     return conn, cur
 
@@ -152,6 +153,25 @@ class TestFetchAssetDetail(unittest.TestCase):
         auth = fetch_asset_detail(
             conn, asset_id="A1", clearance=AUTHORIZED, min_conf_similarity=_TEST_MIN_CONF)
         self.assertEqual(auth["ext_meta"], {"summary": "요약", "stt": "전문"})
+
+    @patch("service.portal.asset.detail.fetch_relations_for_asset")
+    def test_자산_행과_임베딩_채널은_한_질의다(self, mock_rel) -> None:
+        # DB 왕복 한 번 = 28ms — 채널 개수를 따로 묻지 않는다(권한을 안 주면 이 질의 하나만 나간다).
+        mock_rel.return_value = []
+        conn, cur = _conn_for_detail(dict(_REGISTERED_ROW), [{"channel": "text", "chunk_count": 2}])
+        from service.portal.asset.detail import fetch_asset_detail
+
+        fetch_asset_detail(conn, asset_id="A1", min_conf_similarity=_TEST_MIN_CONF)
+        self.assertEqual(1, cur.execute.call_count)
+
+    @patch("service.portal.asset.detail.fetch_relations_for_asset")
+    def test_채널이_없으면_빈_목록이다(self, mock_rel) -> None:
+        mock_rel.return_value = []
+        conn, _ = _conn_for_detail({**_REGISTERED_ROW}, None)      # jsonb 가 NULL 로 와도 깨지지 않는다
+        from service.portal.asset.detail import fetch_asset_detail
+
+        out = fetch_asset_detail(conn, asset_id="A1", min_conf_similarity=_TEST_MIN_CONF)
+        self.assertEqual([], out["embedding_channels"])
 
     @patch("service.portal.asset.detail.fetch_relations_for_asset")
     def test_embedding_query_is_count_aggregate_not_raw_select(self, mock_rel) -> None:

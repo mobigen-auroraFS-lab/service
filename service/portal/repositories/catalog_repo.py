@@ -65,10 +65,16 @@ WITH kw AS (
 SELECT mode() WITHIN GROUP (ORDER BY kw) AS tag, COUNT(DISTINCT asset_id) AS count
 FROM kw
 WHERE key <> ''
-GROUP BY key
+GROUP BY key COLLATE "C"
 ORDER BY count DESC, tag ASC
 LIMIT %s
 """
+# 🔴 [2026-10-01] 묶는 열쇠(``key``)만 ``"C"`` 콜레이션으로 정렬한다 — 조건 없는 목록이 **약 3초 → 0.36초**(공용 DB 실측 ·
+#    사내 k8s 에서는 7.7초 → 1.2초). DB 기본 콜레이션(``en_US.utf8``)으로 한글 8.4만 개를 정렬하는 비용이 시간의 대부분이었다
+#    (문자 정규화는 0.4초뿐 · JIT 도 원인이 아니었다). ``"C"`` 는 바이트를 그대로 비교한다.
+#    같다/다르다 판정은 콜레이션과 무관하게 바이트 비교(결정적 콜레이션)라 **묶음이 바뀌지 않는다.** 대표 표기(``mode()`` 의 동점 규칙)와
+#    최종 이름순 정렬은 기본 콜레이션 그대로다 — ⚠️ ``kw`` 나 최종 ``tag`` 정렬까지 ``"C"`` 로 바꾸면 동점 표기 · 이름순이 달라질 수 있다.
+#    **열쇠에만** 붙인다. 근거: 조건 26가지(전체 · 주제 · 하위주제 · 검색어) 결과 대조 동일(작업 지시서 2026-10-01 작업 C).
 
 _TOPIC_JOIN = "JOIN asset_topic t ON t.asset_id = a.asset_id"
 

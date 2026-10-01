@@ -16,8 +16,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from service.portal.common.access_tiers import (
+    fetch_access_tiers,  # 코어 함수에 짧은 캐시를 얹은 것(같은 이름 · 같은 서명)
+)
 from src.registry.access_tier import project_ext_meta
-from src.registry.ext_meta_field_registry import fetch_access_tiers
 
 
 def project_rows(
