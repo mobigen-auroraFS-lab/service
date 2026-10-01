@@ -24,11 +24,13 @@ from typing import Any
 from psycopg import Connection
 from psycopg.rows import dict_row
 
+from service.portal.common.access_tiers import (
+    fetch_access_tiers,  # 코어 함수에 짧은 캐시를 얹은 것(같은 이름 · 같은 서명)
+)
 from service.portal.search.group import display_name
 from src.config.settings import get_current_settings
 from src.domain.status_vocab import AssetStatus
 from src.registry.access_tier import project_ext_meta
-from src.registry.ext_meta_field_registry import fetch_access_tiers
 from src.relations.approval_policy import tier_rank  # 노출 등급 순위(강칸 먼저) — 코어 정본
 from src.relations.graph_query import fetch_relations_for_asset
 
@@ -39,23 +41,28 @@ from src.relations.graph_query import fetch_relations_for_asset
 #    바뀐다 — 파일명 · 확장자도 따라 바뀐다(``asset_id`` 는 그대로). ``service/portal/asset/__init__.py`` 「원본 파일 전제」.
 # 🔴 [2026-09-21] ``file_size``·``created_at``·``updated_at`` 을 함께 읽는다 — 화면의 상세가
 #    크기·등록일을 보여 주는데 목록을 거치지 않고 링크로 바로 열면 그 값을 얻을 데가 없었다.
+#
+# 🔴 [2026-10-01] 임베딩 채널 개수를 **같은 질의에** 얹었다(``embedding_channels`` 칸) — 종전에는 질의가 둘이라 DB 왕복이
+#    한 번 더 들었다(왕복 한 번 = 28ms 실측). 채널별 **개수만** 센다(벡터 자체는 응답에 쓸모가 없다 · 원시 벡터를 읽지 않는다).
+#    정렬을 채널 이름으로 고정해 순서를 안정시킨다. 채널이 없으면 빈 목록이다.
 _FETCH_ASSET_SQL = """
 SELECT a.asset_id, a.modality, a.domain_label, a.status, a.fs_path,
        a.file_size, a.created_at, a.updated_at,
-       m.core_meta, m.ext_meta, m.tags
+       m.core_meta, m.ext_meta, m.tags,
+       COALESCE((
+         SELECT jsonb_agg(jsonb_build_object('channel', c.channel, 'chunk_count', c.chunk_count) ORDER BY c.channel)
+         FROM (
+           SELECT channel, COUNT(*) AS chunk_count
+           FROM asset_embedding
+           WHERE asset_id = a.asset_id
+           GROUP BY channel
+           ORDER BY channel
+         ) c
+       ), '[]'::jsonb) AS embedding_channels
 FROM asset a
 LEFT JOIN asset_metadata m ON m.asset_id = a.asset_id
 WHERE a.asset_id = %s
 LIMIT 1
-"""
-
-# 채널별 **개수만** 센다(벡터 자체는 응답에 쓸모가 없다). 정렬을 고정해 순서를 안정시킨다.
-_FETCH_EMBEDDING_CHANNELS_SQL = """
-SELECT channel, COUNT(*) AS chunk_count
-FROM asset_embedding
-WHERE asset_id = %s
-GROUP BY channel
-ORDER BY channel
 """
 
 # 이웃 단위로 묶을 때 각 엣지에서 살려 둘 항목들(어떤 관계였는지 화면이 보여줄 수 있게).
@@ -195,11 +202,9 @@ def fetch_asset_detail(
     if row["status"] != AssetStatus.REGISTERED:
         return None
 
-    with conn.cursor(row_factory=dict_row) as cur:
-        cur.execute(_FETCH_EMBEDDING_CHANNELS_SQL, (asset_id,))
-        channel_rows = cur.fetchall()
     embedding_channels = [
-        {"channel": r["channel"], "chunk_count": int(r["chunk_count"])} for r in channel_rows
+        {"channel": r["channel"], "chunk_count": int(r["chunk_count"])}
+        for r in (row.get("embedding_channels") or [])
     ]
 
     # 엣지 단위 목록을 이웃 자산 단위로 미리 묶는다(화면이 중복 카드를 그리지 않게).

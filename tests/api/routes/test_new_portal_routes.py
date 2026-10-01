@@ -94,6 +94,8 @@ class TestSuggestAndFacetExtra(unittest.TestCase):
         self.assertIn("lower(", sql)                           #   소문자
         self.assertIn("GROUP BY key", sql)                     # 원문(kw)이 아니라 열쇠로 묶는다
         self.assertIn("COUNT(DISTINCT asset_id)", sql)         # 두 표기를 다 단 자산도 한 번
+        self.assertIn('GROUP BY key COLLATE "C"', sql)          # 한글 정렬 비용(2026-10-01) — 열쇠에만
+        self.assertIn("mode() WITHIN GROUP (ORDER BY kw)", sql)  # 대표 표기 동점 규칙은 기본 콜레이션 그대로
         self.assertIn("JOIN asset_topic t", sql)               # 주제로 좁히는 길은 그대로
         self.assertIn("k.kw ILIKE %s", sql)
 

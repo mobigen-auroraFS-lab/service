@@ -24,6 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from service.portal.auth import Principal, require_principal
 from service.portal.common.db_manager import DbManager
+from service.portal.common.stage_timer import stage
 from service.portal.search.group import asset_refine_fields, group_ranked
 from service.portal.search.presets import DEFAULT_PRESET, PRESETS, resolve_tuning, tuning_meta
 from src.config.search_constants import TAG_FACET_MIN_COUNT_DEFAULT, TAG_FACET_TOP_N_DEFAULT
@@ -452,16 +453,17 @@ def search(
 
     effective_pool = max(limit_per_bucket, size)
     try:
-        result = search_hybrid(
-            q,
-            modalities=mods,
-            limit_per_bucket=effective_pool,
-            search_mode=search_mode,
-            search_filters=search_filters,
-            # 디버그용 우회. 기본은 꺼져 있어 평소 호출에는 영향이 없다.
-            disable_os_cutoff=no_cutoff,
-            tuning=tuning,
-        )
+        with stage("search"):       # 임베딩 + 검색 엔진을 한 번에 부른다 — 요청 로그에는 합쳐서 남는다
+            result = search_hybrid(
+                q,
+                modalities=mods,
+                limit_per_bucket=effective_pool,
+                search_mode=search_mode,
+                search_filters=search_filters,
+                # 디버그용 우회. 기본은 꺼져 있어 평소 호출에는 영향이 없다.
+                disable_os_cutoff=no_cutoff,
+                tuning=tuning,
+            )
     except RuntimeError as exc:
         # 임베딩 서버 장애는 **검색 엔진 장애와 다른 원인**이라 따로 알린다(`/file-search`·`/mm-meta`
         # 와 같은 규율 · 실측 2026-09-21: 이 창구만 500 이었다). 그 밖의 RuntimeError(설정 미초기화 등)는

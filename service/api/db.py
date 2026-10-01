@@ -11,6 +11,8 @@ import os
 import threading
 from collections.abc import Callable
 
+from service.portal.common.stage_timer import stage
+
 _LOG = logging.getLogger("meta_extract.portal_api")
 
 # DB 접근 객체는 **앱 수명 동안 하나만** 둔다 — 요청마다 만들면 연결 풀이 매번 새로 생겼다 사라져
@@ -171,7 +173,8 @@ def run_in_db(callback: Callable[[object], object]) -> object:
     Returns:
         ``callback`` 의 반환값.
     """
-    return get_db().execute_in_transaction(callback, idempotent=True)
+    with stage("db"):       # 요청 로그에 단계별 시간으로 남는다(풀 대기 + 질의)
+        return get_db().execute_in_transaction(callback, idempotent=True)
 
 
 def run_in_db_write(callback: Callable[[object], object]) -> object:
@@ -188,4 +191,5 @@ def run_in_db_write(callback: Callable[[object], object]) -> object:
     Returns:
         ``callback`` 의 반환값. 실패하면 트랜잭션이 통째로 롤백된다.
     """
-    return get_db().execute_in_transaction(callback, idempotent=False)
+    with stage("db"):
+        return get_db().execute_in_transaction(callback, idempotent=False)

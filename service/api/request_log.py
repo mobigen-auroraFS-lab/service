@@ -7,6 +7,10 @@
   2. 응답이 끝나면 **한 줄**을 남긴다 — ``GET /file-search 200 83.2ms 127.0.0.1``(마지막은 접속한 쪽 주소).
      경로까지만 남긴다. **쿼리 문자열 · 본문 · 토큰은 남기지 않는다**(검색어 · 커서 같은 사용자 입력이 로그에 쌓이지 않게).
 
+**단계별 시간** — 느린 요청 경고와 5xx 줄에는 어디서 시간이 걸렸는지 붙는다: ``(임베딩 120ms · 검색엔진 4,800ms · DB 30ms)``
+(``service.portal.common.stage_timer`` — 임베딩 서버 · 검색 엔진 · DB 중 어디가 튀었는지 가른다). ``json`` 형식에는 모든 줄에 ``stages`` 칸으로 실린다.
+보통 줄에는 붙이지 않는다(줄이 길어지지 않게).
+
 **수준** — 5xx 는 ERROR, 기준 시간(``PORTAL_SLOW_REQUEST_MS`` · 기본 3000ms)을 넘긴 요청은 WARNING(``느린 요청``),
 헬스 체크(``/health``)는 DEBUG(살아 있는지 묻는 호출이 로그를 덮지 않게), 나머지는 INFO.
 
@@ -27,6 +31,7 @@ from typing import Any
 from starlette.datastructures import MutableHeaders
 
 from service.api.logging_config import new_request_id, request_id_var, valid_request_id
+from service.portal.common import stage_timer
 
 REQUEST_ID_HEADER = "X-Request-ID"
 SLOW_REQUEST_ENV = "PORTAL_SLOW_REQUEST_MS"
@@ -77,6 +82,7 @@ class RequestLogMiddleware:
         rid = _incoming_request_id(scope) or new_request_id()
         scope["request_id"] = rid          # 미처리 예외 처리기는 이 층 **바깥**이라 scope 로 ID 를 읽는다(``errors``)
         token = request_id_var.set(rid)
+        stage_token = stage_timer.begin()
         started = time.perf_counter()
         status = {"code": 500}             # 응답을 시작하기 전에 예외가 오르면 500 으로 센다
 
@@ -89,10 +95,11 @@ class RequestLogMiddleware:
         try:
             await self.app(scope, receive, send_with_id)
         finally:
-            self._log(scope, status["code"], (time.perf_counter() - started) * 1000)
+            self._log(scope, status["code"], (time.perf_counter() - started) * 1000, stage_timer.snapshot())
+            stage_timer.end(stage_token)
             request_id_var.reset(token)
 
-    def _log(self, scope: dict[str, Any], code: int, ms: float) -> None:
+    def _log(self, scope: dict[str, Any], code: int, ms: float, stages: dict[str, float] | None = None) -> None:
         method = scope.get("method", "-")
         path = printable_path(scope.get("path", ""))
         client = (scope.get("client") or ("-", 0))[0]
@@ -107,7 +114,13 @@ class RequestLogMiddleware:
             level = logging.INFO
         if not _LOG.isEnabledFor(level):
             return
+        stages = stages or {}
+        # 느린 요청 · 5xx 에만 단계별 시간을 문장으로 붙인다(보통 줄은 짧게). 구조화 칸은 항상 싣는다.
+        detail = f" ({stage_timer.describe(stages)})" if stages and (slow or code >= 500) else ""
+        extra = {"method": method, "path": path, "status": code, "duration_ms": round(ms, 1), "client": client}
+        if stages:
+            extra["stages"] = {k: round(v, 1) for k, v in stages.items()}
         _LOG.log(
-            level, "%s%s %s %d %.1fms %s", "느린 요청 " if slow else "", method, path, code, ms, client,
-            extra={"method": method, "path": path, "status": code, "duration_ms": round(ms, 1), "client": client},
+            level, "%s%s %s %d %.1fms %s%s", "느린 요청 " if slow else "", method, path, code, ms, client, detail,
+            extra=extra,
         )

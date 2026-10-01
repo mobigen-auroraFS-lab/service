@@ -28,6 +28,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from service.api import errors, params
 from service.portal.auth import Principal, require_principal
 from service.portal.common.db_manager import DbManager
+from service.portal.common.stage_timer import stage
 from service.portal.search.extra_facets import AXES as EXTRA_AXES
 from service.portal.search.extra_facets import SIZE_BUCKETS, extra_facets
 from src.config.search_modalities import VALID_SEARCH_MODALITIES
@@ -400,7 +401,8 @@ def file_search(
     query_vector: list[float] | None = None
     if not browsing:
         try:
-            query_vector = embed_query_for_media_search(q, channel=active_embed_channel())
+            with stage("embed"):
+                query_vector = embed_query_for_media_search(q, channel=active_embed_channel())
         except (RuntimeError, ValueError) as exc:
             _LOG.warning("질의 임베딩 실패: %s", exc, exc_info=_LOG.isEnabledFor(logging.DEBUG))
             raise HTTPException(status_code=503, detail="임베딩 서버에 연결할 수 없습니다") from exc
@@ -418,21 +420,23 @@ def file_search(
     facet_axes: dict[str, Any] = {} if with_facets else {"axes": ()}
     try:
         if use_cursor:
-            found = browse_files(
-                get_client(), get_current_settings().opensearch.index,
-                query=q, query_vector=query_vector, filters=filters,
-                sort=sort, cursor=cursor, size=limit, facet_size=FACET_SIZE_DEFAULT,
-                refine=refine, scope=scope, **facet_axes,
-            )
+            with stage("engine"):       # 요청 로그의 단계별 시간(느린 요청 경고에 실린다)
+                found = browse_files(
+                    get_client(), get_current_settings().opensearch.index,
+                    query=q, query_vector=query_vector, filters=filters,
+                    sort=sort, cursor=cursor, size=limit, facet_size=FACET_SIZE_DEFAULT,
+                    refine=refine, scope=scope, **facet_axes,
+                )
         else:
-            found = search_files(
-                get_client(), get_current_settings().opensearch.index,
-                query=q, query_vector=query_vector, filters=filters,
-                from_=page_from, size=page_size, sort=sort,
-                rank_depth=RANK_DEPTH_DEFAULT, total_cap=TOTAL_CAP_DEFAULT,
-                sort_depth=SORT_DEPTH_DEFAULT, facet_size=FACET_SIZE_DEFAULT,
-                refine=refine, **facet_axes,
-            )
+            with stage("engine"):
+                found = search_files(
+                    get_client(), get_current_settings().opensearch.index,
+                    query=q, query_vector=query_vector, filters=filters,
+                    from_=page_from, size=page_size, sort=sort,
+                    rank_depth=RANK_DEPTH_DEFAULT, total_cap=TOTAL_CAP_DEFAULT,
+                    sort_depth=SORT_DEPTH_DEFAULT, facet_size=FACET_SIZE_DEFAULT,
+                    refine=refine, **facet_axes,
+                )
     except CursorError as exc:
         # 커서가 깨졌거나 정렬이 어긋났다 — **조용히 다른 자리에서 이어 주지 않는다**(097 §2-3).
         #   문구의 파이썬 진단(예외 원문 · 입력 repr)은 떼고 할 일을 붙인다(``params.cursor_detail``).
@@ -556,6 +560,32 @@ def file_search_suggest(
     return {"rows": rows, "total": len(rows)}
 
 
+def warm_up_search(query: str = "워밍업") -> None:
+    """기동 직후 첫 검색이 치르는 초기 비용을 **미리 한 번** 치른다 — 임베딩 모델 · 서버 연결, 검색 엔진 연결과 캐시.
+
+    왜 필요한가: 서버를 갈아 끼운 직후 첫 ``/file-search`` 가 32초, ``/search`` 가 8초 걸렸다(사내 k8s 실측 2026-10-01 ·
+    두 번째부터는 정상). 준비 확인(readiness)이 ``/health`` 만 봐서 데우기 전에 사용자 요청을 받는다.
+    검색 한 건(1건 · 칩 없음)을 **실제 검색과 같은 호출 모양**으로 보낸다 — 접근 기록(``access_log``)에는 남지 않는다(HTTP 를 거치지 않는다).
+
+    Args:
+        query: 데울 때 쓸 검색어(뜻은 없다).
+
+    Raises:
+        임베딩 · 검색 엔진 오류는 그대로 올린다 — 부르는 쪽(``service.api.warmup``)이 경고로 삼킨다.
+    """
+    from src.search.opensearch_sync import get_client
+
+    vector = embed_query_for_media_search(query, channel=active_embed_channel())
+    search_files(
+        get_client(), get_current_settings().opensearch.index,
+        query=query, query_vector=vector, filters=None,
+        from_=0, size=1, sort=SORT_DEFAULT,
+        rank_depth=RANK_DEPTH_DEFAULT, total_cap=TOTAL_CAP_DEFAULT,
+        sort_depth=SORT_DEPTH_DEFAULT, facet_size=FACET_SIZE_DEFAULT,
+        refine=None, axes=(),
+    )
+
+
 # ── 추가 좁히기 칩(형식·크기·기간) ────────────────────────────────────────────────
 @router.get("/file-search/facet-extra")
 def file_search_facet_extra(
@@ -601,17 +631,19 @@ def file_search_facet_extra(
     query_vector: list[float] = []
     if query:
         try:
-            query_vector = embed_query_for_media_search(query, channel=active_embed_channel())
+            with stage("embed"):
+                query_vector = embed_query_for_media_search(query, channel=active_embed_channel())
         except Exception as exc:  # noqa: BLE001 — 임베딩 서버 장애를 빈 결과로 감추지 않는다
             _LOG.warning("추가 칩 — 질의 임베딩 실패: %s", exc, exc_info=_LOG.isEnabledFor(logging.DEBUG))
             raise HTTPException(status_code=503, detail="임베딩 서버에 연결할 수 없습니다") from exc
     # 검색 엔진 클라이언트는 **부를 때** 가져온다(모듈 로딩 시점에 연결을 만들지 않는다 — 훑기 경로와 같은 규칙).
     from src.search.opensearch_sync import get_client
     try:
-        return extra_facets(
-            get_client(), get_current_settings().opensearch.index,
-            query=query, query_vector=query_vector, filters=filters,
-            refine=(refine or "").strip() or None, axes=list(axis))
+        with stage("engine"):
+            return extra_facets(
+                get_client(), get_current_settings().opensearch.index,
+                query=query, query_vector=query_vector, filters=filters,
+                refine=(refine or "").strip() or None, axes=list(axis))
     except _OS_CONN_ERRORS as exc:
         _LOG.warning("추가 칩 — 검색 엔진 연결 실패: %s", exc, exc_info=_LOG.isEnabledFor(logging.DEBUG))
         raise HTTPException(status_code=503, detail="검색 엔진에 연결할 수 없습니다") from exc
