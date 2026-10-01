@@ -402,7 +402,7 @@ def file_search(
         try:
             query_vector = embed_query_for_media_search(q, channel=active_embed_channel())
         except (RuntimeError, ValueError) as exc:
-            _LOG.warning("질의 임베딩 실패: %s", exc, exc_info=True)
+            _LOG.warning("질의 임베딩 실패: %s", exc, exc_info=_LOG.isEnabledFor(logging.DEBUG))
             raise HTTPException(status_code=503, detail="임베딩 서버에 연결할 수 없습니다") from exc
 
     # 기간은 원문이 아니라 코어가 검색 절에 넣는 **적용값**으로 한 번만 계산한다. 아래 지문 재료와
@@ -443,7 +443,7 @@ def file_search(
         # 검색 엔진에 닿지 못한 것을 빈 결과로 감추면 "자료가 없다"와 "검색이 죽었다"가 같아진다.
         # **연결 실패만** 503 으로 — 그 밖의 예외(코드 결함)는 그대로 올려 전역 핸들러가 500 으로
         # 구분한다(`errors.os_unavailable_handler` 가 정한 원칙: 코드 버그 500 과 구분·운영 알람용).
-        _LOG.warning("파일 검색 — 검색 엔진 연결 실패: %s", exc, exc_info=True)
+        _LOG.warning("파일 검색 — 검색 엔진 연결 실패: %s", exc, exc_info=_LOG.isEnabledFor(logging.DEBUG))
         raise HTTPException(status_code=503, detail="검색 엔진에 연결할 수 없습니다") from exc
 
     def _finish(repo: Any) -> list[dict[str, Any]]:
@@ -603,7 +603,7 @@ def file_search_facet_extra(
         try:
             query_vector = embed_query_for_media_search(query, channel=active_embed_channel())
         except Exception as exc:  # noqa: BLE001 — 임베딩 서버 장애를 빈 결과로 감추지 않는다
-            _LOG.warning("추가 칩 — 질의 임베딩 실패: %s", exc, exc_info=True)
+            _LOG.warning("추가 칩 — 질의 임베딩 실패: %s", exc, exc_info=_LOG.isEnabledFor(logging.DEBUG))
             raise HTTPException(status_code=503, detail="임베딩 서버에 연결할 수 없습니다") from exc
     # 검색 엔진 클라이언트는 **부를 때** 가져온다(모듈 로딩 시점에 연결을 만들지 않는다 — 훑기 경로와 같은 규칙).
     from src.search.opensearch_sync import get_client
@@ -613,5 +613,5 @@ def file_search_facet_extra(
             query=query, query_vector=query_vector, filters=filters,
             refine=(refine or "").strip() or None, axes=list(axis))
     except _OS_CONN_ERRORS as exc:
-        _LOG.warning("추가 칩 — 검색 엔진 연결 실패: %s", exc, exc_info=True)
+        _LOG.warning("추가 칩 — 검색 엔진 연결 실패: %s", exc, exc_info=_LOG.isEnabledFor(logging.DEBUG))
         raise HTTPException(status_code=503, detail="검색 엔진에 연결할 수 없습니다") from exc

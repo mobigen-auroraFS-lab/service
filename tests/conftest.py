@@ -5,3 +5,6 @@ import os
 # 태그 목록 캐시(``catalog_repo``)는 끈다 — 대역 DB 가 시험마다 다른 행을 주는데, 캐시가 켜져 있으면
 #   앞 시험의 답이 뒤 시험에 나온다. 캐시 동작은 전용 시험이 직접 켜서 본다.
 os.environ.setdefault("PORTAL_TAGS_CACHE_SECONDS", "0")
+
+# 로그 설정(``logging_config``)은 시험에서 건너뛴다 — pytest 의 로그 포획(caplog)과 겹치지 않게. 전용 시험이 직접 세운다.
+os.environ.setdefault("PORTAL_LOG_CONFIGURE", "0")

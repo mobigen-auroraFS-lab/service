@@ -468,7 +468,7 @@ def search(
         # 🔴 **그대로 올린다** — 코드 결함을 장애로 위장하면 운영자가 엉뚱한 곳을 본다.
         if _EMBED_FAIL_MARK not in str(exc):
             raise
-        _LOG.warning("검색 — 질의 임베딩 실패: %s", exc, exc_info=True)
+        _LOG.warning("검색 — 질의 임베딩 실패: %s", exc, exc_info=_LOG.isEnabledFor(logging.DEBUG))
         raise HTTPException(status_code=503, detail="임베딩 서버에 연결할 수 없습니다") from exc
 
     # 모달리티별로 독립 순위를 매겨 상위 N개씩 담는다(배제 목록은 현재 비어 있다).

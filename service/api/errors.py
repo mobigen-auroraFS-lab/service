@@ -32,6 +32,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from service.api.request_log import REQUEST_ID_HEADER
+
 _LOG = logging.getLogger("meta_extract.portal_api")
 
 
@@ -100,7 +102,7 @@ def _cors_headers(request: Request) -> dict[str, str] | None:
     if not origin or origin not in CORS_ORIGINS:
         return None
     return {"Access-Control-Allow-Origin": origin, "Access-Control-Allow-Credentials": "true",
-            "Vary": "Origin"}
+            "Access-Control-Expose-Headers": REQUEST_ID_HEADER, "Vary": "Origin"}
 
 
 # ── 처리기 ──────────────────────────────────────────────────────────────────────
@@ -219,8 +221,15 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> Respo
     Returns:
         500 봉투(내용은 고정 문구 — 내부 정보를 싣지 않는다).
     """
-    _LOG.exception("미처리 예외(500): %s %s", request.method, request.url.path)
-    return envelope(500, _INTERNAL_DETAIL, headers=_cors_headers(request))
+    # 스택은 여기서 찍지 않는다 — 처리 뒤 Starlette 이 예외를 다시 올려 uvicorn 이 스택을 한 번 남긴다(두 번 찍으면 길다).
+    # 이 줄은 **요청 ID 와 예외 종류**를 남겨 그 스택을 찾는 열쇠가 된다(예외 메시지는 값이 섞일 수 있어 싣지 않는다).
+    request_id = request.scope.get("request_id")
+    _LOG.error("미처리 예외(500): %s %s — %s", request.method, request.url.path, type(exc).__name__,
+               extra={"request_id": request_id} if request_id else None)
+    headers = dict(_cors_headers(request) or {})
+    if request_id:       # 이 응답은 요청 로그 층 바깥에서 만들어져 머리를 그 층이 못 붙인다
+        headers[REQUEST_ID_HEADER] = request_id
+    return envelope(500, _INTERNAL_DETAIL, headers=headers or None)
 
 
 async def os_unavailable_handler(request: Request, exc: Exception) -> Response:

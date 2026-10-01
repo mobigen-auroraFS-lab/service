@@ -20,8 +20,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from service.api import audit, errors, lifespan
+from service.api import audit, errors, lifespan, logging_config
 from service.api.body_limit import BodyLimitMiddleware
+from service.api.request_log import REQUEST_ID_HEADER, RequestLogMiddleware
 from service.api.routes import (
     account,
     assets,
@@ -38,6 +39,9 @@ from service.portal.auth import Principal, require_principal
 from service.portal.auth.config import load_portal_auth_config
 from service.portal.auth.dev_issuer import token_response
 from service.portal.auth.schemas import DevTokenRequest
+
+# 로그는 앱을 만들기 **전에** 세운다 — uvicorn 이 앱을 불러오기 전에 세운 자기 로그 위에 덮는다(``logging_config``).
+logging_config.configure_from_env()
 
 app = FastAPI(title="일반 도메인 포탈 API (010 P1)", lifespan=lifespan.lifespan)
 
@@ -124,7 +128,8 @@ _CORS_ORIGINS = [o.strip() for o in os.getenv("PORTAL_CORS_ORIGINS", "").split("
 #    ``Content-Range``·``Accept-Ranges``·``X-Bundle-*``)도 뺐다 — 파일 제공을 다시 만들 때 함께 되살린다
 #    (git ``9d11d29`` · 다른 오리진의 이어받기 사전 요청이 400 이던 까닭도 거기 적혀 있다).
 CORS_ALLOW_HEADERS: tuple[str, ...] = ("Authorization", "Content-Type")
-CORS_EXPOSE_HEADERS: tuple[str, ...] = ()
+# 노출 헤더는 요청 ID 하나다 — 화면이 오류를 문의할 때 서버 로그를 찾는 열쇠(``request_log``).
+CORS_EXPOSE_HEADERS: tuple[str, ...] = (REQUEST_ID_HEADER,)
 # 미처리 예외(500)는 CORS 미들웨어 바깥에서 응답이 만들어지므로 처리기가 직접 헤더를 붙인다(``errors``).
 errors.CORS_ORIGINS = frozenset(_CORS_ORIGINS)
 if _CORS_ORIGINS:
@@ -136,6 +141,9 @@ if _CORS_ORIGINS:
         allow_headers=list(CORS_ALLOW_HEADERS),
         expose_headers=list(CORS_EXPOSE_HEADERS),
     )
+
+# 요청 로그 — **가장 바깥**(마지막 등록)이라 CORS 거절 · 413 · 400 도 요청 ID 와 한 줄을 남긴다(2026-09-28).
+app.add_middleware(RequestLogMiddleware)
 
 # ── 관리자·관계 검토 창구는 **보류**(2026-09-22) ────────────────────────────────
 # 당장 쓸 화면이 없고, `/admin/*` 에는 역할 검사(RBAC)가 아직 없다 — 인증만 통과하면 누구나
