@@ -8,6 +8,7 @@ from service.portal.history.access_log import (
     derive_access_action,
     query_access_logs,
     record_access,
+    record_access_many,
 )
 
 
@@ -19,6 +20,7 @@ class _Cur:
     def __enter__(self): return self
     def __exit__(self, *a): return False
     def execute(self, sql, params=None): self.calls.append((sql, params))
+    def executemany(self, sql, rows): self.many = (sql, list(rows))
     def fetchone(self): return self._results.pop(0)
     def fetchall(self): return self._results.pop(0)
 
@@ -35,9 +37,14 @@ class DeriveActionTest(unittest.TestCase):
     def test_routes(self):
         self.assertEqual(derive_access_action("GET", "/search"), ("search", None))
         self.assertEqual(derive_access_action("GET", f"/assets/{_UUID}"), ("asset_view", _UUID))
-        # 다운로드·묶음·원문 창구는 지웠다(2026-09-28) — 그 경로는 기록 대상이 아니다.
-        for tail in ("download", "bundle", "content", "thumbnail"):
-            self.assertIsNone(derive_access_action("GET", f"/assets/{_UUID}/{tail}"))
+        # 원본 다운로드 · 원문은 다시 구현했다(2026-10-01) — 기록 대상이다. 원문은 상세(asset_view)와 구분한다.
+        self.assertEqual(derive_access_action("GET", f"/assets/{_UUID}/download"), ("download", _UUID))
+        self.assertEqual(derive_access_action("GET", f"/assets/{_UUID}/content"), ("content", _UUID))
+        # 관계 묶음(GET)도 다시 기록한다. 고른 자산 묶음은 POST 라 미들웨어가 아니라 라우트가 담긴 자산마다 남긴다.
+        self.assertEqual(derive_access_action("GET", f"/assets/{_UUID}/bundle"), ("bundle", _UUID))
+        self.assertIsNone(derive_access_action("POST", "/assets/bundle"))
+        # 썸네일은 아직 자리만 있다(501) — 기록 대상이 아니다.
+        self.assertIsNone(derive_access_action("GET", f"/assets/{_UUID}/thumbnail"))
 
     def test_non_uuid_segment_none(self):
         # 2026-07-15 B3: 비-UUID 세그먼트(컬렉션/예약·오타)는 단건 감사 아님 — 과거엔 'unclassified' 를
@@ -63,6 +70,24 @@ class RecordAccessTest(unittest.TestCase):
         self.assertIn("INSERT INTO access_log", sql)
         self.assertEqual(params[2], "u1")     # user_id
         self.assertEqual(params[3], "search")  # action
+
+
+class RecordAccessManyTest(unittest.TestCase):
+    def test_여러_행을_한_번에_보낸다(self):
+        conn = _Conn()
+        ids = record_access_many(conn, action="bundle", user_id="u1", asset_ids=["a1", "a2", "a3"], detail={"selection": 3})
+        self.assertEqual(3, len(ids))
+        self.assertEqual(3, len(set(ids)))
+        self.assertEqual([], conn._cur.calls)                 # 낱개 execute 가 아니라
+        sql, rows = conn._cur.many                            # executemany 한 번이다(DB 왕복 1회)
+        self.assertIn("INSERT INTO access_log", sql)
+        self.assertEqual(["a1", "a2", "a3"], [r[1] for r in rows])
+        self.assertTrue(all(r[2] == "u1" and r[3] == "bundle" for r in rows))
+
+    def test_빈_목록은_아무것도_안_보낸다(self):
+        conn = _Conn()
+        self.assertEqual([], record_access_many(conn, action="bundle", user_id="u1", asset_ids=[]))
+        self.assertFalse(hasattr(conn._cur, "many"))
 
 
 class QueryStatsShapeTest(unittest.TestCase):

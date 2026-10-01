@@ -39,16 +39,20 @@ class TestCorsHeaders(unittest.TestCase):
     def test_JSON_본문_요청(self) -> None:
         self.assertEqual(200, self._preflight("authorization,content-type"))
 
-    def test_파일_전송_헤더는_열지_않는다(self) -> None:
-        """다운로드 창구는 자리만 있다(2026-09-28) — 이어받기 헤더도, 파일용 노출 헤더도 두지 않는다."""
-        self.assertEqual(400, self._preflight("authorization,range"))
-        self.assertNotIn("Content-Disposition", CORS_EXPOSE_HEADERS)
+    def test_이어받기_헤더를_허용한다(self) -> None:
+        """원본 다운로드(2026-10-01)의 이어받기는 ``Authorization`` 과 ``Range`` 를 함께 보낸다 — 사전 요청이 막히면 다른 오리진에서 이어받기가 안 된다."""
+        self.assertEqual(200, self._preflight("authorization,range"))
+        self.assertEqual(200, self._preflight("authorization,range,if-range"))
 
-    def test_노출_헤더는_요청_ID_하나(self) -> None:
-        """화면이 오류를 문의할 때 서버 로그를 찾는 열쇠(``request_log``)."""
-        self.assertEqual(("X-Request-ID",), CORS_EXPOSE_HEADERS)
+    def test_모르는_헤더는_여전히_막는다(self) -> None:
+        self.assertEqual(400, self._preflight("authorization,x-custom"))
+
+    def test_노출_헤더는_요청_ID와_내려받기용(self) -> None:
+        """화면이 읽을 수 있어야 하는 응답 헤더 — 요청 ID(오류 문의) · 파일명 · 구간 · 이어받기 기준값."""
+        for h in ("X-Request-ID", "Content-Disposition", "Content-Range", "Accept-Ranges", "ETag"):
+            self.assertIn(h, CORS_EXPOSE_HEADERS)
         r = _client().get("/x", headers={"Origin": ORIGIN})
-        self.assertEqual("X-Request-ID", r.headers["access-control-expose-headers"])
+        self.assertEqual(", ".join(CORS_EXPOSE_HEADERS), r.headers["access-control-expose-headers"])
 
 
 class TestServerErrorCors(unittest.TestCase):
@@ -72,7 +76,8 @@ class TestServerErrorCors(unittest.TestCase):
         self.assertEqual(500, r.status_code)
         self.assertEqual(ORIGIN, r.headers["access-control-allow-origin"])
         self.assertEqual("true", r.headers["access-control-allow-credentials"])
-        self.assertEqual("X-Request-ID", r.headers["access-control-expose-headers"])
+        # 정상 응답(CORS 미들웨어)과 같은 목록을 노출한다 — 목록이 갈리면 500 만 헤더를 못 읽는다.
+        self.assertEqual(", ".join(CORS_EXPOSE_HEADERS), r.headers["access-control-expose-headers"])
 
     def test_모르는_오리진이나_같은_오리진이면_붙이지_않는다(self) -> None:
         self.assertNotIn("access-control-allow-origin", self._get("http://evil.example").headers)

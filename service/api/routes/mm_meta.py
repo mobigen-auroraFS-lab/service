@@ -23,8 +23,10 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 
 from service.api import params
+from service.api.bundle_response import make_plan, zip_response
 from service.portal import mm_meta
 from service.portal.auth import require_principal
 from service.portal.common.db_manager import DbManager
@@ -288,3 +290,87 @@ def mm_meta_card(
     if card is None:
         raise HTTPException(status_code=404, detail="해당 멀티모달 메타가 없다")
     return card  # type: ignore[return-value]
+
+
+# ── 묶음(zip) — 임시 파일 없이 만들면서 흘려 보낸다(``service/portal/asset/bundle_stream.py``) ──────────────
+@router.get("/mm-meta/bundle")
+def download_entities_bundle(
+    entity_type: str | None = Query(None, description="종류(타입) 필터"),
+    areas: str | None = Query(None, description="갈래(개체 라벨) — 모두 가진 개체만(AND · 쉼표 구분)"),
+    labels: str | None = Query(
+        None,
+        description="⚠️ 옛 이름 — `areas` 와 같은 뜻이다. 프론트가 옮겨 갈 때까지 함께 받는다",
+        deprecated=True,
+    ),
+    exclude_video: bool = Query(False, description="영상 제외(용량이 크게 준다)"),
+) -> StreamingResponse:
+    """지금 좁힌 **개체들의 구성 자산 전부**를 한 zip 으로 내려준다.
+
+    화면의 좁히기 축과 다운로드 축이 같아야 "지금 보고 있는 것을 받는다"가 성립한다. 옛 이름 ``labels`` 를 함께 받는 이유: 이름만
+    바꾸고 무시하면 프론트가 계속 그것을 보내면서 **좁혀지지 않은 전량**을 내려받게 된다.
+
+    ⚠️ 검색어(``q``)·좁히기(``refine``)·``limit`` 은 받지 않는다 — 목록을 검색어로 좁힌 뒤 부르면 좁혀지지 않은 전량이 대상이 되어
+    대개 413 이다(결정 대기: ``TODO.md`` G5). 구성 자산은 **확인 전(proposed) 소속까지** 담는다(관계 묶음은 확인된 것만 — 기준 통일 결정 대기).
+
+    Raises:
+        HTTPException: 좁힌 결과가 비면 404 · 용량 상한 초과면 413 · 경로를 아는 파일이 하나도 없으면 409.
+    """
+    picked = _parse_names(areas) or _parse_names(labels)
+    rows: list[dict[str, Any]] = DbManager.read(
+        lambda repo: repo.entity.zip_rows(
+            entity_type=entity_type, areas=picked,
+            min_bundle_size=_MIN_BUNDLE_SIZE, exclude_video=exclude_video,
+        )
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="이 조건에 해당하는 자료가 없습니다")
+    total = sum(int(r["file_size"]) for r in rows)
+    if total > mm_meta.ENTITIES_BUNDLE_MAX_BYTES:     # DB 에 적힌 크기로 먼저 거른다(수천 개 파일을 건드리기 전)
+        mb = 1024 * 1024
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"용량이 상한을 넘습니다({total // mb}MB > "
+                f"{mm_meta.ENTITIES_BUNDLE_MAX_BYTES // mb}MB) — 더 좁히거나 영상을 제외하세요"
+            ),
+        )
+    targets = [
+        {"asset_id": r["asset_id"], "fs_path": r["fs_path"], "file_name": r["file_name"]}
+        for r in rows if r["fs_path"]
+    ]
+    if not targets:
+        raise HTTPException(status_code=409, detail="내려받을 파일 경로가 없다")
+    plan = make_plan(targets)
+    return zip_response(
+        plan,
+        content_disposition=f'attachment; filename="{mm_meta.ascii_zip_name([entity_type or "all", *picked], fallback="meta", count=len(plan.packed))}"',
+        headers={"X-Bundle-Count": str(len(plan.packed)), "X-Bundle-Missing": str(len(plan.unreadable)),
+                 "X-Bundle-Bytes": str(plan.total_bytes)},
+    )
+
+
+@router.get("/mm-meta/{entity_type}/{entity_uid}/bundle")
+def download_card_bundle(entity_type: str, entity_uid: str) -> StreamingResponse:
+    """개체 카드의 구성 자산을 한 zip 으로 내려준다(최대 200건 — 넘으면 앞에서부터 담고 ``X-Bundle-Truncated`` 로 알린다).
+
+    Raises:
+        HTTPException: 개체가 없으면 404 · 구성 자산이 없거나 전부 경로 미상이면 409(빈 zip 을 주면 사용자가
+            "받았는데 비었다"를 오류로 오해한다).
+    """
+    result = DbManager.read(
+        lambda repo: repo.entity.card_zip_targets(entity_type=entity_type, entity_uid=entity_uid))
+    if result is None:
+        raise HTTPException(status_code=404, detail="해당 멀티모달 메타가 없다")
+    targets, name, truncated = result  # type: ignore[misc]
+    if not targets:
+        raise HTTPException(status_code=409, detail="내려받을 파일이 없다(구성 자산 없음 또는 경로 미상)")
+    plan = make_plan(targets)
+    headers = {"X-Bundle-Count": str(len(plan.packed)), "X-Bundle-Missing": str(len(plan.unreadable)),
+               "X-Bundle-Bytes": str(plan.total_bytes)}
+    if truncated:
+        headers["X-Bundle-Truncated"] = str(mm_meta.CARD_BUNDLE_MAX_ASSETS)
+    return zip_response(
+        plan,
+        content_disposition=f'attachment; filename="{mm_meta.ascii_zip_name([f"mm_meta_{entity_type}", name], fallback="mm_meta", count=len(plan.packed))}"',
+        headers=headers,
+    )

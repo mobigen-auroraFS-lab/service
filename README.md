@@ -7,9 +7,12 @@
 웹 화면이 호출하는 API 를 제공합니다. 검색, 자산 상세 조회, 개체 조회, 계정과 로그인을
 담당합니다.
 
-**파일을 내주는 API 는 자리만 있습니다.** 원본 내려받기, 묶음 zip, 미리보기 이미지, 본문은 경로와
-파라미터만 등록돼 있고 부르면 501 입니다. 파일 제공 방식을 다른 쪽과 협의한 뒤 구현합니다(2026-09-28 · 지우기 직전 구현은
-git `9d11d29`). 다시 만들 때 따를 원본 파일 전제는 `service/portal/asset/__init__.py` 에 적어 두었습니다.
+**원본 내려받기와 원문은 동작합니다**(2026-10-01). 원본 파일은 **DB 에 적힌 경로(`fs_path`)에 있다고 보고** 읽습니다 — 경로를
+바꿔 여는 설정은 없고, 그 경로에 파일이 없으면 410 입니다(그 서버에서 그 경로가 보여야 합니다). 이어받기(`Range` · `If-Range`)와
+`ETag` 를 지원합니다. **여러 파일 묶음(zip) 4개 창구도 동작합니다** — 임시 파일 없이 zip 을 만들면서 바로 흘려 보냅니다
+(첫 바이트가 바로 나가고, `Content-Length` 가 없으며, 이어받기는 없습니다). 썸네일만 경로와 파라미터가 등록돼 있고 부르면 501 입니다.
+묶음 방식의 사정과 대안(브라우저에서 zip · 비동기 서버 zip)은 `service/portal/asset/bundle_stream.py` 머리말에, 원본 파일 전제는
+`service/portal/asset/__init__.py` 에 적어 두었습니다.
 
 검색 기능 자체는 core 라이브러리에 있습니다. 이 레포는 그 함수를 호출하고, 결과를 화면이
 쓰기 쉬운 JSON 으로 만들어 돌려줍니다.
@@ -34,7 +37,7 @@ service/
       file_search.py    # 파일 목록 형태의 검색
       assets.py         # 자산 상세, 주제, 자산의 개체
       mm_meta.py        # 개체 목록과 상세
-      files.py          # 파일 제공 경로 — 자리만(모두 501)
+      files.py          # 아직 자리만 있는 파일 제공 경로(썸네일 · 501)
       catalog.py        # 태그·관계 종류 목록
       account.py        # 회원가입·로그인
       admin.py          # 운영 통계 — 등재 보류
@@ -44,11 +47,13 @@ service/
     errors.py         # 예외를 HTTP 응답으로 옮김
     logging_config.py # 로그 설정(수준 · 형식 · 표준출력) · 요청 ID
     request_log.py    # 요청마다 ID 를 매기고 한 줄을 남깁니다
+    roles.py          # 프로세스 역할(PORTAL_ROLE) — 파일 창구를 따로 띄울 때
+    bundle_response.py # 묶음 zip 응답 모양(헤더 · 끊김 정리)
     lifespan.py       # 기동·종료 순서
     params.py         # 여러 경로가 함께 쓰는 요청 검증
 
   portal/             # 실제 조회와 가공
-    asset/            # 자산 상세, 집계, 파일 메타
+    asset/            # 자산 상세, 집계, 파일 메타, 원본 · 원문 · 묶음 zip(bundle_stream.py)
     auth/             # 로그인, 토큰, 비밀번호
     search/           # 검색 결과 묶기, 정렬 기준, 칩 집계
     history/          # 접근 기록, 처리 이력
@@ -58,6 +63,8 @@ service/
   bootstrap.py        # 시작할 때 core 설정을 읽어 들입니다
 
 tests/                # 단위 테스트
+
+experiments/          # 파일 전송 방식 실험(측정기 · 실험 서버 · 결과). 배포 패키지(service)에 들어가지 않습니다 — RESULTS.md
 ```
 
 `api/` 는 경로와 파라미터만 다루고 실제 일은 `portal/` 에서 합니다. 화면이 바뀌어 응답
@@ -81,6 +88,8 @@ tests/                # 단위 테스트
 | `GET /file-search/suggest` | 검색어 제안 |
 | `GET /file-search/facet-extra` | 추가 칩 집계 |
 | `GET /assets/{id}` | 자산 상세 |
+| `GET /assets/{id}/download` | 원본 파일 내려받기(이어받기 지원). 파일이 없으면 410 |
+| `GET /assets/{id}/content` | 원문(문서 글자 · 소리의 받아쓰기). 1MiB 까지, 잘리면 `truncated` |
 | `GET /assets/{id}/mm-meta` | 이 자산에서 나온 개체 |
 | `GET /assets/unclassified` | 분류되지 않은 자산 |
 | `GET /topics` | 주제 목록. 대주제와 세부주제를 자산 수와 함께 |
@@ -90,16 +99,20 @@ tests/                # 단위 테스트
 | `GET /mm-meta/facets` | 개체 칩 집계 |
 | `GET /tags` · `/relation-kinds` | 태그·관계 종류 목록 |
 
-파일 제공 경로는 자리만 있습니다(부르면 501). 화면이 이 이름으로 미리 코딩할 수 있고 `/docs` 에 파라미터가 보입니다.
+여러 파일을 zip 하나로 받는 창구입니다(만들면서 바로 흘려 보냅니다 · 건수 200 · 용량 500MB 상한). 읽을 수 없는 파일은 빼고
+zip 맨 끝 `_manifest.json` 에 적으며, 건수는 `X-Bundle-*` 응답 머리로 알립니다.
 
 | 경로 | 용도 |
 |---|---|
-| `GET /assets/{id}/download` | 원본 파일 내려받기 |
-| `GET /assets/{id}/thumbnail` | 미리보기 이미지 |
-| `GET /assets/{id}/content` | 본문(문서 글자 · 받아쓰기) |
 | `GET /assets/{id}/bundle` | 이 자산과 관계된 자산을 zip 하나로 |
 | `POST /assets/bundle` | 고른 자산 여러 개를 zip 하나로 |
 | `GET /mm-meta/bundle` · `/mm-meta/{type}/{uid}/bundle` | 개체들 · 개체 카드의 구성 자산을 zip 하나로 |
+
+아래는 아직 자리만 있습니다(부르면 501). 화면이 이 이름으로 미리 코딩할 수 있고 `/docs` 에 파라미터가 보입니다.
+
+| 경로 | 용도 |
+|---|---|
+| `GET /assets/{id}/thumbnail` | 미리보기 이미지 |
 
 서버를 띄운 뒤 `/docs` 로 접속하면 전체 목록과 파라미터를 확인할 수 있습니다.
 
@@ -181,6 +194,9 @@ TEXT_EMBED_NORMALIZE=true
 | `PORTAL_THREAD_LIMIT` | 동시에 처리할 요청 수. 없으면 기동할 때 DB 연결 풀 크기에 맞춥니다 |
 | `PORTAL_MAX_BODY_BYTES` | 요청 본문 상한. 기본 1MiB, 넘으면 413 |
 | `PORTAL_TAGS_CACHE_SECONDS` | `/tags` 와 검색어 제안이 쓰는 태그 목록을 들고 있을 시간. 기본 300초, `0` 이면 끕니다 |
+| `PORTAL_ZIP_LEVEL` | 묶음 zip 의 압축 수준 1~9. 기본 6. 낮추면 서버 CPU 가 줄고 파일이 커집니다(텍스트에서 1 은 CPU 1/3 · 크기 +45%) |
+| `PORTAL_ZIP_READ_WINDOW` · `PORTAL_ZIP_FILES_AHEAD` | 저장소 읽기 지연이 클 때만 켭니다. 큰 파일 한 개를 조각 N 개로 동시에 읽기 · 다음 파일 N 개를 미리 읽기. 기본은 둘 다 꺼짐 |
+| `PORTAL_ROLE` | `all`(기본) · `api`(파일 창구 뺀 나머지) · `files`(원본 · 원문 · 묶음 zip · 썸네일만). 파일 창구를 별도 프로세스로 띄울 때 씁니다 — 아래 「파일 창구를 따로 띄우기」 |
 | `PORTAL_LOG_LEVEL` | 로그 수준. `DEBUG` · `INFO`(기본) · `WARNING` · `ERROR` |
 | `PORTAL_LOG_FORMAT` | 로그 형식. `text`(기본) · `json`(한 줄이 JSON 한 건 — 로그 수집기용) |
 | `PORTAL_SLOW_REQUEST_MS` | 이 시간(ms)을 넘긴 요청을 WARNING 으로 남깁니다. 기본 3000, `0` 이면 끕니다 |
@@ -256,6 +272,7 @@ uvicorn service.api:app --host 0.0.0.0 --port 8001 --workers 2      # 운영
 |---|---|
 | core 를 새 버전으로 올렸을 때 | core 재설치 → 테스트 → 재시작. 임베딩 모델이 바뀌었으면 pipeline 재색인이 먼저입니다 |
 | 검색 결과가 비어 있을 때 | pipeline 의 색인 상태, 임베딩 서버 응답, OpenSearch 연결을 확인하십시오 |
+| 파일 내려받기가 410 일 때 | 이 서버에서 DB 의 `fs_path` 가 가리키는 경로가 보이는지 확인하십시오(적재한 기계와 다르면 같은 경로로 마운트해야 합니다) |
 | 동시 접속이 늘 때 | `PORTAL_DB_POOL_MAX` 와 PostgreSQL 최대 연결 수를 함께 확인하십시오 |
 | 화면에서 오류가 났다고 할 때 | 응답 머리의 `X-Request-ID` 를 받아 그 값으로 로그를 찾으십시오 |
 | 느리다는 말이 나올 때 | `느린 요청` 줄(WARNING)에서 경로와 걸린 시간을 보십시오. 기준은 `PORTAL_SLOW_REQUEST_MS` 입니다 |
@@ -295,6 +312,20 @@ $ curl -s "http://127.0.0.1:8001/file-search?q=김치&topic=음식&topic=전통�
 
 응답의 건수와 점수는 데이터에 따라 달라집니다. 자산 식별자는 UUID v7 입니다.
 
+## 파일 창구를 따로 띄우기 (선택)
+
+원본 · 묶음 zip 은 요청 하나가 오래 걸리고 CPU(압축)와 대역폭을 많이 씁니다. 같은 프로세스에서 돌면 묶음이 많을 때 검색 · 상세 응답이 같이 흔들릴 수 있어(실측: 상세 p95 277 → 162ms),
+별도 프로세스(파드)로 나눌 수 있습니다. 같은 코드, 환경변수만 다릅니다.
+
+```bash
+PORTAL_ROLE=api   uvicorn service.api:app --port 8000   # 검색 · 상세 · 계정 · 목록
+PORTAL_ROLE=files uvicorn service.api:app --port 8100   # 원본 · 원문 · 묶음 zip · 썸네일
+```
+
+앞단(인그레스)이 `/assets/{id}/download` · `/assets/{id}/content` · `/assets/{id}/bundle` · `/assets/{id}/thumbnail` · `POST /assets/bundle` · `/mm-meta/bundle` · `/mm-meta/{type}/{uid}/bundle` 만 files 로 보내고 나머지는 api 로 보냅니다.
+웹은 바뀌지 않습니다. 두 프로세스는 JWT 서명 키 · CORS 설정을 같게 가져야 하고, DB 풀 합이 PostgreSQL `max_connections` 안이어야 합니다. files 의 DB 풀을 줄이면 묶음 처리량이 줄어드니 기본값으로 두고 CPU 상한은 파드의 limit 으로 겁니다.
+측정 근거와 방식 비교는 `experiments/RESULTS.md` 입니다. 파드 CPU 한도에서의 효과는 아직 재지 못했습니다.
+
 ## 기타
 
 - **테스트** — `python -m unittest discover -s tests` 와 `ruff check service tests`.
@@ -311,7 +342,8 @@ $ curl -s "http://127.0.0.1:8001/file-search?q=김치&topic=음식&topic=전통�
 | 화면에서 부르면 막힘 | `PORTAL_CORS_ORIGINS` 에 그 주소가 없습니다 |
 | 부하가 걸리면 응답이 느려짐 | DB 연결 풀이 모자라 요청이 줄을 서고 있습니다 |
 | 404 가 나옴 | `/admin` 과 `/review` 는 등재하지 않았습니다 |
-| 501 이 나옴 | 파일 제공 경로(내려받기·미리보기·본문·묶음)는 자리만 있습니다. `size_bucket` 으로 거르기도 아직 없습니다 |
+| 501 이 나옴 | 썸네일 경로는 자리만 있습니다. `size_bucket` 으로 거르기도 아직 없습니다 |
+| 410 이 나옴 | 원본 내려받기 · 원문이 읽을 파일이 DB 에 적힌 경로에 없습니다 — 그 서버에서 같은 경로가 보여야 합니다(마운트 · 권한 확인) |
 | 검색 결과가 비어 있음 | 색인이 없거나, 검색어 임베딩 모델이 색인할 때와 다릅니다 |
 | 503 이 나옴 | 임베딩 서버나 OpenSearch 에 연결하지 못했습니다 |
 | 413 이 나옴 | 요청 본문이 `PORTAL_MAX_BODY_BYTES` 를 넘었습니다 |
