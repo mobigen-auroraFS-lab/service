@@ -7,13 +7,28 @@
 from __future__ import annotations
 
 import os
+import threading
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from service.api import audit, db, warmup
+from service.api import audit, db, db_health, search_health, warmup
 
 ENV = os.getenv("PORTAL_API_ENV", "dev")
+
+
+def _start_dependency_checks() -> None:
+    """기동 직후 DB · 검색 엔진에 짧게 접속해 본다(뒤에서 · 기동을 막지 않는다) — 죽어 있으면 첫 요청들이 15초씩 매달리지 않고 곧바로 503 을 받는다.
+
+    역할이 files 인 프로세스는 검색 엔진을 쓰지 않으므로 DB 만 본다. ``PORTAL_STARTUP_CHECK=0`` 이면 건너뛴다(시험).
+    """
+    if os.getenv("PORTAL_STARTUP_CHECK", "1").strip() == "0":
+        return
+    checks = [db_health.BREAKER.startup_check]
+    if os.getenv("PORTAL_ROLE", "all").strip().lower() != "files":
+        checks.append(search_health.BREAKER.startup_check)
+    for fn in checks:
+        threading.Thread(target=fn, name="startup-check", daemon=True).start()
 
 
 @asynccontextmanager
@@ -36,6 +51,7 @@ async def lifespan(_app: FastAPI):
     #    ⚠️ ``bootstrap_env`` **뒤**여야 한다 — 서명 키가 ``.env.{ENV}`` 에서 들어올 수 있다.
     load_portal_auth_config()
     db.align_thread_limit_to_pool()
+    _start_dependency_checks()
     warmup.start()          # 뒤에서 — 첫 사용자가 DB 연결 · 태그 캐시를 만드는 시간을 치르지 않게(기동은 막지 않는다)
     yield
     # 종료 시 남은 감사 기록 작업을 먼저 비운다(응답과 분리돼 뒤에서 돌던 것들).

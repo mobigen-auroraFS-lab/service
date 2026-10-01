@@ -389,7 +389,7 @@ def file_search(
     if beyond_depth:
         page_from, page_size = 0, 1
 
-    from src.search.opensearch_sync import get_client
+    from service.api.search_health import get_client
 
     # 🔴 정렬과 무관하게 임베딩이 필요하다 — 뜻이 **집합 판정**에 쓰이기 때문이다(코사인 하한
     #    이상이면 글자가 안 겹쳐도 집합에 든다). 정렬에 따라 개수가 달라지면 화면이 거짓말을 한다.
@@ -573,7 +573,7 @@ def warm_up_search(query: str = "워밍업") -> None:
     Raises:
         임베딩 · 검색 엔진 오류는 그대로 올린다 — 부르는 쪽(``service.api.warmup``)이 경고로 삼킨다.
     """
-    from src.search.opensearch_sync import get_client
+    from service.api.search_health import get_client
 
     vector = embed_query_for_media_search(query, channel=active_embed_channel())
     search_files(
@@ -637,7 +637,7 @@ def file_search_facet_extra(
             _LOG.warning("추가 칩 — 질의 임베딩 실패: %s", exc, exc_info=_LOG.isEnabledFor(logging.DEBUG))
             raise HTTPException(status_code=503, detail="임베딩 서버에 연결할 수 없습니다") from exc
     # 검색 엔진 클라이언트는 **부를 때** 가져온다(모듈 로딩 시점에 연결을 만들지 않는다 — 훑기 경로와 같은 규칙).
-    from src.search.opensearch_sync import get_client
+    from service.api.search_health import get_client
     try:
         with stage("engine"):
             return extra_facets(

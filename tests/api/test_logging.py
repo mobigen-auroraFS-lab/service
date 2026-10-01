@@ -67,7 +67,10 @@ def _app(slow_ms: int = 0) -> TestClient:
     def echo_id(_r):
         return PlainTextResponse(request_id_var.get())
 
-    app = Starlette(routes=[Route("/x", ok), Route("/health", ok), Route("/boom", boom), Route("/id", echo_id)])
+    def not_ready(_r):
+        return PlainTextResponse("아직 제공하지 않음", status_code=501)
+
+    app = Starlette(routes=[Route("/x", ok), Route("/health", ok), Route("/boom", boom), Route("/id", echo_id), Route("/soon", not_ready)])
     app.add_middleware(RequestLogMiddleware, slow_ms=slow_ms)
     return TestClient(app, raise_server_exceptions=False)
 
@@ -133,6 +136,14 @@ class TestAccessLine(unittest.TestCase):
         self.assertEqual(500, r.status_code)
         self.assertEqual("ERROR", cm.records[0].levelname)
         self.assertEqual(500, cm.records[0].status)
+
+    def test_501_은_고장이_아니라_WARNING(self) -> None:
+        # 자리만 있는 창구(썸네일)를 부를 때마다 오류 알람이 울리면 진짜 5xx 가 묻힌다.
+        with self.assertLogs(ACCESS, "INFO") as cm:
+            r = _app().get("/soon")
+        self.assertEqual(501, r.status_code)
+        self.assertEqual("WARNING", cm.records[0].levelname)
+        self.assertEqual(501, cm.records[0].status)
 
     def test_헬스_체크는_DEBUG(self) -> None:
         with self.assertLogs(ACCESS, "DEBUG") as cm:

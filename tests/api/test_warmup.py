@@ -66,6 +66,16 @@ class TestWarmup(unittest.TestCase):
         self.assertEqual((1, 0, ()), (kw["size"], kw["from_"], kw["axes"]))      # 1건 · 첫 쪽 · 칩 안 센다
         self.assertEqual([0.0], kw["query_vector"])
 
+    def test_예열은_단계에_앞서_접속을_시험한다(self) -> None:
+        # 죽어 있는 의존에 단계마다 15초씩 매달리지 않게 — 접속 시험이 먼저 차단기를 연다.
+        from service.api import db_health, search_health
+        order: list[str] = []
+        with mock.patch.object(db_health.BREAKER, "startup_check", side_effect=lambda: order.append("db")), \
+                mock.patch.object(search_health.BREAKER, "startup_check", side_effect=lambda: order.append("search")), \
+                mock.patch.object(warmup, "STEPS", (("x", lambda: order.append("step") or "x"),)):
+            warmup.warm_once()
+        self.assertEqual(["db", "search", "step"], order)
+
     def test_단계는_서로_독립이다_하나가_실패해도_다음을_한다(self) -> None:
         ran: list[str] = []
 

@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from service.api import audit, errors, lifespan, logging_config, roles
+from service.api import audit, db_health, errors, lifespan, logging_config, roles, search_health
 from service.api.body_limit import BodyLimitMiddleware
 from service.api.cors import CORS_ALLOW_HEADERS, CORS_EXPOSE_HEADERS
 from service.api.request_log import RequestLogMiddleware
@@ -61,6 +61,8 @@ app.add_middleware(BodyLimitMiddleware)
 # ⚠️ ``Exception`` 처리기는 응답만 대신 만들고 예외는 Starlette 이 다시 올린다(서버 로그 보존).
 app.add_exception_handler(StarletteHTTPException, errors.http_exception_handler)
 app.add_exception_handler(RequestValidationError, errors.validation_exception_handler)
+app.add_exception_handler(db_health.DatabaseUnavailable, errors.db_unavailable_handler)
+app.add_exception_handler(search_health.SearchUnavailable, errors.search_unavailable_handler)
 app.add_exception_handler(Exception, errors.unhandled_exception_handler)
 
 # 검색 엔진 연결 실패는 503 으로 — 코드 버그(500)와 구분해야 알람을 나눌 수 있다.
@@ -71,13 +73,17 @@ if errors.OSConnectionError is not None:
 
 # ── 메타 라우트(health/auth/me) — 앱 수준·소규모라 여기 직접 등록(원래도 맨 앞) ──────────────
 @app.get("/health", tags=["meta"])
-def health() -> dict[str, str]:
-    """헬스 체크(부트스트랩·라우팅 확인용)."""
+async def health() -> dict[str, str]:
+    """헬스 체크(부트스트랩·라우팅 확인용).
+
+    ``async`` 인 까닭: 동기 ``def`` 는 스레드풀(DB 풀 크기에 맞춘 10개)에서 도는데, DB · 검색 엔진이 죽어 요청들이 그 스레드를 다 잡으면
+    헬스 체크까지 줄을 서서 쿠버네티스가 멀쩡한 파드를 죽인다(2026-10-02 실측: 동시 20요청 중 7.9초). 이 창구는 아무것도 기다리지 않으므로 이벤트 루프에서 바로 답한다.
+    """
     return {"status": "ok", "env": lifespan.ENV}
 
 
 @app.head("/health", include_in_schema=False)
-def health_head() -> Response:
+async def health_head() -> Response:
     """헬스 체크의 HEAD — 본문 없이 200.
 
     다른 GET 창구는 HEAD 를 405 로 거절하는데(선언한 메서드만 받는다), 헬스 체크만 예외다.
@@ -174,4 +180,4 @@ if _ROLE in ("all", "api"):
     # 계정(가입·로그인) — 로그인 전에 부르므로 인증을 걸지 않는다.
     app.include_router(account.public_router)
 
-__all__ = ["CORS_ALLOW_HEADERS", "CORS_EXPOSE_HEADERS", "app"]
+__all__ = ["CORS_ALLOW_HEADERS", "CORS_EXPOSE_HEADERS", "app", "health", "health_head"]

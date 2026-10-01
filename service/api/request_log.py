@@ -11,7 +11,7 @@
 (``service.portal.common.stage_timer`` — 임베딩 서버 · 검색 엔진 · DB 중 어디가 튀었는지 가른다). ``json`` 형식에는 모든 줄에 ``stages`` 칸으로 실린다.
 보통 줄에는 붙이지 않는다(줄이 길어지지 않게).
 
-**수준** — 5xx 는 ERROR, 기준 시간(``PORTAL_SLOW_REQUEST_MS`` · 기본 3000ms)을 넘긴 요청은 WARNING(``느린 요청``),
+**수준** — 5xx 는 ERROR(단 501 「아직 제공하지 않음」은 서버 고장이 아니라 WARNING — 자리만 있는 창구를 부를 때마다 오류 알람이 울리지 않게), 기준 시간(``PORTAL_SLOW_REQUEST_MS`` · 기본 3000ms)을 넘긴 요청은 WARNING(``느린 요청``),
 헬스 체크(``/health``)는 DEBUG(살아 있는지 묻는 호출이 로그를 덮지 않게), 나머지는 INFO.
 
 **순수 ASGI 미들웨어**로 만들었다 — 흔한 ``@app.middleware("http")`` 방식은 요청마다 태스크를 하나 더 만들고 스트리밍
@@ -104,8 +104,10 @@ class RequestLogMiddleware:
         path = printable_path(scope.get("path", ""))
         client = (scope.get("client") or ("-", 0))[0]
         slow = bool(self.slow_ms) and ms >= self.slow_ms
-        if code >= 500:
+        if code >= 500 and code != 501:
             level = logging.ERROR
+        elif code == 501 or slow:
+            level = logging.WARNING
         elif slow:
             level = logging.WARNING
         elif path in QUIET_PATHS:

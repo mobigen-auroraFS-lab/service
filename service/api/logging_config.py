@@ -24,6 +24,8 @@ import logging.config
 import os
 import re
 import secrets
+import threading
+import time
 import warnings
 from datetime import UTC, datetime
 from typing import Any
@@ -95,6 +97,49 @@ class RequestIdFilter(logging.Filter):
         return True
 
 
+# 외부 라이브러리가 연결 실패를 알릴 때 쓰는 로거 — 한 번 실패하면 같은 경고가 수십 번 · 긴 트레이스백과 함께 쌓인다
+#   (2026-10-02 DB · 검색 엔진이 죽었을 때 풀이 재접속할 때마다 · 요청마다 찍혔다). 원인은 한 줄이면 읽힌다.
+NOISY_LIBS = ("opensearch", "postgres_util", "psycopg", "urllib3")     # 로거 이름의 **어느 마디든** 이 이름으로 시작하면 대상(코어 DB 도구의 실제 이름은 ``src.database.postgres_util``)
+DEDUP_WINDOW_SECONDS = 30.0
+_NUMBERS = re.compile(r"[\d.]+")
+
+
+class LibraryNoiseFilter(logging.Filter):
+    """외부 라이브러리(검색 엔진 · DB 풀 · 코어 DB 도구)의 로그에서 트레이스백을 떼고, 같은 내용이 반복되면 일정 시간 한 번만 남긴다.
+
+    · 트레이스백 대신 예외 이름과 짧은 설명 한 줄을 뒤에 붙인다(원인은 그걸로 충분하다 — 우리 코드의 로그는 건드리지 않는다).
+    · 숫자(걸린 시간 · 시도 횟수)만 다른 같은 문장은 ``DEDUP_WINDOW_SECONDS`` 안에 한 번만 남기고, 다음에 남길 때 「같은 경고 N건 생략」을 붙인다.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._seen: dict[tuple[str, int, str], tuple[float | None, int]] = {}
+        self._lock = threading.Lock()
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not any(part.startswith(NOISY_LIBS) for part in record.name.split(".")):
+            return True
+        text = record.getMessage()
+        if record.exc_info and record.exc_info[1] is not None:
+            exc = record.exc_info[1]
+            text = f"{text} — {type(exc).__name__}: {str(exc).splitlines()[0][:120] if str(exc) else ''}".rstrip(": ")
+            record.exc_info = None
+            record.exc_text = None
+        key = (record.name, record.levelno, _NUMBERS.sub("N", text)[:200])
+        now = time.monotonic()
+        with self._lock:
+            last, skipped = self._seen.get(key, (None, 0))
+            if last is not None and now - last < DEDUP_WINDOW_SECONDS:
+                self._seen[key] = (last, skipped + 1)
+                return False
+            self._seen[key] = (now, 0)
+            if len(self._seen) > 500:                      # 오래된 열쇠를 버린다(메모리 상한)
+                self._seen = {k: v for k, v in self._seen.items() if v[0] is not None and now - v[0] < DEDUP_WINDOW_SECONDS}
+        record.msg = text + (f" (같은 경고 {skipped}건 생략)" if skipped else "")
+        record.args = ()
+        return True
+
+
 # LogRecord 가 원래 갖는 속성 — 이 밖의 속성(``extra`` 로 준 값)만 JSON 에 따로 싣는다.
 _STD_ATTRS = frozenset(logging.LogRecord("", 0, "", 0, "", (), None).__dict__) | {
     "message", "asctime", "taskName", "lvl", "short", "rid"}   # 뒤 셋은 text 형식 전용 칸(필터가 채운다)
@@ -153,7 +198,7 @@ def build_config(level: str, fmt: str) -> dict[str, Any]:
     return {
         "version": 1,
         "disable_existing_loggers": False,
-        "filters": {"request_id": {"()": RequestIdFilter}},
+        "filters": {"request_id": {"()": RequestIdFilter}, "lib_noise": {"()": LibraryNoiseFilter}},
         "formatters": {
             "text": {"format": TEXT_FORMAT, "datefmt": TEXT_DATE_FORMAT},
             "json": {"()": JsonFormatter},
@@ -163,7 +208,7 @@ def build_config(level: str, fmt: str) -> dict[str, Any]:
                 "class": "logging.StreamHandler",
                 "stream": "ext://sys.stdout",
                 "formatter": fmt,
-                "filters": ["request_id"],
+                "filters": ["request_id", "lib_noise"],
             },
         },
         "root": {"level": level, "handlers": ["stdout"]},

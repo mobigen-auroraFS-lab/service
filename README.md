@@ -197,6 +197,8 @@ TEXT_EMBED_NORMALIZE=true
 | `PORTAL_ZIP_LEVEL` | 묶음 zip 의 압축 수준 1~9. 기본 6. 낮추면 서버 CPU 가 줄고 파일이 커집니다(텍스트에서 1 은 CPU 1/3 · 크기 +45%) |
 | `PORTAL_ZIP_READ_WINDOW` · `PORTAL_ZIP_FILES_AHEAD` | 저장소 읽기 지연이 클 때만 켭니다. 큰 파일 한 개를 조각 N 개로 동시에 읽기 · 다음 파일 N 개를 미리 읽기. 기본은 둘 다 꺼짐 |
 | `PORTAL_ROLE` | `all`(기본) · `api`(파일 창구 뺀 나머지) · `files`(원본 · 원문 · 묶음 zip · 썸네일만). 파일 창구를 별도 프로세스로 띄울 때 씁니다 — 아래 「파일 창구를 따로 띄우기」 |
+| `PORTAL_DB_WAIT_SECONDS` | DB 풀에서 연결을 기다릴 시간. 기본 5초(코어 기본 30초) — 짧을수록 DB 가 죽었을 때 빨리 포기합니다 |
+| `PORTAL_STARTUP_CHECK` | `0` 이면 기동 직후 DB · 검색 엔진 접속 시험을 건너뜁니다(기본은 합니다). 죽어 있으면 첫 요청부터 곧바로 503 으로 답합니다 |
 | `PORTAL_LOG_LEVEL` | 로그 수준. `DEBUG` · `INFO`(기본) · `WARNING` · `ERROR` |
 | `PORTAL_LOG_FORMAT` | 로그 형식. `text`(기본) · `json`(한 줄이 JSON 한 건 — 로그 수집기용) |
 | `PORTAL_SLOW_REQUEST_MS` | 이 시간(ms)을 넘긴 요청을 WARNING 으로 남깁니다. 기본 3000, `0` 이면 끕니다 |
@@ -345,7 +347,7 @@ PORTAL_ROLE=files uvicorn service.api:app --port 8100   # 원본 · 원문 · �
 | 501 이 나옴 | 썸네일 경로는 자리만 있습니다. `size_bucket` 으로 거르기도 아직 없습니다 |
 | 410 이 나옴 | 원본 내려받기 · 원문이 읽을 파일이 DB 에 적힌 경로에 없습니다 — 그 서버에서 같은 경로가 보여야 합니다(마운트 · 권한 확인) |
 | 검색 결과가 비어 있음 | 색인이 없거나, 검색어 임베딩 모델이 색인할 때와 다릅니다 |
-| 503 이 나옴 | 임베딩 서버나 OpenSearch 에 연결하지 못했습니다 |
+| 503 이 나옴 | 임베딩 서버 · OpenSearch · **DB** 중 하나에 연결하지 못했습니다. `Retry-After: 5` 가 붙고, 죽은 쪽은 연결 차단기가 열려 기다리지 않고 곧바로 503 으로 답합니다(서버 로그에 `DB 연결 불가 — 차단` · `검색 엔진 연결 불가 — 차단` 한 줄, 살아나면 `연결 복구`). `/health` 는 그동안에도 200 입니다 |
 | 413 이 나옴 | 요청 본문이 `PORTAL_MAX_BODY_BYTES` 를 넘었습니다 |
 
 ## 제3자 오픈소스

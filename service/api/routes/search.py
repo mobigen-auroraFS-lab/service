@@ -22,6 +22,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from service.api import search_health
 from service.portal.auth import Principal, require_principal
 from service.portal.common.db_manager import DbManager
 from service.portal.common.stage_timer import stage
@@ -452,6 +453,7 @@ def search(
         raise HTTPException(status_code=422, detail="검색어(q)가 비어 있습니다 — 찾을 말을 주십시오")
 
     effective_pool = max(limit_per_bucket, size)
+    search_health.check()           # 검색 엔진이 죽어 있으면 임베딩부터 기다리지 않고 곧바로 503
     try:
         with stage("search"):       # 임베딩 + 검색 엔진을 한 번에 부른다 — 요청 로그에는 합쳐서 남는다
             result = search_hybrid(
