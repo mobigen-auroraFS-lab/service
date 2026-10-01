@@ -34,7 +34,9 @@ _LOG = logging.getLogger("meta_extract.portal_api")
 
 
 def enabled() -> bool:
-    """예열을 할지 — ``PORTAL_WARMUP=0`` 이면 하지 않는다(기본은 한다)."""
+    """예열을 할지 — ``PORTAL_WARMUP=0`` 이면 하지 않는다(기본은 한다). 파일 전용 프로세스(``PORTAL_ROLE=files``)는 검색 · 태그를 안 쓰니 하지 않는다."""
+    if os.getenv("PORTAL_ROLE", "all").strip().lower() == "files":
+        return False
     return os.getenv(WARMUP_ENV, "1").strip() != "0"
 
 

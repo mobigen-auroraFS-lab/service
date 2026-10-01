@@ -51,6 +51,24 @@ def record_access(conn: Any, *, action: str, user_id: str,
     return access_id
 
 
+def record_access_many(conn: Any, *, action: str, user_id: str, asset_ids: list[str], detail: dict | None = None) -> list[str]:
+    """같은 동작의 접근 이력을 **한 번에** 여러 행 남긴다(묶음처럼 자산이 여러 개일 때).
+
+    한 행씩 ``record_access`` 를 부르면 행마다 DB 왕복이 생긴다 — 원격 DB 에서 행당 ~8ms 라 60건이면 첫 바이트가 0.5초 늦어진다
+    (2026-10-01 실측: 고른 자산 묶음 60건의 첫 바이트 0.65초). ``executemany`` 는 한 묶음으로 보낸다.
+
+    Returns:
+        새로 만든 ``access_id`` 들(``asset_ids`` 순서).
+    """
+    if not asset_ids:
+        return []
+    body = json.dumps(detail or {}, ensure_ascii=False)
+    ids = [str(uuid7()) for _ in asset_ids]
+    with conn.cursor() as cur:
+        cur.executemany(_INSERT, [(i, a, user_id, action, body) for i, a in zip(ids, asset_ids, strict=True)])
+    return ids
+
+
 def derive_access_action(method: str, path: str) -> tuple[str, str | None] | None:
     """요청 경로를 보고 감사에 남길 동작 이름과 대상 자산을 정한다(순수 함수).
 
@@ -58,8 +76,8 @@ def derive_access_action(method: str, path: str) -> tuple[str, str | None] | Non
     ``/assets/`` 뒤 첫 세그먼트는 **UUID 형식일 때만** 자산 단건으로 간주한다 — ``/assets/unclassified``
     컬렉션처럼 UUID 가 아닌 경로 조각을 자산 id 로 오인하면 기록 INSERT 가
     매번 실패하고, 최선 노력 방식이라 조용히 삼켜진다(감사 유실 + 경고만 쌓임). 컬렉션 조회 기록이
-    필요해지면 asset_id 없는 별도 action 으로 설계한다(현재는 단건·검색만 감사 — 다운로드·묶음·원문 창구는
-    2026-09-28 삭제, 파일 제공을 협의해 다시 만들 때 기록 대상도 함께 되살린다).
+    필요해지면 asset_id 없는 별도 action 으로 설계한다(현재는 단건·검색·원본 다운로드·관계 묶음·원문만 감사 — 고른 자산 묶음은 POST 라 라우트가 담긴 자산마다
+    ``bundle`` 로 남기고, 개체 묶음은 기록하지 않는다. 썸네일은 자리만 있어(501) 대상이 아니다).
 
     Args:
         method: HTTP 메서드. **GET 이 아니면 곧바로 기록 대상에서 뺀다**(조회만 감사한다).
@@ -81,6 +99,14 @@ def derive_access_action(method: str, path: str) -> tuple[str, str | None] | Non
             return None  # 비-UUID(unclassified 등 컬렉션/예약 세그먼트) — 단건 감사 아님(B3)
         if len(parts) == 1:
             return ("asset_view", asset_id)
+        if len(parts) == 2 and parts[1] == "download":
+            return ("download", asset_id)
+        if len(parts) == 2 and parts[1] == "bundle":
+            return ("bundle", asset_id)
+        # [2026-09-21] 원문 열람 — 상세(asset_view)와 구분한다. 요약이 아니라 **본문 글자**를 가져가는 접근이라,
+        # 감사에서 같은 이름으로 묶으면 무엇을 읽었는지 구분되지 않는다.
+        if len(parts) == 2 and parts[1] == "content":
+            return ("content", asset_id)
     return None
 
 

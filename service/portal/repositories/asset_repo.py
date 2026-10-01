@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from service.portal.asset.detail import fetch_asset_detail
+from service.portal.asset.download import collect_bundle_assets, resolve_download_target
 from service.portal.common.repository import Repository
 from src.relations.graph_query import mm_meta_of_asset
 from src.topic.asset_topic_query import (
@@ -34,6 +35,16 @@ class AssetRepository(Repository):
         detail["topics"] = fetch_asset_topic(self._conn, asset_id=asset_id)
         detail["same_topic_groups"] = find_same_topic_groups(self._conn, asset_id=asset_id)
         return detail
+
+    def download_target(self, *, asset_id: str) -> dict[str, Any] | None:
+        """내려받을 원본의 경로 · 이름 · 종류. 없는 자산과 노출 대상이 아닌 자산을 **같게** ``None`` 으로 다룬다(404)."""
+        return resolve_download_target(self._conn, asset_id=asset_id)
+
+    def bundle_targets(self, *, seed_asset_id: str) -> list[dict[str, Any]] | None:
+        """관계 묶음 대상. 🔴 기준 자산의 노출을 **먼저** 확인한다 — 이 순서를 바꾸면 볼 수 없는 자산을 통해 딸린 파일이 새어 나간다."""
+        if resolve_download_target(self._conn, asset_id=seed_asset_id) is None:
+            return None
+        return collect_bundle_assets(self._conn, seed_asset_id=seed_asset_id)
 
     def unclassified(self, **kw: Any) -> dict[str, Any]:
         return assets_unclassified(self._conn, **kw)

@@ -20,9 +20,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from service.api import audit, errors, lifespan, logging_config
+from service.api import audit, errors, lifespan, logging_config, roles
 from service.api.body_limit import BodyLimitMiddleware
-from service.api.request_log import REQUEST_ID_HEADER, RequestLogMiddleware
+from service.api.cors import CORS_ALLOW_HEADERS, CORS_EXPOSE_HEADERS
+from service.api.request_log import RequestLogMiddleware
 from service.api.routes import (
     account,
     assets,
@@ -123,13 +124,7 @@ def me(principal: Annotated[Principal, Depends(require_principal)]) -> dict[str,
 # 🔴 비워 두면 **아무 오리진도 허용하지 않는다**(종전 동작) — 운영에서 실수로 전면 개방되지 않게
 #    기본값을 열어 두지 않는다. ``*`` 는 자격 증명과 함께 쓸 수 없어 목록으로만 받는다.
 _CORS_ORIGINS = [o.strip() for o in os.getenv("PORTAL_CORS_ORIGINS", "").split(",") if o.strip()]
-# 요청 헤더는 인증과 JSON 본문만 허용한다. 🔴 [2026-09-28] 파일을 내주는 창구(원본 · 썸네일 · 원문 · 묶음)를
-#    지우면서 그 창구에만 쓰이던 ``Range``·``If-Range``(이어받기)와 노출 헤더(``Content-Disposition``·
-#    ``Content-Range``·``Accept-Ranges``·``X-Bundle-*``)도 뺐다 — 파일 제공을 다시 만들 때 함께 되살린다
-#    (git ``9d11d29`` · 다른 오리진의 이어받기 사전 요청이 400 이던 까닭도 거기 적혀 있다).
-CORS_ALLOW_HEADERS: tuple[str, ...] = ("Authorization", "Content-Type")
-# 노출 헤더는 요청 ID 하나다 — 화면이 오류를 문의할 때 서버 로그를 찾는 열쇠(``request_log``).
-CORS_EXPOSE_HEADERS: tuple[str, ...] = (REQUEST_ID_HEADER,)
+# 허용 요청 헤더와 노출 응답 헤더의 정본은 ``service/api/cors.py`` 다(500 처리기도 같은 목록을 쓴다) — 이름은 여기서도 그대로 쓴다.
 # 미처리 예외(500)는 CORS 미들웨어 바깥에서 응답이 만들어지므로 처리기가 직접 헤더를 붙인다(``errors``).
 errors.CORS_ORIGINS = frozenset(_CORS_ORIGINS)
 if _CORS_ORIGINS:
@@ -156,16 +151,27 @@ app.add_middleware(RequestLogMiddleware)
 #
 # app.include_router(admin.router)
 # app.include_router(review.router)
-app.include_router(search.router)
-# 파일 검색(시나리오 ③) — 조건으로 좁혀 훑는 창구. 위 /search 와 다른 화면이라 따로 둔다.
-app.include_router(file_search.router)
-app.include_router(assets.router)
-app.include_router(mm_meta.router)
-# 파일 제공(원본 · 미리보기 · 원문 · 묶음 zip) — 자리만 있고 모두 501(제공 방식 협의 대기 · `routes/files.py`).
-app.include_router(files.router)
-# 목록 창구(관계 종류·태그) — 화면이 "고를 값"을 받아 가는 자리. 검색 결과 칩과 쓰임이 다르다.
-app.include_router(catalog.router)
-# 계정(가입·로그인) — 로그인 전에 부르므로 인증을 걸지 않는다.
-app.include_router(account.public_router)
+_ROLE = roles.role()
+if _ROLE in ("all", "api"):
+    app.include_router(search.router)
+    # 파일 검색(시나리오 ③) — 조건으로 좁혀 훑는 창구. 위 /search 와 다른 화면이라 따로 둔다.
+    app.include_router(file_search.router)
+# 파일 창구가 섞인 라우터는 역할에 따라 거른다(all 이면 통째로 — 종전과 같다).
+if _ROLE == "all":
+    app.include_router(assets.router)
+    app.include_router(mm_meta.router)
+    app.include_router(files.router)
+elif _ROLE == "api":
+    app.include_router(roles.filtered(assets.router, keep_files=False))
+    app.include_router(roles.filtered(mm_meta.router, keep_files=False))
+else:
+    app.include_router(roles.filtered(assets.router, keep_files=True))
+    app.include_router(roles.filtered(mm_meta.router, keep_files=True))
+    app.include_router(files.router)
+if _ROLE in ("all", "api"):
+    # 목록 창구(관계 종류·태그) — 화면이 "고를 값"을 받아 가는 자리. 검색 결과 칩과 쓰임이 다르다.
+    app.include_router(catalog.router)
+    # 계정(가입·로그인) — 로그인 전에 부르므로 인증을 걸지 않는다.
+    app.include_router(account.public_router)
 
-__all__ = ["app"]
+__all__ = ["CORS_ALLOW_HEADERS", "CORS_EXPOSE_HEADERS", "app"]

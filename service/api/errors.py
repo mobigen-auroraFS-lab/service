@@ -32,6 +32,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from service.api.cors import CORS_EXPOSE_HEADERS
 from service.api.request_log import REQUEST_ID_HEADER
 
 _LOG = logging.getLogger("meta_extract.portal_api")
@@ -102,7 +103,7 @@ def _cors_headers(request: Request) -> dict[str, str] | None:
     if not origin or origin not in CORS_ORIGINS:
         return None
     return {"Access-Control-Allow-Origin": origin, "Access-Control-Allow-Credentials": "true",
-            "Access-Control-Expose-Headers": REQUEST_ID_HEADER, "Vary": "Origin"}
+            "Access-Control-Expose-Headers": ", ".join(CORS_EXPOSE_HEADERS), "Vary": "Origin"}
 
 
 # ── 처리기 ──────────────────────────────────────────────────────────────────────
