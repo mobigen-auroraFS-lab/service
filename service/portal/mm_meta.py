@@ -680,7 +680,7 @@ def _matching_keys(query: str) -> EntityMatchSet:
         _LOG.warning("개체 질의 임베딩 실패: %s", exc, exc_info=_LOG.isEnabledFor(logging.DEBUG))
         raise EntitySearchUnavailable("임베딩 서버에 연결할 수 없습니다") from exc
 
-    from src.search.opensearch_sync import get_client
+    from service.api.search_health import get_client
 
     try:
         with stage("engine"):

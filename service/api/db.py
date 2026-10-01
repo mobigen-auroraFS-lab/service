@@ -11,6 +11,7 @@ import os
 import threading
 from collections.abc import Callable
 
+from service.api import db_health
 from service.portal.common.stage_timer import stage
 
 _LOG = logging.getLogger("meta_extract.portal_api")
@@ -144,7 +145,10 @@ def get_db() -> object:
         with _LOCK:
             if _SINGLETON is None:
                 db = new_db()
-                db.open_pool()
+                pool = db.open_pool()
+                # 풀 대기 시간을 줄인다(코어 기본 30초 × 재시도 3번 = 요청 하나가 90초 매달렸다) — ``db_health`` 설명.
+                if hasattr(pool, "timeout"):
+                    pool.timeout = db_health.wait_seconds()
                 _SINGLETON = db
     return _SINGLETON
 
@@ -174,7 +178,7 @@ def run_in_db(callback: Callable[[object], object]) -> object:
         ``callback`` 의 반환값.
     """
     with stage("db"):       # 요청 로그에 단계별 시간으로 남는다(풀 대기 + 질의)
-        return get_db().execute_in_transaction(callback, idempotent=True)
+        return db_health.guard(lambda: get_db().execute_in_transaction(callback, idempotent=True))
 
 
 def run_in_db_write(callback: Callable[[object], object]) -> object:
@@ -192,4 +196,4 @@ def run_in_db_write(callback: Callable[[object], object]) -> object:
         ``callback`` 의 반환값. 실패하면 트랜잭션이 통째로 롤백된다.
     """
     with stage("db"):
-        return get_db().execute_in_transaction(callback, idempotent=False)
+        return db_health.guard(lambda: get_db().execute_in_transaction(callback, idempotent=False))

@@ -235,8 +235,22 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> Respo
 
 async def os_unavailable_handler(request: Request, exc: Exception) -> Response:
     """OpenSearch 연결 실패 → 503(코드버그 500 과 구분·운영 알람용). __init__ 이 app 에 등록."""
-    _LOG.warning("OpenSearch 연결 실패(503 반환): %s %s — %s", request.method, request.url.path, exc)
-    return envelope(503, "검색 엔진(OpenSearch) 연결 실패 — 잠시 후 다시 시도해 주세요.")
+    from service.api import search_health
+    search_health.BREAKER.note_failure(exc)      # 죽었으면 차단기를 연다 — 다음 요청부터는 기다리지 않는다
+    _LOG.warning("OpenSearch 연결 실패(503 반환): %s %s — %s", request.method, request.url.path, type(exc).__name__)
+    return envelope(503, "검색 엔진(OpenSearch) 연결 실패 — 잠시 후 다시 시도해 주세요.", headers={"Retry-After": "5"})
+
+
+async def search_unavailable_handler(request: Request, exc: Exception) -> Response:
+    """검색 엔진 차단 중 → 곧바로 503 + ``Retry-After``(기다리지 않는다 · 로그는 차단기가 상태 변화만 남긴다)."""
+    return envelope(503, "검색 엔진(OpenSearch)에 연결할 수 없습니다 — 잠시 후 다시 시도해 주세요.", headers={"Retry-After": "5"})
+
+
+async def db_unavailable_handler(request: Request, exc: Exception) -> Response:
+    """DB 연결 실패 → 503 + ``Retry-After`` (코드 버그 500 과 구분 · 화면은 잠시 뒤 다시 시도). 로그는 차단기가 상태 변화만 한 줄 남긴다."""
+    from service.api.db_health import RETRY_AFTER_SECONDS
+    return envelope(503, "데이터베이스에 연결할 수 없습니다 — 잠시 후 다시 시도해 주세요.",
+                    headers={"Retry-After": str(RETRY_AFTER_SECONDS)})
 
 
 # ── 입력 위생: NUL 바이트 ────────────────────────────────────────────────────────

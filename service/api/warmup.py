@@ -62,6 +62,10 @@ STEPS: tuple[tuple[str, Callable[[], str]], ...] = (("태그", _warm_tags), ("�
 
 def warm_once() -> None:
     """예열 단계를 차례로 한 번씩 한다. 단계마다 걸린 시간을 재고, 실패는 경고만 남긴다(예외를 올리지 않는다)."""
+    # 먼저 DB · 검색 엔진에 짧게 접속해 본다 — 죽어 있으면 차단기가 열려 아래 단계가 15초씩(풀 대기 5초 × 재시도 3번) 매달리지 않고 곧바로 실패한다.
+    from service.api import db_health, search_health
+    for breaker in (db_health.BREAKER, search_health.BREAKER):
+        breaker.startup_check()
     done: list[str] = []
     for name, step in STEPS:
         started = time.perf_counter()
