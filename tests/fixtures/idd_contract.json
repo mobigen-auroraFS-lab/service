@@ -1452,9 +1452,10 @@
     },
     "IF-ASSET-03": {
       "errors": {
+        "401": "인증 필요(헤더도 링크도 없음) · 틀린 토큰 · **링크가 틀리거나 만료됐거나 다른 자산의 것**(같은 문장 — 무엇이 틀렸는지 알려 주지 않는다) · 정지된 계정",
         "404": "노출 대상 아님(없음/비registered) · UUID 형식이 아닌 asset_id 도 같은 404(2026-09-21)",
         "410": "DB 에는 있으나 원본 파일이 사라짐·접근 불가",
-        "416": "Range 범위 충족 불가. Content-Range: bytes */{file_size} 동봉"
+        "416": ""
       },
       "gubun": "현행 정본",
       "method": "GET",
@@ -1466,6 +1467,9 @@
         ],
         "Path": [
           "asset_id"
+        ],
+        "Query": [
+          "link"
         ]
       },
       "req_meta": {
@@ -1492,6 +1496,14 @@
           "min": null,
           "required": true,
           "type": "string(UUID)"
+        },
+        "link": {
+          "default": null,
+          "loc": "Query",
+          "max": null,
+          "min": null,
+          "required": false,
+          "type": "string"
         }
       },
       "resp": {},
@@ -2433,6 +2445,48 @@
       "resp_opt": {},
       "same_as": "",
       "url": "/file-search/facet-extra"
+    },
+    "IF-ASSET-15": {
+      "errors": {
+        "401": "인증 필요 — 헤더 없음 · 틀린 토큰. **링크로는 이 창구를 못 연다**(링크는 내려받기 전용)",
+        "404": "노출 대상 아님(없음 · 비registered) · UUID 형식이 아닌 asset_id 도 같은 404. 원본 파일이 있는지는 보지 않는다(없으면 받을 때 410)"
+      },
+      "gubun": "현행 정본",
+      "method": "POST",
+      "name": "다운로드 링크",
+      "req": {
+        "Path": [
+          "asset_id"
+        ]
+      },
+      "req_meta": {
+        "asset_id": {
+          "default": null,
+          "loc": "Path",
+          "max": null,
+          "min": null,
+          "required": true,
+          "type": "string(UUID)"
+        }
+      },
+      "resp": {
+        "200": [
+          "url",
+          "expires_in"
+        ]
+      },
+      "resp_alt": {},
+      "resp_kind": {},
+      "resp_meta": {
+        "200": {
+          "expires_in": "integer",
+          "url": "string"
+        }
+      },
+      "resp_nested": {},
+      "resp_opt": {},
+      "same_as": "",
+      "url": "/assets/{asset_id}/download-link"
     },
     "IF-AUTH-01": {
       "errors": {

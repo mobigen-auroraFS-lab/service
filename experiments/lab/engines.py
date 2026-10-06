@@ -1,10 +1,4 @@
-"""실험용 묶음 엔진 — 여러 방식을 한 곳에서 옵션으로 고른다.
-
-  · zip(스트리밍 · 임시 파일 없음): ``method`` auto(이미 압축된 형식은 STORED) / stored(전부 무압축) / deflate(전부 압축) · ``level`` · ``chunk``
-  · tar(스트리밍 · 무압축): 헤더 + 원본 + 512 단위 채움
-  · ``readahead``: 읽기 스레드가 다음 조각을 미리 읽어 둔다(저장소 지연을 압축 · 전송과 겹친다)
-  · ``latency_ms``: 조각을 읽을 때마다 일부러 기다린다(원격 저장소 모사 — 로컬 캐시 파일로는 안 보이는 효과를 본다)
-"""
+"""실험용 묶음 엔진 — 형식(zip · tar) · 압축 방식 · 읽기 병렬 · 저장소 지연 모사(``latency_ms``)를 옵션으로 고른다."""
 
 from __future__ import annotations
 
@@ -97,7 +91,7 @@ def prefetch(source: Iterator[bytes], depth: int) -> Iterator[bytes]:
         t.join(timeout=2)
 
 
-# 2026-10-01 실험 당시의 main 확장자 목록(압축 컨테이너를 넣기 **전**) — 비교 기준(``auto``)을 재현하려고 여기에 고정해 둔다.
+# 압축 컨테이너를 넣기 전의 확장자 목록 — 비교 기준(``auto``)을 재현하려고 고정해 둔다.
 _LEGACY_PRECOMPRESSED = frozenset({
     "jpg", "jpeg", "png", "gif", "webp", "heic", "avif",
     "mp4", "mov", "m4v", "avi", "mkv", "webm", "wmv", "flv", "mpg", "mpeg",
@@ -105,7 +99,7 @@ _LEGACY_PRECOMPRESSED = frozenset({
     "zip", "gz", "tgz", "bz2", "xz", "7z", "rar", "zst",
 })
 
-# main 목록에 없지만 이미 압축된 컨테이너인 형식 — 다시 압축해도 안 줄고 CPU 만 든다(2026-10-01 실험으로 확인).
+# 목록에 없지만 이미 압축된 컨테이너 형식.
 _EXTRA_PRECOMPRESSED = frozenset({"pdf", "docx", "xlsx", "pptx", "hwpx", "odt", "ods", "odp", "epub", "jar", "apk", "woff2", "heif", "jxl", "br", "lz4", "zstd"})
 _SNIFF_BYTES = 64 * 1024
 _SNIFF_RATIO = 0.92       # 시험 압축 결과가 원래의 92% 보다 크면 압축 이득이 없다고 본다

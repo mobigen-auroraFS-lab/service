@@ -97,19 +97,14 @@ class RequestIdFilter(logging.Filter):
         return True
 
 
-# 외부 라이브러리가 연결 실패를 알릴 때 쓰는 로거 — 한 번 실패하면 같은 경고가 수십 번 · 긴 트레이스백과 함께 쌓인다
-#   (2026-10-02 DB · 검색 엔진이 죽었을 때 풀이 재접속할 때마다 · 요청마다 찍혔다). 원인은 한 줄이면 읽힌다.
-NOISY_LIBS = ("opensearch", "postgres_util", "psycopg", "urllib3")     # 로거 이름의 **어느 마디든** 이 이름으로 시작하면 대상(코어 DB 도구의 실제 이름은 ``src.database.postgres_util``)
+# 연결 실패를 알리는 외부 라이브러리 로거 — 같은 경고가 트레이스백과 함께 수십 번 쌓인다. 로거 이름의 어느 마디든 이 이름으로 시작하면 대상.
+NOISY_LIBS = ("opensearch", "postgres_util", "psycopg", "urllib3")
 DEDUP_WINDOW_SECONDS = 30.0
 _NUMBERS = re.compile(r"[\d.]+")
 
 
 class LibraryNoiseFilter(logging.Filter):
-    """외부 라이브러리(검색 엔진 · DB 풀 · 코어 DB 도구)의 로그에서 트레이스백을 떼고, 같은 내용이 반복되면 일정 시간 한 번만 남긴다.
-
-    · 트레이스백 대신 예외 이름과 짧은 설명 한 줄을 뒤에 붙인다(원인은 그걸로 충분하다 — 우리 코드의 로그는 건드리지 않는다).
-    · 숫자(걸린 시간 · 시도 횟수)만 다른 같은 문장은 ``DEDUP_WINDOW_SECONDS`` 안에 한 번만 남기고, 다음에 남길 때 「같은 경고 N건 생략」을 붙인다.
-    """
+    """외부 라이브러리 로그의 트레이스백을 예외 한 줄로 줄이고, 숫자만 다른 같은 문장은 ``DEDUP_WINDOW_SECONDS`` 안에 한 번만 남긴다(다음에 「같은 경고 N건 생략」)."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -133,7 +128,7 @@ class LibraryNoiseFilter(logging.Filter):
                 self._seen[key] = (last, skipped + 1)
                 return False
             self._seen[key] = (now, 0)
-            if len(self._seen) > 500:                      # 오래된 열쇠를 버린다(메모리 상한)
+            if len(self._seen) > 500:
                 self._seen = {k: v for k, v in self._seen.items() if v[0] is not None and now - v[0] < DEDUP_WINDOW_SECONDS}
         record.msg = text + (f" (같은 경고 {skipped}건 생략)" if skipped else "")
         record.args = ()

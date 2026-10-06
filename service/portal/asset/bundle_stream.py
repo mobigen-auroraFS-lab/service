@@ -1,35 +1,13 @@
-"""여러 파일을 **임시 파일 없이** 한 번에 흘려 보내는 ZIP(on-the-fly streaming ZIP).
+"""여러 파일을 임시 파일 없이 ZIP 으로 만들면서 곧바로 흘려 보낸다.
 
-**하는 일** — 파일을 하나씩 읽으며 ZIP 조각을 만들어 곧바로 응답으로 내보낸다. 서버는 ZIP 을 디스크에도 메모리에도 쌓지 않는다
-(요청당 메모리는 조각 하나 ≈ 1MiB). 지우기 직전 구현(``9d11d29``)은 ZIP 을 임시 파일(``SpooledTemporaryFile``)에 **다 만든 뒤** 보내서
-첫 바이트가 늦고 임시 디스크가 들었다 — 원본이 고속병렬저장소에 있어 서버로 복사해 묶는 방식은 맞지 않다는 판단으로 바꿨다(2026-10-01).
+서버에 쓰지 않아 첫 바이트가 바로 나가고 메모리는 조각 하나(1MiB)뿐이다. 이미 압축된 형식(이미지 · 영상 · pdf · docx 등)은 무압축으로 담고,
+목록에 없는 형식은 앞 64KiB 를 시험 압축해 안 줄면 무압축으로 담는다. 항목 순서 · 타임스탬프 · 중복 이름 처리가 고정이라 같은 입력이면 같은 바이트다.
 
-**지금 상황과 대안 (2026-10-01 결정 기록)**
-  · 채택: 서버가 만들면서 흘려 보낸다(이 모듈). 새 인프라(큐 · 워커 · 객체 저장소)가 필요 없고 임시 저장공간이 0 이다.
-  · 대안 B — 브라우저가 묶기: 웹이 단건 다운로드(``GET /assets/{id}/download``)를 4~6개 병렬로 받아 ``client-zip`` 류로 ZIP 을 만들어
-    파일 저장 창(File System Access API)에 바로 쓴다. 서버가 가장 가볍지만 **HTTPS 가 필요**하고(지금 사내 배포본은 http), Chrome/Edge 전용이며,
-    파일마다 요청 · DB 조회 · 감사가 따라붙는다. 웹 저장소가 준비되면 이쪽으로 옮길 수 있다 — 단건 다운로드는 이미 Range · ETag · If-Range 를 지원한다.
-  · 대안 A — 서버 비동기 ZIP: 큐 → 워커 → 완성본을 객체 저장소에 두고 서명 URL 로 받는다. 모든 브라우저에서 안정적이고 이어받기가 쉽지만
-    원본을 한 번 더 복사하게 되고(저장소 이중 사용) 권한이 회수된 뒤에도 완성본이 남으며 운영할 것이 많다. 수십 GB · Safari/Firefox 지원이 필요해지면 검토한다.
-  · 이 방식의 한계: ZIP 크기를 미리 알 수 없어 ``Content-Length`` 가 없다(진행률은 헤더 ``X-Bundle-Bytes`` 로 어림) · **이어받기가 안 된다**(중간에 끊기면 처음부터)
-    · 한 줄기로 순서대로 읽는다 · 응답을 시작한 뒤에는 오류 봉투를 못 씌운다(실패는 연결이 끊기는 것으로 드러난다).
+한계: Content-Length 가 없고, 이어받기가 안 되며, 응답을 시작한 뒤 읽기가 실패하면 연결이 끊긴다.
+대안(브라우저에서 zip · 서버 비동기 zip + 저장소)은 TODO.md 에 있다.
 
-**규칙**
-  · 시작하기 전에 한다(``plan_bundle``): 각 파일의 존재 · 크기를 확인해 담을 수 있는 것과 빠지는 것을 가른다. 그래서 건수 · 용량 헤더를 **먼저** 줄 수 있고,
-    상한 초과 · 전부 누락 같은 오류는 응답 시작 **전에** 봉투로 돌려준다.
-  · 확인과 읽기 사이에 파일이 사라지면 그 항목만 건너뛰고 ``_manifest.json`` 에 남긴다(ZIP 끝에 쓰므로 가능하다). 한 파일을 쓰는 도중 읽기가 실패하면
-    ZIP 이 이미 시작됐으므로 되돌릴 수 없다 — 예외를 올려 연결을 끊는다(조용히 깨진 ZIP 을 주지 않는다).
-  · 서버 경로는 ZIP 어디에도 싣지 않는다(``_manifest.json`` 에는 자산 id · 파일명만).
-  · 같은 입력이면 **같은 바이트**가 나온다 — 항목 순서 · 타임스탬프(1980-01-01) · 이름 중복 처리를 고정한다.
-  · 이미 압축된 형식(이미지 · 영상 · 음성 · 압축 파일 · pdf · docx 같은 압축 컨테이너)은 압축하지 않고 담고(STORED), 나머지는 압축한다(DEFLATED).
-    목록에 없는 형식(hwp · 암호화 파일)은 앞부분 64KiB 를 가장 빠른 수준으로 **시험 압축**해 거의 안 줄면(92% 이상 남으면) 압축하지 않는다.
-    (2026-10-01 실험: 병목은 전송이 아니라 DEFLATE 였다 — 문서가 섞인 묶음에서 서버 CPU 가 3~5배 줄었다. ``experiments/RESULTS.md``)
-
-**환경변수** (모두 선택 · 기본값이 안전하다)
-  · ``PORTAL_ZIP_LEVEL``(1~9 · 기본 6) — 압축 수준. 텍스트에서 1 은 CPU 1/3 · 크기 +45%, 9 는 CPU 5배 · 크기 −9%. 사내망이면 1~3 도 합리적이다(정책으로 정한다).
-  · ``PORTAL_ZIP_READ_WINDOW``(기본 1 = 끔) — 큰 파일 한 개를 조각 N 개로 **동시에** 읽는다(``pread`` 창). 저장소 읽기 지연이 클 때(NFS · 객체)만 의미가 있다.
-  · ``PORTAL_ZIP_FILES_AHEAD``(기본 0 = 끔) — 다음 파일 N 개를 **미리** 읽어 둔다. 작은 파일이 많은 묶음에서 파일마다 생기는 지연을 겹친다.
-    둘 다 요청당 메모리가 ``창 × 조각(1MiB)`` 만큼 늘고 읽기 스레드가 붙는다. 로컬 디스크에서는 이득이 없다 — 실제 저장소에서 재어 보고 켠다.
+환경변수: PORTAL_ZIP_LEVEL(1~9 · 기본 6) · PORTAL_ZIP_READ_WINDOW(큰 파일 조각 동시 읽기 · 기본 끔) · PORTAL_ZIP_FILES_AHEAD(다음 파일 미리 읽기 · 기본 끔).
+뒤의 둘은 저장소 읽기 지연이 클 때만 의미가 있다.
 """
 
 from __future__ import annotations
@@ -63,14 +41,13 @@ _PRECOMPRESSED = frozenset({
     "zip", "gz", "tgz", "bz2", "xz", "7z", "rar", "zst",
 })
 
-# 확장자 목록에는 없지만 이미 압축된 컨테이너 — 다시 압축해도 안 줄고 CPU 만 든다.
 _PRECOMPRESSED_CONTAINERS = frozenset({
     "pdf", "docx", "xlsx", "pptx", "hwpx", "odt", "ods", "odp", "epub", "jar", "apk",
     "woff2", "heif", "jxl", "br", "lz4", "zstd",
 })
 _PRECOMPRESSED = _PRECOMPRESSED | _PRECOMPRESSED_CONTAINERS
 
-# 목록에 없는 형식은 앞부분을 시험 압축해 가른다 — 92% 이상 남으면 압축 이득이 없다.
+# 시험 압축 결과가 이 비율 이상 남으면 압축 이득이 없다.
 _SNIFF_BYTES = 64 * 1024
 _SNIFF_RATIO = 0.92
 
@@ -116,14 +93,7 @@ def _safe_entry_name(name: str) -> str:
 
 
 def plan_bundle(targets: list[dict[str, Any]]) -> BundlePlan:
-    """묶음 대상의 존재 · 크기를 **파일을 열기 전에** 확인해 계획을 세운다(읽기 전용 · 응답 시작 전).
-
-    Args:
-        targets: ``{asset_id, fs_path, file_name}`` 목록(순서가 곧 ZIP 항목 순서).
-
-    Returns:
-        ``packed``(``size`` 포함) · ``unreadable`` · ``total_bytes``. 경로가 없거나 일반 파일이 아니거나 열 수 없으면 ``unreadable``.
-    """
+    """담을 파일의 존재 · 크기를 응답 시작 전에 확인한다. 경로가 없거나 일반 파일이 아니거나 읽을 수 없으면 ``unreadable`` 로 뺀다."""
     plan = BundlePlan()
     for t in targets:
         fs_path = t.get("fs_path")
@@ -206,10 +176,7 @@ def _precompressed(name: str) -> bool:
 
 
 class _Source:
-    """열린 원본 한 개 — 조각을 순서대로 내준다. ``window`` > 1 이고 파일이 크면 조각 여러 개를 **동시에** 읽어 두었다가 순서대로 내보낸다.
-
-    열기(``open``)가 실패하면 ``OSError`` — 호출부가 「읽기 직전에 사라진 파일」로 처리한다. 닫기(``close``)는 여러 번 불러도 된다.
-    """
+    """열린 원본 한 개. ``window`` > 1 이고 파일이 크면 조각 여러 개를 동시에 읽어 순서대로 내준다. 열기 실패는 OSError."""
 
     def __init__(self, path: str, size: int, window: int) -> None:
         self.fh = open(path, "rb")  # noqa: SIM115 — close() 가 닫는다
@@ -290,24 +257,14 @@ class _Prefetch:
 
 
 def stream_zip(plan: BundlePlan) -> Iterator[bytes]:
-    """계획대로 ZIP 을 만들면서 조각을 내보낸다. 끝나면(또는 연결이 끊기면) 열린 파일은 닫힌다.
-
-    Args:
-        plan: ``plan_bundle`` 이 만든 계획.
-
-    Yields:
-        ZIP 바이트 조각. 빠진 항목이 있으면 맨 끝에 ``_manifest.json`` 을 싣는다.
-
-    Raises:
-        OSError: 한 파일을 쓰는 도중 읽기가 실패했을 때(이미 ZIP 이 시작돼 되돌릴 수 없다 — 연결이 끊긴다).
-    """
+    """계획대로 ZIP 조각을 내보낸다. 빠진 항목이 있으면 맨 끝에 ``_manifest.json`` 을 싣는다. 쓰는 도중 읽기가 실패하면 OSError 로 연결을 끊는다."""
     sink = _Sink()
     missing: list[dict[str, Any]] = list(plan.unreadable)
     used: set[str] = set()
     level = zip_level()
     window = _env_int(READ_WINDOW_ENV, 1, 1, 32)
     ahead = _env_int(FILES_AHEAD_ENV, 0, 0, 16)
-    opened: dict[int, _Source | _Prefetch | None] = {}      # 앞서 열어 둔 항목(None = 읽기 직전에 사라짐)
+    opened: dict[int, _Source | _Prefetch | None] = {}
 
     def open_ahead(i: int) -> None:
         """``i`` 번째 항목을 미리 연다(읽기 스레드가 바로 읽기 시작)."""
@@ -345,7 +302,6 @@ def stream_zip(plan: BundlePlan) -> Iterator[bytes]:
                 chunks = src.chunks()
                 try:
                     first = next(chunks, b"")
-                    # 압축할지 — 이미 압축된 형식은 무압축, 목록에 없는 형식은 앞부분을 시험 압축해 가른다.
                     stored = _precompressed(name) or looks_incompressible(first)
                     info.compress_type = zipfile.ZIP_STORED if stored else zipfile.ZIP_DEFLATED
                     # ZipInfo 를 직접 넘기면 ZipFile 의 compresslevel 이 적용되지 않는다(파이썬 동작) — 항목에 직접 준다.
@@ -370,11 +326,11 @@ def stream_zip(plan: BundlePlan) -> Iterator[bytes]:
                 out = sink.drain()
                 if out:
                     yield out
-        tail = sink.drain()        # 중앙 디렉터리(맨 끝)
+        tail = sink.drain()
         if tail:
             yield tail
     finally:
-        for leftover in opened.values():        # 연결이 끊겨 못 읽은 항목의 읽기 스레드 · 핸들을 정리한다
+        for leftover in opened.values():
             if leftover is not None:
                 leftover.close()
 

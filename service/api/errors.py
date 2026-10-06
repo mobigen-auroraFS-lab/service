@@ -1,24 +1,11 @@
-"""예외 → HTTP 응답 변환(단일 책임: 실패를 **하나의 봉투**로 알리기).
+"""예외 → HTTP 응답 변환 — 실패를 하나의 봉투로 알린다. 라우트가 던진 것 · 프레임워크가 만든 것 · 예상 못 한 것 모두 클라이언트로 나가기 직전 여기를 지난다.
 
-**흐름에서의 위치**: 라우트가 던진 것이든, 프레임워크가 만든 것이든, 아무도 예상 못 한 것이든,
-클라이언트로 나가기 직전 여기를 지난다. 화면은 이 모듈이 정한 모양 **하나만** 알면 된다.
-
-봉투(실패 응답은 예외 없이 이 모양이다 · Content-Type 은 항상 ``application/json``)::
+봉투(Content-Type 은 항상 JSON)::
 
     {"detail": "<사람이 읽는 한국어 한 문장>",
-     "errors": [{"loc": ["query", "size"], "msg": "1 이상이어야 합니다",
-                 "type": "greater_than_equal"}]}   # 칸별 검증 실패일 때만 붙는다
+     "errors": [{"loc": ["query", "size"], "msg": "1 이상이어야 합니다", "type": "greater_than_equal"}]}   # 칸별 검증 실패(422)일 때만
 
-``detail`` 은 **언제나 문자열 하나**다 — 화면이 그대로 띄울 수 있어야 하기 때문이다.
-``errors`` 는 어느 칸이 왜 틀렸는지 기계가 읽는 부분이라, 있을 때만 붙는다(칸 단위 검증 422).
-
-🔴 **왜 이 모듈이 필요한가(실측 2026-09-21)** — 손대기 전에는 실패 응답이 네 가지 모양이었다.
-  · ``{"detail": "<문장>"}``            우리가 던진 4xx·5xx
-  · ``{"detail": [{type, loc, ...}]}``  FastAPI 자동 검증 422 — ``detail`` 이 **배열**이라 모양이 다름
-  · ``text/plain "Internal Server Error"``  미처리 예외 — **JSON 조차 아니었다**
-  · uvicorn 프로토콜 계층 400/무응답     앱에 닿기 전이라 여기서 통일할 수 없다(문서로만 알린다)
-
-앞의 셋을 하나로 모은다. 마지막 하나는 ASGI 서버 영역이라 손이 닿지 않는다.
+``detail`` 은 언제나 문자열 하나다. uvicorn 프로토콜 계층의 400 · 무응답은 앱에 닿기 전이라 통일할 수 없다.
 """
 
 from __future__ import annotations
@@ -56,18 +43,7 @@ def envelope(
     errors: list[dict[str, Any]] | None = None,
     headers: dict[str, str] | None = None,
 ) -> JSONResponse:
-    """실패 응답을 **공용 봉투**로 만든다 — 실패 경로는 전부 이 함수를 지난다.
-
-    Args:
-        status_code: HTTP 상태 코드.
-        detail: 화면이 그대로 띄울 수 있는 한국어 한 문장.
-        errors: 칸별 검증 실패 목록(있을 때만 붙는다). 빈 목록이면 붙이지 않는다 —
-            "칸 정보가 있다"와 "없다"를 키 유무로 가른다.
-        headers: 응답 헤더(416 의 ``Content-Range``, 401 의 ``WWW-Authenticate`` 등을 잃지 않는다).
-
-    Returns:
-        ``{"detail": str}`` 또는 ``{"detail": str, "errors": [...]}`` 를 담은 JSON 응답.
-    """
+    """실패 응답을 공용 봉투로 만든다(실패 경로는 전부 이 함수를 지난다). ``errors`` 는 있을 때만 붙고 ``headers`` 는 416 의 ``Content-Range`` · 401 의 ``WWW-Authenticate`` 등을 보존한다."""
     body: dict[str, Any] = {"detail": detail}
     if errors:
         body["errors"] = errors
@@ -109,15 +85,7 @@ def _cors_headers(request: Request) -> dict[str, str] | None:
 # ── 처리기 ──────────────────────────────────────────────────────────────────────
 
 async def http_exception_handler(request: Request, exc: Exception) -> Response:
-    """``HTTPException`` → 공용 봉투. 라우트가 고른 상태 코드와 헤더를 그대로 보존한다.
-
-    Args:
-        request: 들어온 요청(로깅용).
-        exc: ``starlette.exceptions.HTTPException``. FastAPI 의 ``HTTPException`` 도 이 하위형이다.
-
-    Returns:
-        ``{"detail": "<문장>"}`` 봉투. 상태 코드·헤더는 예외가 지정한 그대로다.
-    """
+    """``HTTPException`` → 공용 봉투(상태 코드 · 헤더는 예외가 지정한 그대로)."""
     assert isinstance(exc, StarletteHTTPException)  # noqa: S101 — 등록 타입 보증(방어)
     detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
     return envelope(
@@ -176,20 +144,8 @@ def _field_path(loc: object) -> str:
 
 
 async def validation_exception_handler(request: Request, exc: Exception) -> Response:
-    """FastAPI 자동 검증 실패(422) → 공용 봉투.
-
-    기본 동작은 ``detail`` 에 **배열**을 담아 우리 4xx 와 모양이 달랐다. 여기서 사람이 읽는 한 문장을
-    ``detail`` 로 올리고, 칸별 정보는 ``errors`` 로 내린다 — 모양은 하나가 되고 정보는 잃지 않는다.
-
-    🔴 **받은 값(``input``)은 되돌려 보내지 않는다** — 5MB 본문이 그대로 반사되거나 남이 보낸 값이
-    화면에 그려질 수 있다. 진단이 필요하면 서버 로그를 본다.
-
-    Args:
-        request: 들어온 요청.
-        exc: ``RequestValidationError``.
-
-    Returns:
-        422 봉투. ``errors`` 에 ``{loc, msg, type}`` 목록이 붙는다.
+    """FastAPI 자동 검증 실패(422) → 공용 봉투. 사람이 읽는 문장을 ``detail`` 로, 칸별 정보를 ``errors`` 로 내린다.
+    받은 값(``input``)은 되돌려 보내지 않는다(큰 본문이 반사되거나 남이 보낸 값이 화면에 그려지지 않게).
     """
     assert isinstance(exc, RequestValidationError)  # noqa: S101 — 등록 타입 보증(방어)
     errors = [
@@ -206,21 +162,8 @@ async def validation_exception_handler(request: Request, exc: Exception) -> Resp
 
 
 async def unhandled_exception_handler(request: Request, exc: Exception) -> Response:
-    """아무도 예상 못 한 예외(500) → 공용 봉투.
-
-    이 처리기가 없으면 Starlette 이 ``text/plain`` 으로 ``Internal Server Error`` 를 보낸다 —
-    JSON 을 기대하고 파싱하던 화면이 그 자리에서 함께 깨진다(실측 2026-09-21).
-
-    예외는 **로그에만** 남긴다. 처리 후 Starlette 이 예외를 다시 올려 서버 로그에도 스택이 남는다.
-
-    Args:
-        request: 들어온 요청.
-        exc: 잡히지 않은 예외.
-
-    이 응답은 CORS 미들웨어를 지나지 않으므로 허용 오리진이면 CORS 헤더를 직접 붙인다(``CORS_ORIGINS``).
-
-    Returns:
-        500 봉투(내용은 고정 문구 — 내부 정보를 싣지 않는다).
+    """아무도 예상 못 한 예외(500) → 공용 봉투(고정 문구 — 내부 정보를 싣지 않는다). 예외는 로그에만 남긴다.
+    이 응답은 CORS 미들웨어를 지나지 않으므로 허용 오리진이면 CORS 헤더를 직접 붙인다.
     """
     # 스택은 여기서 찍지 않는다 — 처리 뒤 Starlette 이 예외를 다시 올려 uvicorn 이 스택을 한 번 남긴다(두 번 찍으면 길다).
     # 이 줄은 **요청 ID 와 예외 종류**를 남겨 그 스택을 찾는 열쇠가 된다(예외 메시지는 값이 섞일 수 있어 싣지 않는다).
@@ -235,20 +178,25 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> Respo
 
 async def os_unavailable_handler(request: Request, exc: Exception) -> Response:
     """OpenSearch 연결 실패 → 503(코드버그 500 과 구분·운영 알람용). __init__ 이 app 에 등록."""
+    from starlette.concurrency import run_in_threadpool
+
     from service.api import search_health
-    search_health.BREAKER.note_failure(exc)      # 죽었으면 차단기를 연다 — 다음 요청부터는 기다리지 않는다
+    # 접속 시험(최대 2초)은 스레드에서 — 이벤트 루프에서 동기로 부르면 그동안 전 요청이 멈춘다.
+    await run_in_threadpool(search_health.BREAKER.note_failure, exc)
     _LOG.warning("OpenSearch 연결 실패(503 반환): %s %s — %s", request.method, request.url.path, type(exc).__name__)
     return envelope(503, "검색 엔진(OpenSearch) 연결 실패 — 잠시 후 다시 시도해 주세요.", headers={"Retry-After": "5"})
 
 
 async def search_unavailable_handler(request: Request, exc: Exception) -> Response:
-    """검색 엔진 차단 중 → 곧바로 503 + ``Retry-After``(기다리지 않는다 · 로그는 차단기가 상태 변화만 남긴다)."""
+    """검색 엔진 차단 중 → 곧바로 503 + ``Retry-After``."""
     return envelope(503, "검색 엔진(OpenSearch)에 연결할 수 없습니다 — 잠시 후 다시 시도해 주세요.", headers={"Retry-After": "5"})
 
 
 async def db_unavailable_handler(request: Request, exc: Exception) -> Response:
-    """DB 연결 실패 → 503 + ``Retry-After`` (코드 버그 500 과 구분 · 화면은 잠시 뒤 다시 시도). 로그는 차단기가 상태 변화만 한 줄 남긴다."""
-    from service.api.db_health import RETRY_AFTER_SECONDS
+    """DB 연결 실패 · 질의 시간 초과 → 503 + ``Retry-After``."""
+    from service.api.db_health import RETRY_AFTER_SECONDS, DatabaseSlow
+    if isinstance(exc, DatabaseSlow):
+        return envelope(503, "데이터베이스 응답이 너무 늦습니다 — 잠시 후 다시 시도해 주세요.", headers={"Retry-After": str(RETRY_AFTER_SECONDS)})
     return envelope(503, "데이터베이스에 연결할 수 없습니다 — 잠시 후 다시 시도해 주세요.",
                     headers={"Retry-After": str(RETRY_AFTER_SECONDS)})
 
@@ -269,19 +217,7 @@ _NUL_DETAIL = (
 
 
 async def reject_nul_bytes(request: Request, call_next: Callable) -> Response:
-    """경로·쿼리에 NUL 바이트가 있으면 **DB 에 닿기 전에** 400 으로 끊는다.
-
-    검사는 두 번의 부분문자열 스캔뿐이라 정상 요청에 얹히는 비용이 사실상 없다.
-    경로는 ASGI 서버가 이미 퍼센트 디코딩해 주므로 날 바이트로, 쿼리는 원문이라 ``%00`` 으로 본다
-    (``%2500`` 은 문자열 ``%00`` 으로 풀리는 정상 입력이라 걸리지 않는다).
-
-    Args:
-        request: 들어온 요청.
-        call_next: 다음 처리 단계.
-
-    Returns:
-        NUL 이 없으면 아래 단계의 응답 그대로, 있으면 400 봉투.
-    """
+    """경로 · 쿼리에 NUL 바이트가 있으면 DB 에 닿기 전에 400 으로 끊는다(경로는 이미 디코딩된 날 바이트, 쿼리는 원문 ``%00`` 으로 본다)."""
     path = request.scope.get("path") or ""
     query = request.scope.get("query_string") or b""
     if "\x00" in path or b"%00" in query or b"\x00" in query:

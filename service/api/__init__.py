@@ -22,6 +22,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from service.api import audit, db_health, errors, lifespan, logging_config, roles, search_health
 from service.api.body_limit import BodyLimitMiddleware
+from service.api.client_allowlist import ClientAllowlistMiddleware
 from service.api.cors import CORS_ALLOW_HEADERS, CORS_EXPOSE_HEADERS
 from service.api.request_log import RequestLogMiddleware
 from service.api.routes import (
@@ -74,11 +75,7 @@ if errors.OSConnectionError is not None:
 # ── 메타 라우트(health/auth/me) — 앱 수준·소규모라 여기 직접 등록(원래도 맨 앞) ──────────────
 @app.get("/health", tags=["meta"])
 async def health() -> dict[str, str]:
-    """헬스 체크(부트스트랩·라우팅 확인용).
-
-    ``async`` 인 까닭: 동기 ``def`` 는 스레드풀(DB 풀 크기에 맞춘 10개)에서 도는데, DB · 검색 엔진이 죽어 요청들이 그 스레드를 다 잡으면
-    헬스 체크까지 줄을 서서 쿠버네티스가 멀쩡한 파드를 죽인다(2026-10-02 실측: 동시 20요청 중 7.9초). 이 창구는 아무것도 기다리지 않으므로 이벤트 루프에서 바로 답한다.
-    """
+    """헬스 체크. ``async`` 라 스레드풀이 꽉 차도 바로 답한다."""
     return {"status": "ok", "env": lifespan.ENV}
 
 
@@ -143,6 +140,9 @@ if _CORS_ORIGINS:
         expose_headers=list(CORS_EXPOSE_HEADERS),
     )
 
+# 접속 주소 제한(선택 · PORTAL_ALLOWED_CLIENT_CIDRS) — 요청 로그보다 안쪽이라 거절된 요청도 한 줄이 남는다.
+app.add_middleware(ClientAllowlistMiddleware)
+
 # 요청 로그 — **가장 바깥**(마지막 등록)이라 CORS 거절 · 413 · 400 도 요청 ID 와 한 줄을 남긴다(2026-09-28).
 app.add_middleware(RequestLogMiddleware)
 
@@ -162,9 +162,10 @@ if _ROLE in ("all", "api"):
     app.include_router(search.router)
     # 파일 검색(시나리오 ③) — 조건으로 좁혀 훑는 창구. 위 /search 와 다른 화면이라 따로 둔다.
     app.include_router(file_search.router)
-# 파일 창구가 섞인 라우터는 역할에 따라 거른다(all 이면 통째로 — 종전과 같다).
+# 파일 창구가 섞인 라우터는 역할에 따라 거른다.
 if _ROLE == "all":
     app.include_router(assets.router)
+    app.include_router(assets.file_router)
     app.include_router(mm_meta.router)
     app.include_router(files.router)
 elif _ROLE == "api":
@@ -172,6 +173,7 @@ elif _ROLE == "api":
     app.include_router(roles.filtered(mm_meta.router, keep_files=False))
 else:
     app.include_router(roles.filtered(assets.router, keep_files=True))
+    app.include_router(assets.file_router)
     app.include_router(roles.filtered(mm_meta.router, keep_files=True))
     app.include_router(files.router)
 if _ROLE in ("all", "api"):

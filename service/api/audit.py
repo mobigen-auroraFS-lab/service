@@ -14,7 +14,7 @@ from starlette.concurrency import run_in_threadpool
 
 from service.portal.auth import authenticate_token
 from service.portal.common.db_manager import DbManager
-from service.portal.history.access_log import derive_access_action
+from service.portal.history.access_log import derive_access_action, is_range_continuation
 
 _LOG = logging.getLogger("meta_extract.portal_api")
 
@@ -32,6 +32,10 @@ def user_id_from_request(request: Request) -> str:
             return authenticate_token(auth[7:].strip()).user_id
         except Exception:  # noqa: BLE001 — 기록용 best-effort, 인증 실패가 응답을 막지 않음
             return "anonymous"
+    link = request.query_params.get("link")
+    if link and request.url.path.endswith("/download"):
+        from service.portal.auth.download_link import peek_user
+        return peek_user(link) or "anonymous"
     return "anonymous"
 
 
@@ -96,6 +100,8 @@ async def access_log_middleware(request: Request, call_next: Callable) -> object
         아래 단계가 만든 응답 객체 그대로.
     """
     response = await call_next(request)
+    if request.url.path.endswith("/download") and is_range_continuation(request.headers.get("range")):
+        return response                    # 이어받기 뒷 조각 — 첫 요청이 기록됐다
     try:
         user_id = user_id_from_request(request)
         task = asyncio.create_task(

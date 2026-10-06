@@ -221,6 +221,7 @@ ERROR_PROBES: dict[str, list[tuple[str, str, dict, dict | None, dict]]] = {
     "IF-ASSET-03": [("행 없음", "none", {}, None, {}),
                     ("파일 없음", "gone", {}, None, {}),
                     ("Range 위반", "found", {}, None, {"Range": "bytes=99999-"})],
+    "IF-ASSET-15": [("행 없음", "none", {}, None, {})],
     "IF-ASSET-11": [("행 없음", "none", {}, None, {}),
                     ("원본 파일 없음", "gone_content", {}, None, {})],
     "IF-ASSET-05": [("seed 없음", "none", {}, None, {})],

@@ -111,6 +111,65 @@ class TestBreakerStartup(unittest.TestCase):
         self.assertFalse(b.is_down())
 
 
+class TestBreakerStaysOpenWhileDown(unittest.TestCase):
+    def test_장애가_계속되는_동안은_안전장치_시간이_지나도_닫히지_않는다(self) -> None:
+        # 회귀: 안전장치가 「열린 지 N초」만 봐서 죽은 DB 에도 풀렸다.
+        b = Breaker("시험", lambda: False, interval=0.05, max_open=0.3)
+        b.note_failure(ConnectionError("x"))
+        time.sleep(1.0)                                   # 안전장치(0.3초)의 세 배 — 확인 루프가 계속 실패하며 돌고 있다
+        self.assertTrue(b.is_down())
+
+    def test_확인_루프가_멈추면_안전장치가_닫는다(self) -> None:
+        b = Breaker("시험", lambda: False, interval=0.05, max_open=0.3)
+        with mock.patch.object(b, "_loop"):               # 루프가 안 도는(죽은) 경우
+            b.note_failure(ConnectionError("x"))
+        self.assertTrue(b.is_down())
+        time.sleep(0.45)
+        self.assertFalse(b.is_down())
+
+    def test_복구되면_닫힌다(self) -> None:
+        state = {"up": False}
+        b = Breaker("시험", lambda: state["up"], interval=0.05, max_open=0.3)
+        b.note_failure(ConnectionError("x"))
+        state["up"] = True
+        time.sleep(0.4)
+        self.assertFalse(b.is_down())
+
+
+class TestHandlerDoesNotBlockLoop(unittest.TestCase):
+    def test_접속_시험이_느려도_이벤트_루프는_멈추지_않는다(self) -> None:
+        # 회귀: 비동기 처리기가 동기 접속 시험을 직접 불러 이벤트 루프가 멈췄다.
+        import asyncio
+
+        async def run() -> float:
+            ticks: list[float] = []
+
+            async def ticker() -> None:
+                for _ in range(25):
+                    ticks.append(time.perf_counter())
+                    await asyncio.sleep(0.05)
+
+            class Req:
+                method = "GET"
+
+                class url:  # noqa: N801
+                    path = "/x"
+
+            def slow_probe() -> bool:
+                time.sleep(0.8)
+                return False
+
+            search_health.BREAKER.reset()
+            with mock.patch.object(search_health, "_probe", slow_probe), mock.patch.object(search_health.BREAKER, "_loop"):
+                t = asyncio.create_task(ticker())
+                await asyncio.sleep(0.12)
+                await errors.os_unavailable_handler(Req, ConnectionError("x"))
+                await t
+            return max(b - a for a, b in zip(ticks, ticks[1:], strict=False))
+
+        self.assertLess(asyncio.run(run()), 0.4)          # 0.8초 시험 동안 루프가 0.4초 넘게 서지 않는다
+
+
 class TestSearchBreaker(unittest.TestCase):
     def test_차단_중이면_엔진을_부르기_전에_SearchUnavailable(self) -> None:
         with mock.patch.object(search_health.BREAKER, "_loop"), mock.patch.object(search_health, "_probe", return_value=False):
@@ -157,6 +216,34 @@ class TestHealthIsAsync(unittest.TestCase):
         from service.api import health, health_head
         self.assertTrue(inspect.iscoroutinefunction(health))
         self.assertTrue(inspect.iscoroutinefunction(health_head))
+
+
+class TestSlowDatabase(unittest.TestCase):
+    def setUp(self) -> None:
+        db_health.reset()
+
+    def test_질의_시간_제한으로_취소되면_DatabaseSlow_이고_차단기는_열지_않는다(self) -> None:
+        exc = psycopg.errors.QueryCanceled("canceling statement due to statement timeout")
+        with self.assertRaises(db_health.DatabaseSlow):
+            guard(lambda: (_ for _ in ()).throw(exc))
+        self.assertFalse(db_health.is_down())            # 접속은 된다 — 차단하면 멀쩡한 요청까지 막힌다
+
+    def test_사용자_취소_등_다른_QueryCanceled_는_그대로_올라간다(self) -> None:
+        exc = psycopg.errors.QueryCanceled("canceling statement due to user request")
+        with self.assertRaises(psycopg.errors.QueryCanceled):
+            guard(lambda: (_ for _ in ()).throw(exc))
+
+    def test_핸들러는_느림과_불가를_다른_문장으로_503(self) -> None:
+        app = FastAPI()
+        app.add_exception_handler(DatabaseUnavailable, errors.db_unavailable_handler)
+
+        @app.get("/slow")
+        def slow() -> None:
+            raise db_health.DatabaseSlow("느림")
+
+        r = TestClient(app, raise_server_exceptions=False).get("/slow")
+        self.assertEqual((503, "5"), (r.status_code, r.headers["retry-after"]))
+        self.assertIn("너무 늦", r.json()["detail"])
 
 
 class TestWait(unittest.TestCase):

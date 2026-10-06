@@ -79,7 +79,7 @@ def dir_bytes(rel: str) -> int:
 # ── 서버 ────────────────────────────────────────────────────────────────────────
 class Server:
     def __init__(self, port: int, *, http: str = "auto", loop: str = "auto", env: dict | None = None):
-        e = {**os.environ, "EXP_ROOT": str(DATA), "EXP_TMP": str(DATA / "_jobs"), **(env or {})}
+        e = {**os.environ, "EXP_ROOT": str(DATA), "EXP_TMP": str(DATA / "_jobs"), "EXP_I_UNDERSTAND_NO_AUTH": "1", **(env or {})}
         self.port = port
         self.proc = subprocess.Popen([PY, "-m", "uvicorn", "experiments.lab.app:app", "--host", "127.0.0.1", "--port", str(port),
                                       "--http", http, "--loop", loop, "--log-level", "warning", "--no-access-log"],

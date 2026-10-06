@@ -49,6 +49,41 @@ class _Repo:
     def __init__(self, target): self.asset = _Asset(target)
 
 
+class TestDownloadHead(_Base):
+    """``HEAD`` — 본문 없이 GET 과 같은 머리를 준다(다운로드 도구가 크기 · 이어받기 가능 여부를 먼저 묻는다)."""
+
+    def _head(self, target, headers=None):
+        with mock.patch.object(routes_assets.DbManager, "read", side_effect=lambda fn: fn(_Repo(target))):
+            return self.client.head(f"/assets/{AID}/download", headers=headers or {})
+
+    def test_본문_없이_같은_머리(self) -> None:
+        g, h = self._get(_target(self.path)), self._head(_target(self.path))
+        self.assertEqual(200, h.status_code)
+        self.assertEqual(b"", h.content)
+        for k in ("content-length", "etag", "last-modified", "accept-ranges", "content-type", "content-disposition", "cache-control"):
+            self.assertEqual(g.headers[k], h.headers[k], k)
+        self.assertEqual("10240", h.headers["content-length"])
+
+    def test_구간을_물으면_206_과_그_길이(self) -> None:
+        h = self._head(_target(self.path), {"Range": "bytes=100-199"})
+        self.assertEqual(206, h.status_code)
+        self.assertEqual("100", h.headers["content-length"])
+        self.assertEqual("bytes 100-199/10240", h.headers["content-range"])
+
+    def test_없으면_GET_과_같이_410_과_404_416(self) -> None:
+        self.assertEqual(410, self._head(_target(str(Path(self.path).with_name("없음")))).status_code)
+        self.assertEqual(416, self._head(_target(self.path), {"Range": "bytes=999999-"}).status_code)
+        self.assertEqual(404, self._head(None).status_code)
+
+    def test_HEAD_는_접근_기록_대상이_아니다(self) -> None:
+        from service.portal.history.access_log import derive_access_action
+        self.assertIsNone(derive_access_action("HEAD", f"/assets/{AID}/download"))
+
+    def test_문서에는_올라가지_않는다(self) -> None:
+        # 계약(IDD)의 메서드 목록은 GET 하나 — HEAD 는 같은 창구의 부속이다.
+        self.assertEqual({"get"}, set(app.openapi()["paths"]["/assets/{asset_id}/download"]))
+
+
 class TestDownload(_Base):
     def test_전체를_200으로_준다(self) -> None:
         r = self._get(_target(self.path))

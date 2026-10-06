@@ -19,14 +19,8 @@ class SelectionRepository(Repository):
     """고른 자산들의 경로·크기를 읽는다."""
 
     def targets(self, asset_ids: list[str]) -> dict[str, Any]:
-        """묶음 대상과 빠진 것을 가른다.
-
-        노출되지 않는(없거나 등록 완료가 아닌) 자산은 **조용히 빠지지 않는다** — ``missing`` 으로
-        돌려주어 zip 의 manifest 와 응답 문구가 그 사실을 말할 수 있게 한다.
-
-        Returns:
-            ``{"targets": [{asset_id, fs_path, file_name}], "missing": [asset_id…],
-            "total_bytes": int}`` — ``total_bytes`` 는 노출되는 자산의 크기 합이다.
+        """묶음 대상과 빠진 것을 가른다. 노출되지 않는(없거나 등록 완료가 아닌) 자산은 ``missing`` 으로 돌려준다.
+        ``{"targets": [{asset_id, fs_path, file_name}], "missing": [asset_id…], "total_bytes": 노출되는 자산의 크기 합}``.
         """
         if not asset_ids:
             return {"targets": [], "missing": [], "total_bytes": 0}

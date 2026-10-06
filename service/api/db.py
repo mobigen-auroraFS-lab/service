@@ -68,12 +68,9 @@ def pool_size_override() -> tuple[int | None, int | None]:
 
 
 def new_db() -> object:
-    """DB 접근 객체를 만든다 — 풀 크기 환경변수가 있을 때만 그 항목을 덮어쓴다.
+    """DB 접근 객체를 만든다 — 풀 크기 · 질의 시간 제한을 환경변수로 덮어쓴다.
 
-    크기를 주지 않으면 ``PostgresUtil()`` 을 **인자 없이** 만든다. 접속 정보 해석(DSN 우선 →
-    개별 환경변수)을 코어에 그대로 맡기기 위해서다 — 같은 규칙을 여기 복제하면 두 벌이 된다.
-
-    크기를 줄 때만 코어와 **같은 우선순위**로 설정을 조립하고 풀 항목만 바꾼다. ``dsn`` 과
+    코어와 같은 우선순위(DSN 우선 → 개별 환경변수)로 설정을 조립하고, 풀 크기 · 질의 시간 제한만 덮어쓴다. ``dsn`` 과
     ``config`` 를 함께 넘기면 접속 문자열은 ``dsn`` 이, 풀 크기는 ``config`` 가 정한다
     (``_build_conninfo`` 는 dsn 을 그대로 쓰고 ``open_pool`` 은 config 를 읽는다).
 
@@ -83,8 +80,7 @@ def new_db() -> object:
     from src.database.postgres_util import PostgresConfig, PostgresUtil
 
     min_size, max_size = pool_size_override()
-    if min_size is None and max_size is None:
-        return PostgresUtil()  # 종전 경로 그대로
+    timeout_ms = statement_timeout_ms()
 
     dsn = (os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_DSN") or "").strip()
     config = PostgresConfig.from_env()
@@ -92,11 +88,35 @@ def new_db() -> object:
         config.min_pool_size = min_size
     if max_size is not None:
         config.max_pool_size = max_size
+    if timeout_ms is not None:
+        config.statement_timeout_ms = timeout_ms
+        if dsn:
+            # DSN 이 있으면 코어는 그 문자열을 그대로 쓴다 — 시간 제한을 접속 옵션으로 넣는다.
+            from psycopg.conninfo import make_conninfo
+            dsn = make_conninfo(dsn, options=f"-c statement_timeout={timeout_ms}")
     # min > max 같은 모순은 코어 검증이 기동 시점에 막는다 — 여기서 조용히 보정하지 않는다.
     return PostgresUtil(config=config, dsn=dsn or None)
 
 
+STATEMENT_TIMEOUT_ENV = "PORTAL_DB_STATEMENT_TIMEOUT_MS"
+DEFAULT_STATEMENT_TIMEOUT_MS = 30_000
 THREAD_LIMIT_ENV = "PORTAL_THREAD_LIMIT"
+
+
+def statement_timeout_ms() -> int | None:
+    """질의 한 건의 시간 제한(ms) — ``PORTAL_DB_STATEMENT_TIMEOUT_MS``, 기본 30초. ``0`` 이면 제한 없음(``None``).
+
+    느린 질의가 스레드풀을 오래 잡지 않게 한다. 넘으면 DB 가 질의를 취소하고 요청은 503 이다.
+    """
+    raw = os.getenv(STATEMENT_TIMEOUT_ENV, "").strip()
+    if not raw:
+        return DEFAULT_STATEMENT_TIMEOUT_MS
+    try:
+        value = int(raw)
+    except ValueError:
+        _LOG.warning("%s=%r 는 정수가 아니다 — 기본 %dms 를 쓴다", STATEMENT_TIMEOUT_ENV, raw, DEFAULT_STATEMENT_TIMEOUT_MS)
+        return DEFAULT_STATEMENT_TIMEOUT_MS
+    return value if value > 0 else None
 
 
 def align_thread_limit_to_pool() -> None:
@@ -146,7 +166,7 @@ def get_db() -> object:
             if _SINGLETON is None:
                 db = new_db()
                 pool = db.open_pool()
-                # 풀 대기 시간을 줄인다(코어 기본 30초 × 재시도 3번 = 요청 하나가 90초 매달렸다) — ``db_health`` 설명.
+                # 풀 대기 시간을 줄인다(코어 기본 30초) — db_health 참고.
                 if hasattr(pool, "timeout"):
                     pool.timeout = db_health.wait_seconds()
                 _SINGLETON = db

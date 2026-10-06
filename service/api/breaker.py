@@ -1,8 +1,7 @@
-"""연결 차단기(단일 책임: 외부 의존(DB · 검색 엔진)이 죽어 있을 때 요청이 매달리지 않고 곧바로 실패하게 한다).
+"""연결 차단기 — 외부 의존(DB · 검색 엔진)이 죽어 있을 때 요청이 매달리지 않고 곧바로 실패하게 한다.
 
-연결이 실패하면 **정말 죽었는지** 짧게 접속해 본다(``probe``). 죽었으면 차단기를 열어, 그 뒤 요청은 기다리지 않고 바로 거절한다.
-차단 중에는 뒤에서 주기적으로 접속을 시도해 살아나면 닫는다. 어떤 이유로 시도가 안 돼도 ``max_open`` 초 뒤에는 닫는다(영구히 막히지 않게).
-접속은 되는데 실패했다면(풀이 꽉 찬 것일 뿐) 차단기는 열지 않는다. 상태가 바뀔 때만 한 줄 남긴다.
+연결 실패가 나면 짧게 접속해 보고, 죽었으면 차단기를 연다. 차단 중에는 뒤에서 주기적으로 접속을 시도해 살아나면 닫는다(확인 루프가 멈추면 ``max_open`` 초 뒤에 닫는다).
+접속이 되는 실패(풀이 꽉 찬 것)에는 열지 않는다. 상태가 바뀔 때만 한 줄 남긴다.
 """
 
 from __future__ import annotations
@@ -20,6 +19,7 @@ class Breaker:
         self.label, self.probe, self.interval, self.max_open = label, probe, interval, max_open
         self._lock = threading.Lock()
         self._down_since: float | None = None
+        self._last_check: float = 0.0
         self._thread: threading.Thread | None = None
 
     def is_down(self) -> bool:
@@ -27,7 +27,8 @@ class Breaker:
         with self._lock:
             if self._down_since is None:
                 return False
-            if time.monotonic() - self._down_since > self.max_open:
+            # 확인 루프가 돌며 실패하는 동안(진짜 장애)은 풀리면 안 된다.
+            if time.monotonic() - max(self._down_since, self._last_check) > self.max_open:
                 self._down_since = None
                 _LOG.info("%s 차단기 자동 해제(%.0f초 경과) — 실제로 다시 시도한다", self.label, self.max_open)
                 return False
@@ -51,7 +52,7 @@ class Breaker:
                 self._thread.start()
 
     def startup_check(self) -> None:
-        """기동 직후 한 번 접속해 본다 — 첫 요청들이 연결 실패를 직접 겪지 않게(DB 는 풀 대기 × 재시도로 15초가 걸린다)."""
+        """기동 직후 한 번 접속해 본다. 죽어 있으면 첫 요청들이 풀 대기 × 재시도로 매달리지 않고 바로 거절된다."""
         if not self.probe():
             self.note_failure(ConnectionError("기동 시 접속 시험 실패"))
 
@@ -62,8 +63,11 @@ class Breaker:
                 if self._down_since is None:
                     self._thread = None
                     return
-            if self.probe():
+            if not self.probe():
                 with self._lock:
-                    since, self._down_since, self._thread = self._down_since, None, None
-                _LOG.warning("%s 연결 복구 — 차단 해제(%.0f초 동안 막았다)", self.label, time.monotonic() - since if since else 0)
-                return
+                    self._last_check = time.monotonic()
+                continue
+            with self._lock:
+                since, self._down_since, self._thread = self._down_since, None, None
+            _LOG.warning("%s 연결 복구 — 차단 해제(%.0f초 동안 막았다)", self.label, time.monotonic() - since if since else 0)
+            return

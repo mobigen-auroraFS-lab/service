@@ -226,3 +226,48 @@ class AccessLogOverviewTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RangeContinuationTest(unittest.TestCase):
+    """이어받기 뒷 조각은 접근 기록을 남기지 않는다."""
+
+    def test_첫_요청만_기록한다(self):
+        from service.portal.history.access_log import is_range_continuation as cont
+        for first in (None, "", "bytes=0-", "bytes=0-1048575", "BYTES=0-9", " bytes = 0 -9"):
+            self.assertFalse(cont(first), first)
+        for later in ("bytes=1048576-", "bytes=8-15", "bytes=-1000", "bytes=1-"):
+            self.assertTrue(cont(later), later)
+
+    def test_모르는_형식은_평소처럼_기록한다(self):
+        from service.portal.history.access_log import is_range_continuation as cont
+        for odd in ("items=5-9", "garbage", "bytes=abc"):
+            self.assertFalse(cont(odd), odd)
+
+    def test_미들웨어는_뒷_조각에서_기록_작업을_만들지_않는다(self):
+        import asyncio
+        from unittest import mock
+
+        from service.api import audit
+
+        class Req:
+            def __init__(self, rng):
+                self.method = "GET"
+                self.url = mock.Mock(path="/assets/01a08fa6-9030-7af5-92f6-0d4d3051d5ce/download")
+                self.headers = {"range": rng} if rng else {}
+                self.query_params = {}
+
+        async def run(rng):
+            resp = mock.Mock(status_code=206 if rng else 200)
+
+            async def call_next(_r):
+                return resp
+
+            with mock.patch.object(audit, "_record_access_bg", new=mock.AsyncMock()) as rec:
+                await audit.access_log_middleware(Req(rng), call_next)
+                await asyncio.sleep(0)
+                return rec.call_count
+
+        self.assertEqual(1, asyncio.run(run(None)))
+        self.assertEqual(1, asyncio.run(run("bytes=0-99")))
+        self.assertEqual(0, asyncio.run(run("bytes=100-199")))
+        self.assertEqual(0, asyncio.run(run("bytes=-50")))

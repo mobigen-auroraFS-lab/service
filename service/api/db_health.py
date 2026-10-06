@@ -1,17 +1,7 @@
-"""DB 장애 차단기(단일 책임: DB 가 죽어 있을 때 요청이 매달리지 않고 곧바로 503 으로 끝나게 한다).
+"""DB 장애 차단기 — DB 가 죽어 있을 때 요청이 풀 대기(30초 × 코어 재시도 3번)에 매달리지 않고 곧바로 503 으로 끝나게 한다.
 
-**왜 필요한가** — DB 에 닿지 않으면 코어 풀이 커넥션을 기다리다(30초) 포기하고, 코어가 그것을 3번 다시 시도한다 → 요청 하나가 최대 90초 매달린다
-(2026-10-02 DB 접속 거부 때 실제로 겪었다). 동기 라우트는 스레드풀(DB 풀 크기에 맞춘 10개)에서 도는데 그 10개가 전부 묶이면 ``/health`` 까지 답하지 못한다.
-거기에 같은 연결 실패 경고와 긴 트레이스백이 요청마다 쌓여 진짜 원인이 묻힌다.
-
-**하는 일**
-  1. 풀 대기 시간을 줄인다(``PORTAL_DB_WAIT_SECONDS`` · 기본 5초 — 코어 기본 30초).
-  2. 연결 실패가 나면 **정말 죽었는지** 짧게(3초) 접속해 본다. 죽었으면 차단기를 연다 — 그 뒤 요청은 DB 를 기다리지 않고 곧바로 ``DatabaseUnavailable``(→ 503 + ``Retry-After``).
-     접속되면(풀이 꽉 찬 것일 뿐) 차단기는 열지 않고 그 요청만 503 으로 끝낸다(과부하 차단).
-  3. 차단 중에는 뒤에서 2초마다 접속을 시도해 살아나면 차단기를 닫는다. 어떤 이유로 시도가 안 돼도 30초 뒤에는 닫는다(영구히 막히지 않게).
-  4. 상태가 바뀔 때만 한 줄 남긴다(``DB 연결 불가 — 차단`` · ``DB 연결 복구``).
-
-연결 실패와 다른 DB 오류(검증 · 제약 · 질의 취소)는 구분한다 — 후자는 그대로 올라가 종전처럼 처리된다.
+풀 대기를 줄이고(``PORTAL_DB_WAIT_SECONDS`` · 기본 5초), 연결 실패 시 3초 접속 시험으로 죽었는지 가려 차단기를 연다. 접속이 되면(풀이 꽉 찬 것) 그 요청만 503 이다.
+질의 시간 제한(``PORTAL_DB_STATEMENT_TIMEOUT_MS``)을 넘긴 취소는 ``DatabaseSlow`` 로 올리고 차단기는 열지 않는다. 연결 실패가 아닌 DB 오류는 그대로 올라간다.
 """
 
 from __future__ import annotations
@@ -29,7 +19,7 @@ DEFAULT_WAIT_SECONDS = 5.0
 RETRY_AFTER_SECONDS = 5
 PROBE_INTERVAL = 2.0
 PROBE_CONNECT_TIMEOUT = 3
-MAX_OPEN_SECONDS = 30.0        # 접속 시도가 안 되는 경우의 안전장치 — 이만큼 지나면 차단기를 닫고 실제로 다시 해 본다
+MAX_OPEN_SECONDS = 30.0
 
 # 연결 자체가 안 된 것을 뜻하는 SQLSTATE — 08(연결 예외) · 57P01~03(서버 종료 중).
 _CONNECTION_SQLSTATES = ("08",)
@@ -38,6 +28,10 @@ _SHUTDOWN_SQLSTATES = ("57P01", "57P02", "57P03")
 
 class DatabaseUnavailable(RuntimeError):
     """DB 에 닿지 못했다 — 화면에는 503(잠시 뒤 다시 시도)으로 나간다."""
+
+
+class DatabaseSlow(DatabaseUnavailable):
+    """DB 가 질의 시간 제한(``PORTAL_DB_STATEMENT_TIMEOUT_MS``) 안에 답하지 못했다 — 접속은 되므로 차단기는 열지 않는다."""
 
 
 def wait_seconds() -> float:
@@ -51,6 +45,15 @@ def wait_seconds() -> float:
     return value if value > 0 else DEFAULT_WAIT_SECONDS
 
 
+def _is_statement_timeout(exc: BaseException) -> bool:
+    """질의 시간 제한으로 DB 가 질의를 취소한 것인가(SQLSTATE 57014 — 잠금 대기 취소 · 사용자 취소와 같은 코드라 메시지로 가른다)."""
+    try:
+        import psycopg
+    except ImportError:
+        return False
+    return isinstance(exc, psycopg.errors.QueryCanceled) and "statement timeout" in str(exc).lower()
+
+
 def is_connection_failure(exc: BaseException | None) -> bool:
     """예외(또는 그 원인 사슬)가 「DB 에 연결하지 못함」인가. 질의 취소 · 제약 위반 같은 오류는 아니다."""
     seen = 0
@@ -60,12 +63,12 @@ def is_connection_failure(exc: BaseException | None) -> bool:
             return True
         try:
             import psycopg
-        except ImportError:  # 미설치 환경 방어
+        except ImportError:
             return False
         if isinstance(exc, psycopg.OperationalError):
             state = getattr(exc, "sqlstate", None)
             if state is None or state.startswith(_CONNECTION_SQLSTATES) or state in _SHUTDOWN_SQLSTATES:
-                return True            # sqlstate 가 없는 OperationalError 는 서버에 닿기도 전의 실패(연결 거부 · 시간 초과)다
+                return True
         exc = exc.__cause__ or exc.__context__
         seen += 1
     return False
@@ -99,6 +102,8 @@ def guard[T](work: Callable[[], T]) -> T:
     except DatabaseUnavailable:
         raise
     except Exception as exc:
+        if _is_statement_timeout(exc):
+            raise DatabaseSlow("DB 질의 시간 초과") from exc
         if not is_connection_failure(exc):
             raise
         BREAKER.note_failure(exc)

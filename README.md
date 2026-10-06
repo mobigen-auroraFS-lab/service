@@ -197,6 +197,10 @@ TEXT_EMBED_NORMALIZE=true
 | `PORTAL_ZIP_LEVEL` | 묶음 zip 의 압축 수준 1~9. 기본 6. 낮추면 서버 CPU 가 줄고 파일이 커집니다(텍스트에서 1 은 CPU 1/3 · 크기 +45%) |
 | `PORTAL_ZIP_READ_WINDOW` · `PORTAL_ZIP_FILES_AHEAD` | 저장소 읽기 지연이 클 때만 켭니다. 큰 파일 한 개를 조각 N 개로 동시에 읽기 · 다음 파일 N 개를 미리 읽기. 기본은 둘 다 꺼짐 |
 | `PORTAL_ROLE` | `all`(기본) · `api`(파일 창구 뺀 나머지) · `files`(원본 · 원문 · 묶음 zip · 썸네일만). 파일 창구를 별도 프로세스로 띄울 때 씁니다 — 아래 「파일 창구를 따로 띄우기」 |
+| `PORTAL_DB_STATEMENT_TIMEOUT_MS` | DB 질의 한 건의 시간 제한. 기본 30000(30초), `0` 이면 제한 없음. 넘으면 DB 가 질의를 취소하고 요청은 503 입니다 |
+| `PORTAL_BUNDLE_MAX_CONCURRENT` | 프로세스당 동시에 만드는 묶음(zip) 수. 기본은 코어 수의 절반(2~8), `0` 이면 제한 없음. 넘으면 기다리지 않고 503 + `Retry-After` |
+| `PORTAL_DOWNLOAD_LINK_TTL_SECONDS` | 다운로드 링크(`POST /assets/{id}/download-link`)의 수명. 기본 300초(30~3600) |
+| `PORTAL_ALLOWED_CLIENT_CIDRS` | 접속을 허용할 네트워크(쉼표로 나열, 예: `172.16.0.0/24`). 비우면 제한 없음, 이 장비(루프백)는 늘 허용. **인증을 끈 개발 서버를 사내망에 열어 둘 때** 씁니다. 프록시 뒤에서는 쓰지 못합니다 |
 | `PORTAL_DB_WAIT_SECONDS` | DB 풀에서 연결을 기다릴 시간. 기본 5초(코어 기본 30초) — 짧을수록 DB 가 죽었을 때 빨리 포기합니다 |
 | `PORTAL_STARTUP_CHECK` | `0` 이면 기동 직후 DB · 검색 엔진 접속 시험을 건너뜁니다(기본은 합니다). 죽어 있으면 첫 요청부터 곧바로 503 으로 답합니다 |
 | `PORTAL_LOG_LEVEL` | 로그 수준. `DEBUG` · `INFO`(기본) · `WARNING` · `ERROR` |
@@ -364,3 +368,13 @@ PORTAL_ROLE=files uvicorn service.api:app --port 8100   # 원본 · 원문 · �
 
 psycopg 는 LGPL 입니다. 파이썬에서 불러 쓰는 것은 이 소프트웨어의 라이선스에 영향을 주지
 않지만, 사용 사실을 `NOTICE` 에 밝혀야 합니다.
+
+## 브라우저가 파일을 받게 하기 (다운로드 링크)
+
+모든 창구가 `Authorization: Bearer` 헤더를 요구해서 `<a href>` · `<video src>` · 브라우저 기본 다운로드는 쓸 수 없습니다. 그 대신 **링크**를 씁니다.
+
+1. 로그인한 헤더로 `POST /assets/{id}/download-link` 를 부르면 `{"url": "/assets/{id}/download?link=…", "expires_in": 300}` 가 옵니다.
+2. 그 `url`(서버 주소를 앞에 붙여)을 `<a href>` · `<video src>` · `window.location` 에 그대로 넣습니다 — 헤더가 필요 없고 이어받기(`Range`) · 영상 구간 재생이 됩니다.
+
+링크는 그 자산의 내려받기에만 통하고 5분 뒤 만료되며, 접속 토큰과 다른 키로 서명돼 링크로 다른 창구를 열 수 없습니다. 묶음(zip)은 이 방식이 아니라 헤더로 받습니다.
+`HEAD /assets/{id}/download` 도 받습니다(본문 없이 같은 머리 — 다운로드 도구가 크기를 먼저 물을 때).
