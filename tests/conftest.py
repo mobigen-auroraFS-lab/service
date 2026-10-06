@@ -22,15 +22,12 @@ import pytest  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _isolate_breakers():
-    """연결 차단기(DB · 검색 엔진)는 프로세스 전역 상태다 — 시험끼리 넘겨주지 않게 매번 닫고, 실제 네트워크 접속 시험(probe)은 「살아 있음」으로 대신한다.
-
-    (실제 probe 를 두면 개발 장비에서 DB · 엔진이 죽어 있을 때 연결 실패를 흉내 내는 시험이 진짜 차단기를 열어 뒤 시험들이 503 이 된다.)
-    전용 시험(``test_db_health``)은 필요한 probe 를 직접 바꿔 끼운다.
-    """
+    """차단기 · 묶음 자리는 프로세스 전역 상태라 시험마다 초기화하고, 실제 접속 시험(probe)은 「살아 있음」으로 대신한다."""
     from unittest import mock
 
-    from service.api import db_health, search_health
+    from service.api import bundle_response, db_health, search_health
 
+    bundle_response.GATE.active = 0
     db_health.reset()
     search_health.BREAKER.reset()
     with mock.patch.object(db_health, "_probe", return_value=True), mock.patch.object(search_health, "_probe", return_value=True):

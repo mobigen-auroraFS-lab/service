@@ -242,3 +242,76 @@ class TestCorsExposeBundle(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBundleGate(unittest.TestCase):
+    """동시 묶음 수 제한 — 넘으면 기다리게 하지 않고 곧바로 503 + Retry-After, 끝나면(끊겨도) 자리가 돌아온다."""
+
+    def setUp(self) -> None:
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        p = os.path.join(self._tmp.name, "a.txt")
+        with open(p, "wb") as f:
+            f.write(b"hello " * 1000)
+        from service.portal.asset.bundle_stream import plan_bundle
+        self.plan = plan_bundle([{"asset_id": "a", "fs_path": p, "file_name": "a.txt"}])
+
+    def _make(self):
+        from service.api.bundle_response import zip_response
+        return zip_response(self.plan, content_disposition='attachment; filename="x.zip"', headers={})
+
+    def test_제한을_넘으면_503(self) -> None:
+        from fastapi import HTTPException
+        with mock.patch.dict(os.environ, {"PORTAL_BUNDLE_MAX_CONCURRENT": "2"}):
+            r1, r2 = self._make(), self._make()
+            with self.assertRaises(HTTPException) as cm:
+                self._make()
+            self.assertEqual(503, cm.exception.status_code)
+            self.assertEqual("5", cm.exception.headers["Retry-After"])
+            del r1, r2
+
+    def test_스트림이_끝나면_자리가_돌아온다(self) -> None:
+        import asyncio
+        with mock.patch.dict(os.environ, {"PORTAL_BUNDLE_MAX_CONCURRENT": "1"}):
+            async def drain(resp):
+                async for _ in resp.body_iterator:
+                    pass
+            resp = self._make()
+            asyncio.run(drain(resp))
+            self._make()                                    # 자리가 돌아왔으니 다시 만들어진다
+
+    def test_끊기면_백그라운드가_자리를_돌려준다_두_번_불러도_한_번만(self) -> None:
+        import asyncio
+
+        from service.api.bundle_response import GATE
+        with mock.patch.dict(os.environ, {"PORTAL_BUNDLE_MAX_CONCURRENT": "1"}):
+            resp = self._make()
+            self.assertEqual(1, GATE.active)
+
+            async def cut():
+                it = resp.body_iterator.__aiter__()
+                await it.__anext__()
+                await resp.background()
+                await resp.background()
+            asyncio.run(cut())
+            self.assertEqual(0, GATE.active)                # 두 번 반납해도 음수로 가지 않는다
+
+    def test_시작도_못_하고_버려져도_자리가_돌아온다(self) -> None:
+        import gc
+
+        from service.api.bundle_response import GATE
+        with mock.patch.dict(os.environ, {"PORTAL_BUNDLE_MAX_CONCURRENT": "1"}):
+            resp = self._make()
+            self.assertEqual(1, GATE.active)
+            del resp
+            gc.collect()
+            self.assertEqual(0, GATE.active)
+
+    def test_0_이면_제한이_없다_환경변수_해석(self) -> None:
+        from service.api.bundle_response import bundle_max_concurrent
+        for raw, want in (("0", 0), ("3", 3)):
+            with mock.patch.dict(os.environ, {"PORTAL_BUNDLE_MAX_CONCURRENT": raw}):
+                self.assertEqual(want, bundle_max_concurrent(), raw)
+        with mock.patch.dict(os.environ, {"PORTAL_BUNDLE_MAX_CONCURRENT": "x"}):
+            self.assertTrue(2 <= bundle_max_concurrent() <= 8)

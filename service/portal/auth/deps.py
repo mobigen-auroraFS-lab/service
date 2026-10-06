@@ -12,7 +12,7 @@ from dataclasses import replace
 from typing import Annotated
 
 import jwt
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from service.portal.auth.config import load_portal_auth_config
@@ -129,3 +129,24 @@ def require_principal(
     선언으로 드러내기 위해서다.
     """
     return principal
+
+
+def get_download_principal(
+    request: Request,
+    asset_id: str,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(portal_bearer_scheme)] = None,
+) -> Principal:
+    """내려받기 전용 의존성 — ``Authorization`` 헤더 **또는** 다운로드 링크(``?link=``)로 인증한다.
+
+    헤더가 있으면 평소와 같다(링크는 보지 않는다). 헤더가 없고 링크가 있으면 링크를 검증해 그 사용자로 취급한다 —
+    이 자산의 내려받기에만 통하며, 계정 상태는 여기서도 다시 확인한다(정지된 계정은 막힌다).
+    둘 다 없으면 평소처럼 401(인증을 끈 환경이면 익명).
+    """
+    link = request.query_params.get("link")
+    if credentials is None and link:
+        from service.portal.auth.download_link import verify_link_token
+
+        user_id = verify_link_token(link, asset_id)
+        principal = claims_to_principal({"sub": user_id})
+        return with_account(principal, auth_disabled=load_portal_auth_config().auth_disabled)
+    return get_principal(credentials)

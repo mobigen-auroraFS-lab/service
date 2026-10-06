@@ -1,21 +1,8 @@
 """개체(멀티모달 메타) 화면 라우트 — 얇게. 조립은 ``service/portal/mm_meta.py``, 읽기는 코어 seam.
 
-**이 파일이 하는 일은 셋뿐이다**: 파라미터 검증, 트랜잭션 안에서 조립 함수 호출, HTTP 상태 코드. 세는 규칙·노출 기준·정렬 같은 판단은 하나도 여기 없다(코어) — 그리고 응답 키 이름과
-상한·문구는 정형 계층에 있다(백엔드).
-
-**화면 개념 두 축**(spec 087): 개체를 좁히는 축은 **종류**(타입)와 **갈래**(개체에 붙은 분류 라벨)다.
-둘 다 개체에 붙어 있어 좁혀도 개체가 쪼개지지 않는다. 자산에 붙는 라벨로 좁히던 옛 화면은 한 개체가
-갈래마다 나뉘어 보였다(실측: 한 지명이 여섯 건인데 갈래별로 다섯·하나·하나로 갈라졌다).
-
-**라우트 순서**: ``/mm-meta/facets`` 는 세그먼트가 하나라
-``/mm-meta/{entity_type}/{entity_uid}``(둘)와 겹치지 않는다 — 선언 순서에 의존하지 않는다.
-
-🔴 **옛 별칭 ``/mm-meta/types`` 는 지웠다**(2026-09-28) — 칩 창구(``/mm-meta/facets``)에 흡수된 뒤 이름만
-남아 있었고 화면은 쓰지 않는다(IDD IF-ENTITY-03 보류).
-
-🔴 **개체 묶음 zip 창구는 자리만 있다**(2026-09-28) — ``/mm-meta/bundle``·``/mm-meta/{type}/{uid}/bundle`` 은
-``routes/files.py`` 에 경로 · 파라미터만 있고 부르면 501 이다. 파일 제공 방식을 다른 쪽과 협의한 뒤 다시 설계한다
-(`TODO.md` · IDD IF-ENTITY-04·06 '보류(자리만 · 501)'). 구현할 때 원본 전제는 ``service/portal/asset/__init__.py`` 의 「원본 파일 전제」를 따른다(묶음 대상도 원본이 바뀌고 사라질 수 있다).
+이 파일은 파라미터 검증 · 트랜잭션 안에서 조립 함수 호출 · HTTP 상태 코드만 한다(세는 규칙 · 노출 기준 · 정렬은 코어, 응답 키 · 상한 · 문구는 정형 계층).
+개체를 좁히는 축은 종류(타입)와 갈래(개체 라벨)이고 둘 다 개체에 붙어 있어 좁혀도 개체가 쪼개지지 않는다.
+옛 별칭 ``/mm-meta/types`` 는 지웠다(칩 창구 ``/mm-meta/facets`` 로 흡수).
 """
 
 from __future__ import annotations
@@ -51,14 +38,7 @@ _MIN_BUNDLE_SIZE = MIN_BUNDLE_SIZE
 
 
 def _parse_names(raw: str | None) -> list[str]:
-    """쉼표로 이은 이름 목록을 파싱한다(빈 값·공백 제거).
-
-    Args:
-        raw: ``"한식,영화"`` 꼴 문자열. ``None``·빈 값이면 조건 없음을 뜻한다.
-
-    Returns:
-        이름 목록. 조건이 없으면 빈 목록.
-    """
+    """쉼표로 이은 이름 목록을 파싱한다(빈 값 · 공백 제거). ``None`` · 빈 값이면 빈 목록."""
     return [x.strip() for x in (raw or "").split(",") if x.strip()]
 
 
@@ -109,46 +89,19 @@ def list_mm_meta(
         ),
     ),
 ) -> dict[str, Any]:
-    """개체 목록·검색 — 구성 자산 수 내림차순(언제나 DB 정렬).
+    """개체 목록 · 검색 — 구성 자산 수 내림차순(언제나 DB 정렬). 검색도 좁히기도 서버가 한다.
 
-    화면의 카드 그리드가 쓴다. **검색도 좁히기도 서버가 한다** — 화면이 전량을 받아 브라우저에서
-    거르는 방식은 "목록 전체가 이미 손에 있다"를 전제하므로 규모가 커지면 성립하지 않는다.
-
-    **찾아오기(q)와 재검색(refine)은 한 구조다**(099 §3-2a): 둘 다 엔진에 낱말을 던져 **매칭 개체
-    집합**을 얻고, 결과는 그 교집합이다. 정렬은 언제나 DB(구성 자산 수)이므로 **커서가 q 유무와
-    무관하게 성립**한다. refine 은 질의를 바꾸지 않으므로(집합 필터) 좁힌 결과는 언제나 좁히기 전의
-    부분집합이다 — 좁혔는데 없던 개체가 나타나는 일이 없다.
-
-    🔴 **프론트 계약**: ``q``·``refine``·종류·갈래가 바뀌면 결과 집합이 통째로 달라지므로 화면은
-    **커서를 버리고 처음부터** 받아야 한다. 099 G7 부터 **서버가 강제한다** — 커서에 조건 지문이
-    함께 들어 있어, 조건이 바뀐 커서는 **400** 이다(종전에는 200 으로 이어 주어 자료가 조용히 빠졌다).
-
-    🔴 **이름을 정확히 친 개체는 맨 앞**에 온다(099 G7). 종전에는 구성 자산 수 순뿐이라 `숭례문` 이
-    7위, `경포대` 가 15위였다 — 이름을 아는 사람에게 큰 개체부터 보여 준 셈이다. 부분 일치는
-    앞세우지 않는다(순위가 뒤집힌 이유를 설명할 수 없게 된다).
-
-    Args:
-        q: 검색어. 앞뒤 공백은 무시하고 빈 문자열은 미지정과 같다.
-        entity_type: 종류 필터.
-        areas: 갈래 이름들(쉼표 구분 · AND).
-        refine: 결과 내 재검색 낱말들(결과 집합 **전체**에 적용).
-        limit: 한 쪽에 보일 개체 수.
-        cursor: 이어 읽기 표식(직전 응답의 ``next_cursor``). ``q``·``refine`` 과 함께 쓸 수 있다.
+    찾아오기(``q``)와 재검색(``refine``)은 한 구조다 — 둘 다 엔진에 낱말을 던져 매칭 개체 집합을 얻고 결과는 그 교집합이며, 좁힌 결과는 항상 좁히기 전의 부분집합이다.
+    ``q`` · ``refine`` · 종류 · 갈래가 바뀌면 화면은 커서를 버리고 처음부터 받아야 한다 — 커서에 조건 지문이 있어 조건이 바뀐 커서는 400 이다.
+    이름을 정확히 친 개체는 맨 앞에 온다(부분 일치는 앞세우지 않는다).
 
     Returns:
-        ``{items, total, scope_total, next_cursor}``. ``refine`` 을 준 요청에만 ``refine`` 이 더
-        실린다. ``total``(좁히기 **이후**)·``scope_total``(좁히기 **이전** · "지우면 N건")은 경로와
-        무관하게 **모수**다 — 돌려준 개수가 아니라 조건에 맞는 전부. ``next_cursor`` 가 ``None``
-        이면 마지막 쪽이다. **검색 경로**(``q``·``refine`` 중 하나라도 준 요청)의 항목에는
-        ``by_text``·``by_semantic``·``match_reason`` 이 **더** 실린다(2026-09-17 결정) — 뜻(kNN)으로
-        걸린 개체는 카드에 검색어가 한 자도 없어서(`왕실 무덤`→`영릉`) 근거를 못 보이면 사용자가
-        "검색이 고장났나"로 읽기 때문이다(089·090·092 가 만든 설명 가능성). 🔴 **불린이 실질이고
-        문구는 표시용**이다 — 화면이 ``match_reason`` 을 파싱해 층을 가르면 문구를 고칠 때 조용히
-        깨진다. 검색이 없는 목록 응답에는 이 키가 **없다**(걸린 이유 자체가 없다).
+        ``{items, total, scope_total, next_cursor}``(+ ``refine`` 을 준 요청에만 ``refine``). ``total``(좁히기 이후) · ``scope_total``(이전)은 돌려준 개수가 아니라 조건에 맞는 전부(모수)다.
+        ``next_cursor`` 가 ``None`` 이면 마지막 쪽이다. 검색 경로(``q``/``refine`` 중 하나라도 준 요청)의 항목에는 ``by_text`` · ``by_semantic`` · ``match_reason`` 이 더 실린다
+        (뜻으로 걸린 개체는 카드에 검색어가 없어 근거가 필요하다 — 불린이 실질이고 문구는 표시용). 검색이 없는 목록에는 이 키가 없다.
 
     Raises:
-        HTTPException: 커서가 깨졌거나 정렬·**조건**이 어긋나면 400 · 집합 판정에 실패하면 503
-            (엔진·임베딩 연결 실패 · 되돌림 백엔드). 🔴 **전체 목록으로 되돌리지 않는다**.
+        HTTPException: 커서가 깨졌거나 정렬 · 조건이 어긋나면 400 · 집합 판정 실패(엔진 · 임베딩 연결 실패 · 되돌림 백엔드)는 503(전체 목록으로 되돌리지 않는다).
     """
     picked_areas = _parse_names(areas)
     # 커서에 실을 **조건 지문 재료**(099 G7) — 이번 결과 집합을 정의하는 것 전부를 한 문자열로.
@@ -193,14 +146,7 @@ def list_mm_meta(
     uid_semantic = mm_meta.semantic_first_keys(scope.semantic_ranked)
 
     def _read(repo: Any) -> tuple[list[dict[str, Any]], int, int]:
-        """이 쪽의 행과 두 모수를 **한 트랜잭션**에서 읽는다(세 값이 서로 다른 시점을 말하지 않게).
-
-        Args:
-            repo: 저장소 묶음(``DbManager.read`` 가 넘긴다 — 셋이 같은 커넥션을 쓴다).
-
-        Returns:
-            ``(이 쪽의 목록, 좁히기 이후 모수, 좁히기 이전 모수)``.
-        """
+        """이 쪽의 행과 두 모수를 한 트랜잭션에서 읽는다(세 값이 서로 다른 시점을 말하지 않게) — ``(목록, 좁히기 이후 모수, 이전 모수)``."""
         page = repo.entity.page(
             entity_type=entity_type, areas=picked_areas,
             min_bundle_size=_MIN_BUNDLE_SIZE, limit=limit,
@@ -242,21 +188,7 @@ def mm_meta_facets(
     entity_type: str | None = Query(None, description="지금 고른 종류 — 갈래 건수를 이 안으로 좁힌다"),
     areas: str | None = Query(None, description="지금 고른 갈래들(쉼표) — 갈래 건수를 더 좁힌다"),
 ) -> dict[str, Any]:
-    """좁히기 칩 두 축의 건수 — 종류와 갈래.
-
-    건수는 **노출 임계를 통과한 개체 수**이고 목록과 같은 임계를 쓴다. 0건 축도 응답에 실린다 —
-    0 은 "이 갈래엔 아직 자료가 없다"는 신호라 API 가 지우지 않고, 감출지는 화면이 정한다.
-
-    세는 범위가 축마다 다른 이유는 정형 계층 docstring 에 적어 두었다(종류는 갈아타는 축이라 조건을
-    적용하지 않고, 갈래는 좁히는 축이라 적용한다).
-
-    Args:
-        entity_type: 지금 고른 종류.
-        areas: 지금 고른 갈래들(쉼표 구분).
-
-    Returns:
-        ``{vocab, types, areas, min_members, scoped_by}``.
-    """
+    """좁히기 칩 두 축의 건수 — 종류와 갈래. 건수는 노출 임계를 통과한 개체 수이고 목록과 같은 임계를 쓴다. 0건 축도 싣는다(감출지는 화면이 정한다). ``{vocab, types, areas, min_members, scoped_by}``."""
     return DbManager.read(
         lambda repo: repo.entity.facets(
             entity_type=entity_type, areas=_parse_names(areas),
@@ -270,21 +202,7 @@ def mm_meta_card(
     entity_type: str,
     entity_uid: str,
 ) -> dict[str, Any]:
-    """개체 카드 — 모달리티별 구성 자산과 자료 성격.
-
-    이 기능의 존재 이유가 크로스모달 응집(글·그림·영상·소리가 한 묶음)이라 반환도 모달리티별 그룹이다.
-
-    Args:
-        entity_type: 개체 종류(닫힌 어휘).
-        entity_uid: 표기 키(원표기를 줘도 코어가 정규화해 흡수한다).
-
-    Returns:
-        묶음 + ``confirmed_count``·``description``·자산별 ``forms``·``form_counts``.
-
-    Raises:
-        HTTPException: 개체 자체가 없으면 404. **빈 개체는 404 가 아니다**(200·``total`` 0) —
-            "등록했는데 안 보인다"와 "주소가 틀렸다"를 같은 응답으로 만들지 않는다.
-    """
+    """개체 카드 — 모달리티별 구성 자산과 자료 성격(크로스모달 응집이 존재 이유라 모달리티별 그룹으로 돌려준다). 개체가 없으면 404, 빈 개체는 200(``total`` 0)."""
     card = DbManager.read(
         lambda repo: repo.entity.card(entity_type=entity_type, entity_uid=entity_uid))
     if card is None:
@@ -304,16 +222,10 @@ def download_entities_bundle(
     ),
     exclude_video: bool = Query(False, description="영상 제외(용량이 크게 준다)"),
 ) -> StreamingResponse:
-    """지금 좁힌 **개체들의 구성 자산 전부**를 한 zip 으로 내려준다.
+    """지금 좁힌 개체들의 구성 자산 전부를 한 zip 으로 내려준다(종류 · 갈래 축은 목록과 같다 — 옛 이름 ``labels`` 도 받는다).
 
-    화면의 좁히기 축과 다운로드 축이 같아야 "지금 보고 있는 것을 받는다"가 성립한다. 옛 이름 ``labels`` 를 함께 받는 이유: 이름만
-    바꾸고 무시하면 프론트가 계속 그것을 보내면서 **좁혀지지 않은 전량**을 내려받게 된다.
-
-    ⚠️ 검색어(``q``)·좁히기(``refine``)·``limit`` 은 받지 않는다 — 목록을 검색어로 좁힌 뒤 부르면 좁혀지지 않은 전량이 대상이 되어
-    대개 413 이다(결정 대기: ``TODO.md`` G5). 구성 자산은 **확인 전(proposed) 소속까지** 담는다(관계 묶음은 확인된 것만 — 기준 통일 결정 대기).
-
-    Raises:
-        HTTPException: 좁힌 결과가 비면 404 · 용량 상한 초과면 413 · 경로를 아는 파일이 하나도 없으면 409.
+    검색어(``q``) · ``refine`` · ``limit`` 은 받지 않아 검색어로 좁힌 목록에서 부르면 전량이 대상이 되어 대개 413 이다. 확인 전(proposed) 소속까지 담는다.
+    좁힌 결과가 비면 404 · 용량 상한 초과 413 · 경로를 아는 파일이 하나도 없으면 409.
     """
     picked = _parse_names(areas) or _parse_names(labels)
     rows: list[dict[str, Any]] = DbManager.read(
@@ -351,12 +263,7 @@ def download_entities_bundle(
 
 @router.get("/mm-meta/{entity_type}/{entity_uid}/bundle")
 def download_card_bundle(entity_type: str, entity_uid: str) -> StreamingResponse:
-    """개체 카드의 구성 자산을 한 zip 으로 내려준다(최대 200건 — 넘으면 앞에서부터 담고 ``X-Bundle-Truncated`` 로 알린다).
-
-    Raises:
-        HTTPException: 개체가 없으면 404 · 구성 자산이 없거나 전부 경로 미상이면 409(빈 zip 을 주면 사용자가
-            "받았는데 비었다"를 오류로 오해한다).
-    """
+    """개체 카드의 구성 자산을 한 zip 으로 내려준다(최대 200건 — 넘으면 ``X-Bundle-Truncated``). 개체가 없으면 404, 담을 파일이 없으면 409."""
     result = DbManager.read(
         lambda repo: repo.entity.card_zip_targets(entity_type=entity_type, entity_uid=entity_uid))
     if result is None:

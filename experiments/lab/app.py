@@ -1,12 +1,6 @@
-"""실험 서버 — DB · 인증 없이 ``EXP_ROOT`` 아래 파일을 여러 방식으로 내준다(⚠️ 실험 전용 · 운영에 올리지 않는다).
+"""실험 서버 — DB · 인증 없이 ``EXP_ROOT`` 아래 파일을 여러 방식으로 내준다(측정 전용 · 운영 금지).
 
-경로는 항상 ``EXP_ROOT`` 안으로 가둔다(``..`` · 심볼릭 링크 탈출 거부). 변형은 URL 로 고른다.
-
-  단건   GET /x/file/{variant}?path=            variant: custom1m | custom64k | fileresponse | anyio1m   (custom* 는 Range · If-Range · ETag 지원)
-  묶음   GET /x/bundle?dir=&fmt=&method=&level=&chunk=&readahead=&files_ahead=&latency_ms=   (zip/tar 스트리밍 · 임시 파일 없음)
-         GET /x/bundle-main?dir=             (main 에 있는 엔진 ``stream_zip`` 그대로 — 기준선)
-  작업   POST /x/jobs?dir=  →  GET /x/jobs/{id}  →  GET /x/jobs/{id}/download   (서버가 완성본을 디스크에 만들고 Range 로 내준다)
-  목록   GET /x/manifest?dir=                (브라우저가 직접 묶을 때 쓰는 파일 목록 — 이름 · 크기 · 주소)
+경로는 ``EXP_ROOT`` 안으로 가둔다. 단건 ``/x/file/{variant}`` · 묶음 ``/x/bundle``(``/x/bundle-main`` 은 운영 엔진) · 작업형 ``/x/jobs`` · 목록 ``/x/manifest``.
 """
 
 from __future__ import annotations
@@ -35,7 +29,10 @@ from service.portal.asset.download import (
     parse_range_header,
 )
 
-ROOT = Path(os.environ.get("EXP_ROOT", "/nonexistent")).resolve()
+# 인증이 없는 서버라 EXP_ROOT 와 EXP_I_UNDERSTAND_NO_AUTH=1 을 둘 다 줘야만 뜬다(이미지에 실려도 실수로 띄워지지 않게).
+if not os.environ.get("EXP_ROOT") or os.environ.get("EXP_I_UNDERSTAND_NO_AUTH") != "1":
+    raise RuntimeError("실험 서버는 인증이 없다 — EXP_ROOT(공개해도 되는 시험 데이터 폴더)와 EXP_I_UNDERSTAND_NO_AUTH=1 을 함께 줘야 뜬다(측정 전용 · 운영 금지)")
+ROOT = Path(os.environ["EXP_ROOT"]).resolve()
 TMP = Path(os.environ.get("EXP_TMP", "/tmp/exp_jobs"))
 LATENCY = float(os.environ.get("EXP_LATENCY_MS", "0"))
 app = FastAPI(title="파일 전송 방식 실험")

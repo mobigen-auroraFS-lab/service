@@ -43,17 +43,29 @@ class TestPoolSizeOverride(unittest.TestCase):
 class TestNewDb(unittest.TestCase):
     """``_new_db`` — 미설정이면 코어에 그대로 맡기고, 설정 시에만 config 를 조립한다."""
 
-    def test_unset_delegates_to_core(self) -> None:
-        # 접속 정보 해석(DSN 우선 → 개별 환경변수)을 코어가 소유한다 — 인자 없이 만들어야
-        # 그 규칙이 이쪽에 복제되지 않는다.
+    def test_설정이_없어도_질의_시간_제한_기본값이_들어간다(self) -> None:
+        # 2026-10-06: 느린 DB 가 스레드를 오래 잡지 않게 기본 30초 제한을 항상 건다. 접속 정보 해석(DSN 우선 → 개별 환경변수)은 코어 설정(from_env)에 맡긴다.
+        import os
         with patch.dict("os.environ", {}, clear=False):
-            import os
-
-            os.environ.pop(papi.POOL_MIN_ENV, None)
-            os.environ.pop(papi.POOL_MAX_ENV, None)
+            for k in (papi.POOL_MIN_ENV, papi.POOL_MAX_ENV, papi.STATEMENT_TIMEOUT_ENV, "DATABASE_URL", "POSTGRES_DSN"):
+                os.environ.pop(k, None)
             with patch("src.database.postgres_util.PostgresUtil") as mk:
                 papi.new_db()
-        mk.assert_called_once_with()
+        kwargs = mk.call_args.kwargs
+        self.assertEqual(papi.DEFAULT_STATEMENT_TIMEOUT_MS, kwargs["config"].statement_timeout_ms)
+        self.assertIsNone(kwargs["dsn"])
+
+    def test_질의_시간_제한_환경변수(self) -> None:
+        for raw, want in (("", 30_000), ("5000", 5000), ("0", None), ("-1", None), ("x", 30_000)):
+            with patch.dict("os.environ", {papi.STATEMENT_TIMEOUT_ENV: raw}):
+                self.assertEqual(want, papi.statement_timeout_ms(), raw)
+
+    def test_DSN_이면_시간_제한을_접속_옵션으로_넣는다(self) -> None:
+        # DSN 이 있으면 코어는 그 문자열을 그대로 쓴다 — config 의 시간 제한이 무시되므로 DSN 에 직접 넣어야 한다.
+        with patch.dict("os.environ", {"DATABASE_URL": "postgresql://u@h/db", papi.STATEMENT_TIMEOUT_ENV: "4000"}):
+            with patch("src.database.postgres_util.PostgresUtil") as mk:
+                papi.new_db()
+        self.assertIn("statement_timeout=4000", mk.call_args.kwargs["dsn"])
 
     def test_override_sets_pool_and_keeps_dsn_precedence(self) -> None:
         # DSN 이 있으면 접속은 DSN 이 정하고(``_build_conninfo``), 풀 크기는 config 가 정한다
@@ -66,7 +78,10 @@ class TestNewDb(unittest.TestCase):
             with patch("src.database.postgres_util.PostgresUtil") as mk:
                 papi.new_db()
         kwargs = mk.call_args.kwargs
-        self.assertEqual(kwargs["dsn"], "postgresql://u@h/db")
+        # DSN 의 접속 정보(사용자 · 호스트 · DB)는 그대로이고 시간 제한 옵션이 더해진다(make_conninfo 가 key=value 형식으로 다시 쓴다).
+        self.assertIn("host=h", kwargs["dsn"])
+        self.assertIn("dbname=db", kwargs["dsn"])
+        self.assertIn("statement_timeout", kwargs["dsn"])
         self.assertEqual(kwargs["config"].max_pool_size, 40)
 
     def test_override_without_dsn_passes_none(self) -> None:

@@ -1,15 +1,8 @@
-"""사용자용 자산 라우트 — 상세 조회·원본 내려받기·원문·주제 탐색·자산이 속한 개체.
+"""사용자용 자산 라우트 — 상세 조회 · 원본 내려받기 · 원문 · 묶음 · 주제 탐색 · 자산이 속한 개체.
 
-**흐름에서의 위치**: 포탈 화면이 직접 부르는 경로들이다. 조회는 포탈 함수에 위임한다.
+원본은 DB 에 적힌 경로(``fs_path``)에 있다고 보고 읽는다(없으면 410). 썸네일은 ``routes/files.py`` 에 자리만 있다(501).
 
-🔴 **원본 파일을 내주는 창구**(2026-10-01 다시 구현): 원본 다운로드(``/assets/{id}/download``)와 원문(``/assets/{id}/content``)은 여기 있다.
-**원본은 DB 에 적힌 경로(``fs_path``)에 있다고 보고** 읽는다 — 경로를 바꿔 여는 설정은 없고, 없으면 **410** 봉투로 답한다(예외를 그대로 올리지 않는다).
-썸네일 · 관계 묶음 · 고른 자산 묶음 · 개체 묶음은 협의가 더 필요해 ``routes/files.py`` 에 **자리만** 있다(501).
-원본 위치 · 접근 방식 · 변경 대조 규칙은 ``service/portal/asset/__init__.py`` 의 「원본 파일 전제」(연동 협의안 v1.0)를 따른다.
-
-⚠️ **라우트 선언 순서가 동작을 가른다.** ``/assets/unclassified`` 처럼 고정된 경로를
-``/assets/{asset_id}`` 보다 **먼저** 선언해야 한다 — 뒤에 두면 "unclassified" 가 자산 id 로
-해석돼 영영 404 가 된다.
+⚠️ 라우트 선언 순서가 동작을 가른다. ``/assets/unclassified`` 같은 고정 경로를 ``/assets/{asset_id}`` 보다 먼저 선언해야 한다.
 """
 
 from __future__ import annotations
@@ -21,7 +14,7 @@ from typing import Annotated, Any, BinaryIO
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
@@ -36,21 +29,20 @@ from service.portal.asset.download import (
     parse_range_header,
 )
 from service.portal.asset.selection import MAX_SELECTION, MAX_SELECTION_BYTES
-from service.portal.auth import Principal, require_principal
+from service.portal.auth import Principal, get_download_principal, require_principal
 from service.portal.common.db_manager import DbManager
 from service.portal.history.access_log import record_access_many
 from src.config.filename_util import display_file_name
 
 # 경로가 ``/assets`` 와 ``/topics`` 로 갈려 공통 접두사를 둘 수 없다 — 인증만 라우터에 건다.
-# ⚠️ 주체가 필요한 핸들러만 ``principal`` 을 따로 선언한다.
 router = APIRouter(tags=["assets"], dependencies=[Depends(require_principal)])
+
+# 내려받기(``download`` · ``HEAD``)만 따로 둔다 — 헤더 **또는** 다운로드 링크(``?link=``)로 인증한다(``get_download_principal``). 나머지는 위 라우터(헤더 전용).
+file_router = APIRouter(tags=["assets"], dependencies=[Depends(get_download_principal)])
 
 _LOG = logging.getLogger("meta_extract.portal_api")
 
-# 스트리밍 조각 크기(1MiB) — 영상 같은 큰 파일을 메모리에 통째로 올리지 않으면서, 조각마다 드는 스레드 전환 · 파이썬 오버헤드를 줄인다.
-# 🔴 [2026-10-01 실측] 같은 208MB 파일을 루프백으로 받았을 때 64KiB 는 한 줄기 약 520MB/s · 여러 줄기 합 약 750MB/s 에서 서버 CPU 가 먼저 찼고,
-#    1MiB 는 한 줄기 약 3.3GB/s · 합 약 4.4GB/s 였다(약 6배). 실제 망(1~10Gbps)에서는 망이 먼저 차겠지만, 다운로드를 여러 줄기로 받는
-#    묶음(브라우저 zip) 때 서버가 받는 CPU 를 줄인다. 요청당 잡는 메모리는 조각 하나(1MiB)뿐이다.
+# 스트리밍 조각 크기(1MiB) — 64KiB 보다 CPU 가 적게 든다(experiments/RESULTS.md). 요청당 메모리는 조각 하나뿐이다.
 _STREAM_CHUNK = 1024 * 1024
 
 _DOWNLOAD_404 = "다운로드 대상을 찾을 수 없거나 노출 대상이 아님"
@@ -158,15 +150,7 @@ def asset_mm_meta(
 
 
 def _guess_content_type(file_name: str, modality: str | None) -> str:
-    """내려줄 파일의 MIME 타입을 정한다.
-
-    Args:
-        file_name: 확장자를 볼 파일명.
-        modality: 확장자로 못 알아냈을 때 쓸 단서. ``None`` 이어도 된다.
-
-    Returns:
-        MIME 문자열. 끝까지 모르면 ``application/octet-stream``(브라우저가 열지 않고 저장한다).
-    """
+    """내려줄 파일의 MIME 타입 — 확장자로 정하고, 모르면 modality 단서, 끝까지 모르면 ``application/octet-stream``."""
     ctype, _ = mimetypes.guess_type(file_name)
     if ctype:
         return ctype
@@ -175,33 +159,13 @@ def _guess_content_type(file_name: str, modality: str | None) -> str:
 
 
 def _content_disposition(file_name: str) -> str:
-    """RFC 6266 attachment 헤더(ASCII filename + UTF-8 filename* 병기).
-
-    ⚠️ ASCII 쪽에서 큰따옴표·개행·비-ASCII 를 **반드시 제거한다** — 그대로 두면 헤더가 쪼개져
-    응답 위조에 쓰일 수 있다. 한글 파일명은 UTF-8 쪽에 인코딩해 함께 싣는다.
-
-    Args:
-        file_name: 내려받을 때 보일 파일명(경로가 아니라 이름만).
-
-    Returns:
-        ``Content-Disposition`` 헤더 값.
-    """
+    """RFC 6266 attachment 헤더(ASCII filename + UTF-8 filename* 병기). ASCII 쪽에서 큰따옴표 · 개행 · 비-ASCII 를 제거해 헤더 위조를 막는다."""
     ascii_safe = "".join(c for c in file_name if c.isascii() and c.isprintable() and c != '"')
     return f'attachment; filename="{ascii_safe}"; filename*=UTF-8\'\'{quote(file_name)}'
 
 
 def _file_iterator(fh: BinaryIO, start: int, end: int) -> Iterator[bytes]:
-    """열려 있는 파일의 특정 구간을 조각내어 흘려보낸다. 끝나거나 끊기면 파일을 닫는다.
-
-    Args:
-        fh: ``open_original`` 이 연 핸들(이 함수가 닫는다).
-        start: 시작 바이트(**포함**).
-        end: 끝 바이트(**포함**) — 구간 요청 규격이 양 끝을 포함하므로 길이는 ``end-start+1`` 이다.
-
-    Yields:
-        바이트 조각. 파일이 도중에 짧아지면 거기서 멈춘다(예외를 올리지 않는다 — 클라이언트는
-        ``Content-Length`` 와 받은 길이로 불완전함을 알아챈다).
-    """
+    """열린 파일의 ``start``~``end``(둘 다 포함) 구간을 조각내어 흘려 보낸다. 끝나거나 끊기면 파일을 닫는다. 파일이 도중에 짧아지면 거기서 멈춘다."""
     remaining = end - start + 1
     try:
         fh.seek(start)
@@ -215,17 +179,45 @@ def _file_iterator(fh: BinaryIO, start: int, end: int) -> Iterator[bytes]:
         fh.close()
 
 
-@router.get("/assets/{asset_id}/download")
-def download(asset_id: str, request: Request) -> StreamingResponse:
-    """자산 원본을 스트리밍한다 — 구간 요청(이어받기 · 영상 탐색)을 지원한다.
+@router.post("/assets/{asset_id}/download-link")
+def download_link(asset_id: str, principal: Annotated[Principal, Depends(require_principal)]) -> JSONResponse:
+    """헤더 없이 받을 수 있는 짧은 수명의 다운로드 주소를 준다(``<a href>`` · ``<video src>`` 용).
 
-    1. 노출 대상인지 먼저 확인한다 — 아니면 404.
-    2. 원본을 **한 번 열어** 크기를 확정한다 — DB 에 적힌 경로에 없거나 못 열면 410(자산 기록은 있으나 파일이 사라진 상태).
-       열린 핸들에서 크기를 읽어, 확인과 읽기 사이에 파일이 사라지는 틈이 없다.
-    3. ``Range`` 헤더가 있으면 구간을 산출해 206 + ``Content-Range``; 범위 위반은 416. 바이트 산출은 **디스크 실제 크기** 기준이다.
-       ``If-Range`` 가 지금 파일과 다르면(받는 도중 원본이 바뀜) 구간을 무시하고 전체를 200 으로 준다.
-    ``Accept-Ranges: bytes`` · ``ETag``(크기 · 수정 시각) · ``Last-Modified`` 를 항상 싣는다.
+    헤더 인증은 이 창구에서만 쓰고, 돌려받은 ``url`` 은 헤더 없이 GET · HEAD(Range 포함)로 부른다. 이 자산의 내려받기에만 통하고 ``expires_in`` 초 뒤 만료된다.
+    노출 대상이 아닌 자산은 404. 원본 파일이 있는지는 보지 않는다.
     """
+    from service.portal.auth.download_link import issue_link_token
+
+    params.uuid_or_404(asset_id, detail=_DOWNLOAD_404)
+    if DbManager.read(lambda repo: repo.asset.download_target(asset_id=asset_id)) is None:
+        raise HTTPException(status_code=404, detail=_DOWNLOAD_404)
+    token, ttl = issue_link_token(user_id=principal.user_id, asset_id=asset_id)
+    return JSONResponse({"url": f"/assets/{asset_id}/download?link={token}", "expires_in": ttl},
+                        headers={"Cache-Control": "no-store"})
+
+
+@file_router.get("/assets/{asset_id}/download")
+def download(
+    asset_id: str,
+    request: Request,
+    link: Annotated[str | None, Query(description="다운로드 링크(IF-ASSET-15) — Authorization 헤더 대신 쓴다. 이 자산에만 통하고 곧 만료된다")] = None,
+) -> StreamingResponse:
+    """자산 원본을 스트리밍한다 — ``Range`` 이어받기를 지원하고 ``HEAD`` 도 받는다(``download_head``).
+
+    노출 대상이 아니면 404. 원본을 한 번 열어 크기를 확정하고, 없거나 못 열면 410. ``Range`` 는 206 + ``Content-Range``, 범위 위반은 416.
+    ``If-Range`` 가 지금 파일과 다르면 구간을 무시하고 전체를 200 으로 준다. ``Accept-Ranges`` · ``ETag`` · ``Last-Modified`` 를 항상 싣는다.
+    """
+    del link
+    return _serve_download(asset_id, request, head=False)
+
+
+@file_router.head("/assets/{asset_id}/download", include_in_schema=False)
+def download_head(asset_id: str, request: Request) -> Response:
+    """``GET`` 과 같은 판정 · 같은 응답 머리를 **본문 없이** 준다(``Content-Length`` 는 받게 될 길이). 접근 기록은 남지 않는다(조회가 아니라 문의다)."""
+    return _serve_download(asset_id, request, head=True)
+
+
+def _serve_download(asset_id: str, request: Request, *, head: bool) -> Response:
     params.uuid_or_404(asset_id, detail=_DOWNLOAD_404)
     target = DbManager.read(lambda repo: repo.asset.download_target(asset_id=asset_id))
     if target is None:
@@ -248,11 +240,12 @@ def download(asset_id: str, request: Request) -> StreamingResponse:
         "Last-Modified": last_modified,
         "Cache-Control": "private, no-cache",       # 인증이 걸린 응답이라 공유 캐시에 남기지 않는다
         "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer",           # 링크(?link=)로 받을 때 주소가 다른 사이트로 새지 않게
     }
 
     range_value = request.headers.get("range")
     if range_value is not None and not if_range_matches(request.headers.get("if-range"), etag, last_modified):
-        range_value = None                          # 받는 도중 바뀐 파일 — 조각을 섞지 않고 전체를 준다
+        range_value = None
     try:
         rng = parse_range_header(range_value, file_size)
     except ValueError as exc:
@@ -273,26 +266,23 @@ def download(asset_id: str, request: Request) -> StreamingResponse:
 
     # 양 끝을 포함하는 구간이라 길이는 +1 이다(빼먹으면 마지막 1바이트가 잘린다). 빈 파일(0바이트)은 길이 0 이다.
     headers["Content-Length"] = str(max(end - start + 1, 0))
+    if head:
+        fh.close()
+        return Response(status_code=status_code, headers=headers, media_type=_guess_content_type(file_name, target.get("modality")))
     return StreamingResponse(
         _file_iterator(fh, start, end) if file_size else iter(()),
         status_code=status_code,
         media_type=_guess_content_type(file_name, target.get("modality")),
         headers=headers,
-        background=BackgroundTask(fh.close),        # 응답이 끊겨 조각 읽기가 멈춰도 핸들은 반드시 닫는다
+        background=BackgroundTask(fh.close),
     )
 
 
 @router.get("/assets/{asset_id}/content")
 def asset_content(asset_id: str) -> dict[str, Any]:
-    """자산의 **글자 내용**을 돌려준다 — 상세 화면의 원문 영역용.
+    """자산의 글자 내용을 돌려준다 — 상세 화면의 원문 영역용.
 
-    문서는 원본 파일에서, 소리·영상은 받아쓰기(``ext_meta.stt``)에서. 글자가 없는 자산(그림 · 받아쓰기 없는 소리·영상)도
-    404 지만 **문구가 다르다**(「이 자산에는 읽을 수 있는 원문이 없습니다」) — 등록 자산이면 상세(`/assets/{id}`)가
-    이미 열리므로 존재 여부를 숨길 이유가 없고, 화면은 이 문구로 '원문 없음'과 '없는 자산'을 가른다.
-    ⚠️ 지금 데이터에서 받아쓰기는 소리에만 있다 — 영상은 404 다(``content`` 모듈 설명 참조).
-
-    Raises:
-        HTTPException: 노출 대상이 아니거나 글자가 없으면 404 · 원본 파일이 사라졌으면 410.
+    문서는 원본 파일에서, 소리 · 영상은 받아쓰기(``ext_meta.stt``)에서. 글자가 없으면 404(「이 자산에는 읽을 수 있는 원문이 없습니다」 — 없는 자산과 문구가 다르다), 원본이 사라졌으면 410.
     """
     params.uuid_or_404(asset_id, detail=_CONTENT_404)
     source = DbManager.read(lambda repo: repo.content.source_of(asset_id))
@@ -310,12 +300,9 @@ def asset_content(asset_id: str) -> dict[str, Any]:
 
 @router.get("/assets/{asset_id}/bundle")
 def bundle(asset_id: str) -> StreamingResponse:
-    """기준 자산과 **직접 연결된 이웃들**을 한 zip 으로 — 임시 파일 없이 만들면서 흘려 보낸다.
+    """기준 자산과 직접 연결된 이웃을 한 zip 으로 흘려 보낸다. 기준 자산이 노출 대상이 아니면 404.
 
-    seed 는 노출을 먼저 확인한다 — 없음/비registered 면 404. 이웃은 **확인된(active) 관계**만, 등록 완료 자산만 담는다
-    (틀린 파일이 담긴 zip 은 회수할 수 없어 확인된 것만 — ``collect_bundle_assets`` 주석).
-    원본이 없는 항목은 건너뛰고 ZIP 끝의 ``_manifest.json`` 에 남긴다(부분 zip). 전부 누락이면 목록 파일만 든 zip 이다.
-    방식 선택의 배경과 대안(브라우저가 묶기 · 서버 비동기 zip)은 ``service/portal/asset/bundle_stream.py`` 설명에 있다.
+    확인된(active) 관계의 등록 완료 자산만 담고, 원본이 없는 항목은 ZIP 끝의 ``_manifest.json`` 에 남긴다.
     """
     params.uuid_or_404(asset_id, detail="묶음 seed 를 찾을 수 없거나 노출 대상이 아님")
     targets = DbManager.read(lambda repo: repo.asset.bundle_targets(seed_asset_id=asset_id))
@@ -341,16 +328,9 @@ def selection_bundle(
     payload: SelectionBundleRequest,
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> StreamingResponse:
-    """**고른 자산들**을 한 zip 으로 — 임시 파일 없이 만들면서 흘려 보낸다(목록 화면의 일괄 내려받기).
+    """고른 자산들을 한 zip 으로 흘려 보낸다(목록 화면의 일괄 내려받기). 노출되지 않는 자산은 빠지고 ``_manifest.json`` 에 남는다.
 
-    관계 묶음과 달리 대상을 사용자가 정한다. 노출 게이트 · 부분 zip · 목록 파일(manifest) 규칙은 같다 — 노출되지 않는 자산은
-    빠지되 **빠졌다는 사실은 manifest 에 남는다**. 감사는 담긴 자산마다 ``bundle`` 한 행(미들웨어는 GET 만 기록한다).
-
-    🔴 여러 파일을 받는 방식은 **서버가 묶는 이 창구**와 **웹이 단건 다운로드를 병렬로 받아 브라우저에서 묶는 방식** 둘이 있다
-    (``bundle_stream`` 설명). 지금은 이 창구가 정본이고, 웹이 HTTPS 와 스트리밍 저장을 갖추면 옮겨 갈 수 있다.
-
-    Raises:
-        HTTPException: 빈 목록 · 형식 오류 · 건수 초과는 400 · 용량 초과는 413 · 내려받을 자산이 하나도 없으면 409.
+    감사는 담긴 자산마다 ``bundle`` 한 행. 빈 목록 · 형식 오류 · 건수 초과 400 · 용량 초과 413 · 내려받을 자산이 하나도 없으면 409.
     """
     asset_ids = params.uuid_list_or_400(payload.asset_ids, field="asset_ids")
     if not asset_ids:
@@ -365,11 +345,11 @@ def selection_bundle(
     if not targets:
         raise HTTPException(status_code=409, detail="내려받을 수 있는 자산이 없습니다 — 모두 노출 대상이 아닙니다")
     mb, cap = 1024 * 1024, MAX_SELECTION_BYTES // (1024 * 1024)
-    if picked["total_bytes"] > MAX_SELECTION_BYTES:       # DB 에 적힌 크기로 먼저 거른다(파일을 건드리기 전)
+    if picked["total_bytes"] > MAX_SELECTION_BYTES:
         raise HTTPException(
             status_code=413, detail=f"용량이 상한을 넘습니다({picked['total_bytes'] // mb}MB > {cap}MB) — 고른 자산을 줄이십시오")
     plan = make_plan(targets)
-    if plan.total_bytes > MAX_SELECTION_BYTES:           # 디스크의 실제 크기로 한 번 더 — DB 값이 틀려도 상한을 지킨다
+    if plan.total_bytes > MAX_SELECTION_BYTES:
         raise HTTPException(
             status_code=413, detail=f"용량이 상한을 넘습니다({plan.total_bytes // mb}MB > {cap}MB) — 고른 자산을 줄이십시오")
 
