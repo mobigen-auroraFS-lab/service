@@ -9,6 +9,8 @@ import importlib.util
 import logging
 import os
 
+from service.portal.asset import origin
+
 _LOG = logging.getLogger("meta_extract.portal_api")
 SAMPLE_SIZE = 20
 
@@ -34,6 +36,14 @@ def _prefix(path: str) -> str:
     return "/".join(path.split("/")[:4])
 
 
+def _readable(path: str) -> bool:
+    try:
+        origin.get_reader().stat(path)
+    except OSError:
+        return False
+    return True
+
+
 def check_origin_paths() -> None:
     """DB 의 원본 경로 표본이 이 서버에서 보이는가. DB 가 안 되면 건너뛴다(차단기가 따로 알린다)."""
     try:
@@ -47,7 +57,7 @@ def check_origin_paths() -> None:
         return
     if not paths:
         return
-    seen = sum(1 for p in paths if os.path.isfile(p))
+    seen = sum(1 for p in paths if _readable(p))
     prefixes = sorted({_prefix(p) for p in paths})[:2]
     if seen == 0:
         _LOG.warning("원본 경로 표본 %d개 중 0개가 보이지 않는다 — 원본 저장소가 이 서버에 마운트됐는지 확인한다(다운로드 · 원문이 410 이 된다). 경로 예: %s",

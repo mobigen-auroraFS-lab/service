@@ -78,11 +78,13 @@ class TestOpenOriginal(unittest.TestCase):
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
             tmp.write(b"0123456789")
         try:
-            fh, size, mtime_ns = open_original(tmp.name)
-            with fh:
-                self.assertEqual(10, size)
-                self.assertEqual(os.stat(tmp.name).st_mtime_ns, mtime_ns)
-                self.assertEqual(b"0123", fh.read(4))               # 바로 읽을 수 있게 열려 있다
+            src = open_original(tmp.name)
+            try:
+                self.assertEqual(10, src.size)
+                self.assertEqual(os.stat(tmp.name).st_mtime_ns, src.mtime_ns)
+                self.assertEqual(b"0123", src.read_head(4))         # 바로 읽을 수 있게 열려 있다
+            finally:
+                src.close()
         finally:
             os.unlink(tmp.name)
 
@@ -103,9 +105,9 @@ class TestOpenOriginal(unittest.TestCase):
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
             pass
         try:
-            fh, size, _ = open_original(tmp.name)
-            fh.close()
-            self.assertEqual(0, size)
+            src = open_original(tmp.name)
+            src.close()
+            self.assertEqual(0, src.size)
         finally:
             os.unlink(tmp.name)
 

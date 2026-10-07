@@ -179,7 +179,7 @@ class TestDownload(_Base):
 
         def spy(p):
             out = real(p)
-            opened.append(out[0])
+            opened.append(out)
             return out
 
         with mock.patch.object(routes_assets, "open_original", side_effect=spy):
@@ -187,7 +187,7 @@ class TestDownload(_Base):
             self._get(_target(self.path), headers={"Range": "bytes=0-9"})
             self._get(_target(self.path), headers={"Range": "bytes=99999-"})      # 416 도 닫는다
         self.assertEqual(3, len(opened))
-        self.assertTrue(all(fh.closed for fh in opened))
+        self.assertTrue(all(src._fh.closed for src in opened))
 
     def test_큰_파일도_조각으로_흘려_받는다(self) -> None:
         big = Path(self._tmp.name) / "big.bin"

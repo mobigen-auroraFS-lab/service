@@ -21,14 +21,15 @@ import threading
 import zipfile
 import zlib
 from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
+
+from service.portal.asset import origin
 
 _LOG = logging.getLogger("meta_extract.portal_api")
 
 # 조각 크기 — 파일 읽기 · ZIP 쓰기 단위. 단건 다운로드와 같은 값이다(조각이 작으면 서버 CPU 가 먼저 찬다).
-CHUNK = 1024 * 1024
+CHUNK = origin.CHUNK
 
 # 고정 타임스탬프 — 현재 시각을 넣으면 내용이 같아도 ZIP 바이트가 매번 달라진다.
 _FIXED_TIME = (1980, 1, 1, 0, 0, 0)
@@ -99,20 +100,14 @@ def plan_bundle(targets: list[dict[str, Any]]) -> BundlePlan:
         fs_path = t.get("fs_path")
         name = t.get("file_name") or os.path.basename(str(fs_path or "")) or "file"
         try:
-            if not fs_path:
-                raise OSError("경로 없음")
-            st = os.stat(fs_path)
-            if not os.path.isfile(fs_path):
-                raise OSError("일반 파일이 아님")
-            if not os.access(fs_path, os.R_OK):
-                raise OSError("읽기 권한 없음")
+            size, _ = origin.get_reader().stat(fs_path)
         except OSError as exc:
             # 🔴 서버 경로는 응답(ZIP 포함)에 싣지 않는다 — 운영자가 볼 로그에만 남긴다.
             _LOG.warning("묶음에서 원본을 열 수 없어 건너뜀: asset_id=%s fs_path=%s — %s", t.get("asset_id"), fs_path, type(exc).__name__)
             plan.unreadable.append({"asset_id": t.get("asset_id"), "file_name": name})
             continue
-        plan.packed.append({**t, "file_name": name, "size": st.st_size})
-        plan.total_bytes += st.st_size
+        plan.packed.append({**t, "file_name": name, "size": size})
+        plan.total_bytes += size
     return plan
 
 
@@ -178,35 +173,15 @@ def _precompressed(name: str) -> bool:
 class _Source:
     """열린 원본 한 개. ``window`` > 1 이고 파일이 크면 조각 여러 개를 동시에 읽어 순서대로 내준다. 열기 실패는 OSError."""
 
-    def __init__(self, path: str, size: int, window: int) -> None:
-        self.fh = open(path, "rb")  # noqa: SIM115 — close() 가 닫는다
-        self.size, self.window = size, window
+    def __init__(self, path: str, window: int) -> None:
+        self.file = origin.get_reader().open(path)
+        self.window = window
 
     def chunks(self) -> Iterator[bytes]:
-        if self.window > 1 and self.size >= 2 * CHUNK:
-            yield from self._windowed()
-            return
-        while True:
-            b = self.fh.read(CHUNK)
-            if not b:
-                return
-            yield b
-
-    def _windowed(self) -> Iterator[bytes]:
-        fd = self.fh.fileno()
-        with ThreadPoolExecutor(self.window) as ex:
-            pending: list = []
-            nxt = 0
-            while nxt < self.size or pending:
-                while nxt < self.size and len(pending) < self.window:
-                    pending.append(ex.submit(os.pread, fd, CHUNK, nxt))
-                    nxt += CHUNK
-                b = pending.pop(0).result()
-                if b:
-                    yield b
+        return self.file.read_range(0, self.file.size - 1, window=self.window)
 
     def close(self) -> None:
-        self.fh.close()
+        self.file.close()
 
 
 _END = object()
@@ -272,7 +247,7 @@ def stream_zip(plan: BundlePlan) -> Iterator[bytes]:
             return
         t = plan.packed[i]
         try:
-            src = _Source(t["fs_path"], t["size"], window)
+            src = _Source(t["fs_path"], window)
         except OSError:
             opened[i] = None
             return
@@ -288,7 +263,7 @@ def stream_zip(plan: BundlePlan) -> Iterator[bytes]:
                     src = opened.pop(idx)
                 else:
                     try:
-                        src = _Source(t["fs_path"], t["size"], window)
+                        src = _Source(t["fs_path"], window)
                     except OSError:
                         src = None
                 if src is None:

@@ -1,13 +1,14 @@
 """자산의 글자 내용(원문)을 읽어 준다 — 상세 화면의 원문 영역용.
 
 문서는 원본 파일을 그대로 읽고, 소리는 받아쓰기(``ext_meta.stt``)를, 영상은 받아쓰기가 있을 때만 준다. 그림은 글자가 없다.
-원본은 DB 경로에 있다고 보고 읽는다(없으면 OSError → 호출부가 410). 응답이 커지지 않게 기본 1MiB 에서 자르고 ``truncated`` 로 알린다.
+원본은 ``origin`` 읽기 계층으로 읽는다(없으면 OSError → 호출부가 410). 응답이 커지지 않게 기본 1MiB 에서 자르고 ``truncated`` 로 알린다.
 """
 
 from __future__ import annotations
 
-import os
 from typing import Any
+
+from service.portal.asset import origin
 
 # 한 번에 실어 보낼 최대 글자 바이트(1MiB). 넘으면 잘라서 ``truncated=True``.
 TEXT_BYTE_CAP = 1024 * 1024
@@ -18,8 +19,11 @@ TEXT_SOURCE = {"text": "file", "audio": "stt", "video": "stt"}
 
 def read_text_file(fs_path: str, *, cap: int = TEXT_BYTE_CAP) -> tuple[str, bool]:
     """파일 앞부분을 ``cap`` 바이트까지 글자로 읽는다. ``(글자, 잘렸는지)`` — 해독할 수 없는 바이트는 대체 문자로 바꾼다. 열 수 없으면 OSError."""
-    with open(fs_path, "rb") as fp:
-        raw = fp.read(cap + 1)
+    src = origin.get_reader().open(fs_path)
+    try:
+        raw = src.read_head(cap + 1)
+    finally:
+        src.close()
     truncated = len(raw) > cap
     return raw[:cap].decode("utf-8", errors="replace"), truncated
 
@@ -30,9 +34,10 @@ def build_content(source: dict[str, Any], *, cap: int = TEXT_BYTE_CAP) -> dict[s
     kind = TEXT_SOURCE.get(modality)
     if kind == "file":
         fs_path = str(source["fs_path"] or "")
-        if not fs_path or not os.path.isfile(fs_path):
-            raise OSError(f"원본 파일 없음: {source['asset_id']}")
-        text, truncated = read_text_file(fs_path, cap=cap)
+        try:
+            text, truncated = read_text_file(fs_path, cap=cap)
+        except OSError as exc:
+            raise OSError(f"원본 파일 없음: {source['asset_id']}") from exc
     elif kind == "stt" and source["stt"]:
         text = str(source["stt"])
         truncated = len(text.encode("utf-8")) > cap

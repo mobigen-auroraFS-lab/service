@@ -25,7 +25,6 @@ from service.portal.asset.download import (
     if_range_matches,
     make_etag,
     make_last_modified,
-    open_original,
     parse_range_header,
 )
 
@@ -102,7 +101,9 @@ def file_variant(variant: str, path: str, request: Request):
     if variant not in ("custom1m", "custom64k", "anyio1m"):
         raise HTTPException(404, "모르는 변형")
     chunk = 64 * 1024 if variant == "custom64k" else 1024 * 1024
-    fh, size, mtime_ns = open_original(str(p))
+    fh = open(p, "rb")  # noqa: SIM115 — 응답 스트림이 닫는다
+    info = os.fstat(fh.fileno())
+    size, mtime_ns = info.st_size, info.st_mtime_ns
     etag, lm = make_etag(size, mtime_ns), make_last_modified(mtime_ns)
     headers = {"Accept-Ranges": "bytes", "ETag": etag, "Last-Modified": lm,
                "Content-Disposition": f"attachment; filename*=UTF-8''{quote(p.name)}"}

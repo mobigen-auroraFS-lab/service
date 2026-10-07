@@ -195,6 +195,7 @@ TEXT_EMBED_NORMALIZE=true
 | `PORTAL_MAX_BODY_BYTES` | 요청 본문 상한. 기본 1MiB, 넘으면 413 |
 | `PORTAL_TAGS_CACHE_SECONDS` | `/tags` 와 검색어 제안이 쓰는 태그 목록을 들고 있을 시간. 기본 300초, `0` 이면 끕니다 |
 | `PORTAL_ZIP_LEVEL` | 묶음 zip 의 압축 수준 1~9. 기본 6. 낮추면 서버 CPU 가 줄고 파일이 커집니다(텍스트에서 1 은 CPU 1/3 · 크기 +45%) |
+| `PORTAL_ORIGIN_BACKEND` | 원본 파일을 읽는 방식. `local`(기본 · DB 경로를 마운트 경로로 직접 열기)만 있다. `storage_api`(스토리지 스트리밍 API)는 사양이 정해진 뒤 구현하며, 지금 지정하면 기동이 멈춘다. 잘못된 값도 기동 때 멈춘다 |
 | `PORTAL_ZIP_READ_WINDOW` · `PORTAL_ZIP_FILES_AHEAD` | 저장소 읽기 지연이 클 때만 켭니다. 큰 파일 한 개를 조각 N 개로 동시에 읽기 · 다음 파일 N 개를 미리 읽기. 기본은 둘 다 꺼짐 |
 | `PORTAL_ROLE` | `all`(기본) · `api`(파일 창구 뺀 나머지) · `files`(원본 · 원문 · 묶음 zip · 썸네일만). 파일 창구를 별도 프로세스로 띄울 때 씁니다 — 아래 「파일 창구를 따로 띄우기」 |
 | `PORTAL_DB_STATEMENT_TIMEOUT_MS` | DB 질의 한 건의 시간 제한. 기본 30000(30초), `0` 이면 제한 없음. 넘으면 DB 가 질의를 취소하고 요청은 503 입니다 |
