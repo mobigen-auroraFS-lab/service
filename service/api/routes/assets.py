@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import mimetypes
 from collections.abc import Iterator
-from typing import Annotated, Any, BinaryIO
+from typing import Annotated, Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -28,6 +28,7 @@ from service.portal.asset.download import (
     open_original,
     parse_range_header,
 )
+from service.portal.asset.origin import OriginFile
 from service.portal.asset.selection import MAX_SELECTION, MAX_SELECTION_BYTES
 from service.portal.auth import Principal, get_download_principal, require_principal
 from service.portal.common.db_manager import DbManager
@@ -41,9 +42,6 @@ router = APIRouter(tags=["assets"], dependencies=[Depends(require_principal)])
 file_router = APIRouter(tags=["assets"], dependencies=[Depends(get_download_principal)])
 
 _LOG = logging.getLogger("meta_extract.portal_api")
-
-# 스트리밍 조각 크기(1MiB) — 64KiB 보다 CPU 가 적게 든다(experiments/RESULTS.md). 요청당 메모리는 조각 하나뿐이다.
-_STREAM_CHUNK = 1024 * 1024
 
 _DOWNLOAD_404 = "다운로드 대상을 찾을 수 없거나 노출 대상이 아님"
 _FILE_GONE_410 = "원본 파일이 존재하지 않거나 접근할 수 없음"
@@ -164,19 +162,12 @@ def _content_disposition(file_name: str) -> str:
     return f'attachment; filename="{ascii_safe}"; filename*=UTF-8\'\'{quote(file_name)}'
 
 
-def _file_iterator(fh: BinaryIO, start: int, end: int) -> Iterator[bytes]:
-    """열린 파일의 ``start``~``end``(둘 다 포함) 구간을 조각내어 흘려 보낸다. 끝나거나 끊기면 파일을 닫는다. 파일이 도중에 짧아지면 거기서 멈춘다."""
-    remaining = end - start + 1
+def _file_iterator(src: OriginFile, start: int, end: int) -> Iterator[bytes]:
+    """열린 원본의 ``start``~``end``(둘 다 포함) 구간을 흘려 보낸다. 끝나거나 끊기면 닫는다."""
     try:
-        fh.seek(start)
-        while remaining > 0:
-            chunk = fh.read(min(_STREAM_CHUNK, remaining))
-            if not chunk:
-                break
-            remaining -= len(chunk)
-            yield chunk
+        yield from src.read_range(start, end)
     finally:
-        fh.close()
+        src.close()
 
 
 @router.post("/assets/{asset_id}/download-link")
@@ -225,14 +216,15 @@ def _serve_download(asset_id: str, request: Request, *, head: bool) -> Response:
 
     fs_path = target.get("fs_path")
     try:
-        fh, file_size, mtime_ns = open_original(fs_path)
+        src = open_original(fs_path)
     except OSError as exc:
         # 서버 경로는 응답에 싣지 않는다 — 운영자가 볼 로그에만 남긴다.
         _LOG.warning("원본을 열 수 없음(410): asset_id=%s fs_path=%s — %s", asset_id, fs_path, type(exc).__name__)
         raise HTTPException(status_code=410, detail=_FILE_GONE_410) from exc
 
     file_name = target.get("file_name") or display_file_name(fs_path)
-    etag, last_modified = make_etag(file_size, mtime_ns), make_last_modified(mtime_ns)
+    file_size = src.size
+    etag, last_modified = make_etag(file_size, src.mtime_ns), make_last_modified(src.mtime_ns)
     headers = {
         "Accept-Ranges": "bytes",
         "Content-Disposition": _content_disposition(file_name),
@@ -249,7 +241,7 @@ def _serve_download(asset_id: str, request: Request, *, head: bool) -> Response:
     try:
         rng = parse_range_header(range_value, file_size)
     except ValueError as exc:
-        fh.close()
+        src.close()
         raise HTTPException(
             status_code=416,
             detail=f"요청 범위 충족 불가: {exc}",
@@ -267,14 +259,14 @@ def _serve_download(asset_id: str, request: Request, *, head: bool) -> Response:
     # 양 끝을 포함하는 구간이라 길이는 +1 이다(빼먹으면 마지막 1바이트가 잘린다). 빈 파일(0바이트)은 길이 0 이다.
     headers["Content-Length"] = str(max(end - start + 1, 0))
     if head:
-        fh.close()
+        src.close()
         return Response(status_code=status_code, headers=headers, media_type=_guess_content_type(file_name, target.get("modality")))
     return StreamingResponse(
-        _file_iterator(fh, start, end) if file_size else iter(()),
+        _file_iterator(src, start, end) if file_size else iter(()),
         status_code=status_code,
         media_type=_guess_content_type(file_name, target.get("modality")),
         headers=headers,
-        background=BackgroundTask(fh.close),
+        background=BackgroundTask(src.close),
     )
 
 

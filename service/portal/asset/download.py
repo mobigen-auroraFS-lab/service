@@ -7,15 +7,15 @@
 from __future__ import annotations
 
 import logging
-import os
-import stat
 from datetime import UTC, datetime
 from email.utils import format_datetime
-from typing import Any, BinaryIO
+from typing import Any
 
 from psycopg import Connection
 from psycopg.rows import dict_row
 
+from service.portal.asset import origin
+from service.portal.asset.origin import OriginFile
 from src.config.filename_util import (
     display_file_name,
 )
@@ -116,22 +116,12 @@ def resolve_download_target(
     }
 
 
-def open_original(fs_path: str | None) -> tuple[BinaryIO, int, int]:
-    """원본을 한 번 열어 ``(핸들, 크기, 수정 시각 ns)`` 를 돌려준다(호출부가 닫는다).
+def open_original(fs_path: str | None) -> OriginFile:
+    """원본을 한 번 열어 돌려준다(``size`` · ``mtime_ns`` 포함 · 호출부가 닫는다). 경로가 비었거나 열 수 없거나 일반 파일이 아니면 OSError(호출부가 410).
 
-    열린 핸들에서 크기를 읽어, 확인과 열기 사이에 파일이 사라지는 틈이 없다. 경로가 비었거나 열 수 없거나 일반 파일이 아니면 OSError(호출부가 410).
+    열린 핸들에서 크기를 읽어, 확인과 열기 사이에 파일이 사라지는 틈이 없다. 읽는 구현은 ``origin`` 이 고른다.
     """
-    if not fs_path:
-        raise OSError("원본 경로가 비어 있다")
-    fh = open(fs_path, "rb")  # noqa: SIM115 — 응답 스트림이 닫을 때까지 살아 있어야 한다(호출부가 닫는다)
-    try:
-        info = os.fstat(fh.fileno())
-        if not stat.S_ISREG(info.st_mode):
-            raise OSError("일반 파일이 아니다")
-    except BaseException:
-        fh.close()
-        raise
-    return fh, info.st_size, info.st_mtime_ns
+    return origin.get_reader().open(fs_path)
 
 
 def make_etag(size: int, mtime_ns: int) -> str:

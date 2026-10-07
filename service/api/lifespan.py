@@ -41,6 +41,7 @@ async def lifespan(_app: FastAPI):
     아직 쓰기 중인 태스크가 닫힌 풀을 잡는다.
     """
     from service.bootstrap import bootstrap_env
+    from service.portal.asset import origin
     from service.portal.auth.config import load_portal_auth_config
 
     bootstrap_env(ENV)
@@ -49,6 +50,7 @@ async def lifespan(_app: FastAPI):
     #    사용자 요청마다 500 이 났다. 이제는 서버가 아예 뜨지 않는다(키가 없으면 ValueError).
     #    ⚠️ ``bootstrap_env`` **뒤**여야 한다 — 서명 키가 ``.env.{ENV}`` 에서 들어올 수 있다.
     load_portal_auth_config()
+    origin.get_reader()     # 원본 읽기 구현 설정도 기동 때 확정한다(잘못된 값 · 아직 없는 구현이면 여기서 멈춘다)
     db.align_thread_limit_to_pool()
     _start_dependency_checks()
     warmup.start()          # 뒤에서 — 첫 사용자가 DB 연결 · 태그 캐시를 만드는 시간을 치르지 않게(기동은 막지 않는다)
