@@ -33,7 +33,7 @@ def user_id_from_request(request: Request) -> str:
         except Exception:  # noqa: BLE001 — 기록용 best-effort, 인증 실패가 응답을 막지 않음
             return "anonymous"
     link = request.query_params.get("link")
-    if link and request.url.path.endswith("/download"):
+    if link and request.url.path.endswith(("/download", "/bundle")):
         from service.portal.auth.download_link import peek_user
         return peek_user(link) or "anonymous"
     return "anonymous"

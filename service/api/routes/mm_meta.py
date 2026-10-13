@@ -10,12 +10,12 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response
 
 from service.api import params
-from service.api.bundle_response import bundle_headers, make_plan, zip_response
+from service.api.bundle_response import bundle_headers, make_plan, zip_head_response, zip_response
 from service.portal import mm_meta
-from service.portal.auth import require_principal
+from service.portal.auth import get_bundle_principal, require_principal
 from service.portal.common.db_manager import DbManager
 from src.mm_meta.rules import MIN_BUNDLE_SIZE
 from src.search.cursor import CursorError
@@ -23,6 +23,10 @@ from src.search.cursor import CursorError
 # 접두사를 두지 않는 이유 — 목록 경로가 ``/mm-meta`` 자체라 prefix 와 빈 경로가 만나면
 # 끝 슬래시 취급이 미묘해진다. 이득은 표기뿐이라 정확성을 택했다. 인증만 라우터에 건다.
 router = APIRouter(tags=["entity"], dependencies=[Depends(require_principal)])
+
+# 묶음(zip) 내려받기 — 헤더 **또는** 묶음 링크(``?link=``)로 인증한다(``get_bundle_principal`` · 링크는 그 요청 대상에만 통한다).
+bundle_router = APIRouter(tags=["entity"], dependencies=[Depends(get_bundle_principal)])
+_LINK_DESC = "묶음 링크(`POST /bundle-links` 로 받은 것). 헤더 대신 이 링크로 인증한다 — 그 요청 대상(경로 + 조건)에만 통하고 곧 만료된다"
 
 # 질의 길이 상한 — 검색 엔진이 낱말마다 절(clause)을 만들고 **1024개**에서 거절한다
 # (실측 2026-09-21: 2,000자 질의가 OpenSearch RequestError 로 터져 **500** 이 났다).
@@ -242,22 +246,7 @@ def mm_meta_card(
 
 
 # ── 묶음(zip) — 임시 파일 없이 만들면서 흘려 보낸다(``service/portal/asset/bundle_stream.py``) ──────────────
-@router.get("/mm-meta/bundle")
-def download_entities_bundle(
-    entity_type: str | None = Query(None, description="종류(타입) 필터"),
-    areas: str | None = Query(None, description="갈래(개체 라벨) — 모두 가진 개체만(AND · 쉼표 구분)"),
-    labels: str | None = Query(
-        None,
-        description="⚠️ 옛 이름 — `areas` 와 같은 뜻이다. 프론트가 옮겨 갈 때까지 함께 받는다",
-        deprecated=True,
-    ),
-    exclude_video: bool = Query(False, description="영상 제외(용량이 크게 준다)"),
-) -> StreamingResponse:
-    """지금 좁힌 개체들의 구성 자산 전부를 한 zip 으로 내려준다(종류 · 갈래 축은 목록과 같다 — 옛 이름 ``labels`` 도 받는다).
-
-    검색어(``q``) · ``refine`` · ``limit`` 은 받지 않아 검색어로 좁힌 목록에서 부르면 전량이 대상이 된다. 확인 전(proposed) 소속까지 담는다.
-    좁힌 결과가 비면 404 · 경로를 아는 파일이 하나도 없으면 409. 용량 상한은 두지 않는다(2026-10-13 · 동시 묶음 수 제한만 걸린다).
-    """
+def _entities_bundle(entity_type: str | None, areas: str | None, labels: str | None, exclude_video: bool, *, head: bool) -> Response:
     picked = _parse_names(areas) or _parse_names(labels)
     rows: list[dict[str, Any]] = DbManager.read(
         lambda repo: repo.entity.zip_rows(
@@ -274,16 +263,41 @@ def download_entities_bundle(
     if not targets:
         raise HTTPException(status_code=409, detail="내려받을 파일 경로가 없다")
     plan = make_plan(targets)
-    return zip_response(
-        plan,
-        content_disposition=f'attachment; filename="{mm_meta.ascii_zip_name([entity_type or "all", *picked], fallback="meta", count=len(plan.packed))}"',
-        headers=bundle_headers(plan),
-    )
+    disposition = f'attachment; filename="{mm_meta.ascii_zip_name([entity_type or "all", *picked], fallback="meta", count=len(plan.packed))}"'
+    if head:
+        return zip_head_response(content_disposition=disposition, headers=bundle_headers(plan))
+    return zip_response(plan, content_disposition=disposition, headers=bundle_headers(plan))
 
 
-@router.get("/mm-meta/{entity_type}/{entity_uid}/bundle")
-def download_card_bundle(entity_type: str, entity_uid: str) -> StreamingResponse:
-    """개체 카드의 구성 자산을 한 zip 으로 내려준다(건수 상한 없음). 개체가 없으면 404, 담을 파일이 없으면 409."""
+@bundle_router.get("/mm-meta/bundle")
+def download_entities_bundle(
+    entity_type: str | None = Query(None, description="종류(타입) 필터"),
+    areas: str | None = Query(None, description="갈래(개체 라벨) — 모두 가진 개체만(AND · 쉼표 구분)"),
+    labels: str | None = Query(
+        None,
+        description="⚠️ 옛 이름 — `areas` 와 같은 뜻이다. 프론트가 옮겨 갈 때까지 함께 받는다",
+        deprecated=True,
+    ),
+    exclude_video: bool = Query(False, description="영상 제외(용량이 크게 준다)"),
+    link: str | None = Query(None, description=_LINK_DESC),
+) -> Response:
+    """지금 좁힌 개체들의 구성 자산 전부를 한 zip 으로 내려준다(종류 · 갈래 축은 목록과 같다 — 옛 이름 ``labels`` 도 받는다).
+
+    검색어(``q``) · ``refine`` · ``limit`` 은 받지 않아 검색어로 좁힌 목록에서 부르면 전량이 대상이 된다. 확인 전(proposed) 소속까지 담는다.
+    좁힌 결과가 비면 404 · 경로를 아는 파일이 하나도 없으면 409. 용량 상한은 두지 않는다(2026-10-13 · 동시 묶음 수 제한만 걸린다). 헤더 대신 묶음 링크(``link``)로도 받는다.
+    """
+    return _entities_bundle(entity_type, areas, labels, exclude_video, head=False)
+
+
+@bundle_router.head("/mm-meta/bundle", include_in_schema=False)
+def entities_bundle_head(
+    entity_type: str | None = None, areas: str | None = None, labels: str | None = None, exclude_video: bool = False,
+) -> Response:
+    """본문 없이 같은 머리 — 링크를 열기 전에 404 · 409 · 담길 수를 확인한다(동시 묶음 자리 · 접근 기록 없음)."""
+    return _entities_bundle(entity_type, areas, labels, exclude_video, head=True)
+
+
+def _card_bundle(entity_type: str, entity_uid: str, *, head: bool) -> Response:
     result = DbManager.read(
         lambda repo: repo.entity.card_zip_targets(entity_type=entity_type, entity_uid=entity_uid))
     if result is None:
@@ -292,8 +306,19 @@ def download_card_bundle(entity_type: str, entity_uid: str) -> StreamingResponse
     if not targets:
         raise HTTPException(status_code=409, detail="내려받을 파일이 없다(구성 자산 없음 또는 경로 미상)")
     plan = make_plan(targets)
-    return zip_response(
-        plan,
-        content_disposition=f'attachment; filename="{mm_meta.ascii_zip_name([f"mm_meta_{entity_type}", name], fallback="mm_meta", count=len(plan.packed))}"',
-        headers=bundle_headers(plan),
-    )
+    disposition = f'attachment; filename="{mm_meta.ascii_zip_name([f"mm_meta_{entity_type}", name], fallback="mm_meta", count=len(plan.packed))}"'
+    if head:
+        return zip_head_response(content_disposition=disposition, headers=bundle_headers(plan))
+    return zip_response(plan, content_disposition=disposition, headers=bundle_headers(plan))
+
+
+@bundle_router.get("/mm-meta/{entity_type}/{entity_uid}/bundle")
+def download_card_bundle(entity_type: str, entity_uid: str, link: str | None = Query(None, description=_LINK_DESC)) -> Response:
+    """개체 카드의 구성 자산을 한 zip 으로 내려준다(건수 상한 없음). 개체가 없으면 404, 담을 파일이 없으면 409. 헤더 대신 묶음 링크(``link``)로도 받는다."""
+    return _card_bundle(entity_type, entity_uid, head=False)
+
+
+@bundle_router.head("/mm-meta/{entity_type}/{entity_uid}/bundle", include_in_schema=False)
+def card_bundle_head(entity_type: str, entity_uid: str) -> Response:
+    """본문 없이 같은 머리 — 링크를 열기 전에 404 · 409 · 담길 수를 확인한다(동시 묶음 자리 · 접근 기록 없음)."""
+    return _card_bundle(entity_type, entity_uid, head=True)
