@@ -2502,6 +2502,69 @@
       "same_as": "",
       "url": "/assets/bundle/download"
     },
+    "IF-ASSET-18": {
+      "errors": {
+        "404": "그 분류에 등록 완료 자산이 없다 — 「이 분류에 해당하는 자료가 없습니다」(없는 주제와 빈 분류는 같은 문구)",
+        "409": "자산은 있으나 **경로를 아는 파일이 하나도 없다** — 빈 zip 대신 오류로 알린다"
+      },
+      "gubun": "현행 정본",
+      "method": "GET",
+      "name": "분류 묶음",
+      "req": {
+        "Path": [
+          "topic"
+        ],
+        "Query": [
+          "subtopic",
+          "exclude_video",
+          "link"
+        ]
+      },
+      "req_meta": {
+        "exclude_video": {
+          "default": "false",
+          "loc": "Query",
+          "max": null,
+          "min": null,
+          "required": false,
+          "type": "boolean"
+        },
+        "link": {
+          "default": null,
+          "loc": "Query",
+          "max": null,
+          "min": null,
+          "required": false,
+          "type": "string"
+        },
+        "subtopic": {
+          "default": null,
+          "loc": "Query",
+          "max": null,
+          "min": null,
+          "required": false,
+          "type": "string"
+        },
+        "topic": {
+          "default": null,
+          "loc": "Path",
+          "max": null,
+          "min": null,
+          "required": true,
+          "type": "string"
+        }
+      },
+      "resp": {},
+      "resp_alt": {},
+      "resp_kind": {
+        "200": "application/zip"
+      },
+      "resp_meta": {},
+      "resp_nested": {},
+      "resp_opt": {},
+      "same_as": "",
+      "url": "/topics/{topic}/bundle"
+    },
     "IF-AUTH-01": {
       "errors": {
         "409": "이미 쓰는 아이디(대소문자 무관)",

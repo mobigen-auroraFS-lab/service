@@ -104,6 +104,7 @@ def found() -> list[Fixture]:
     img = ensure_image()
     return [
         fixture(_SELECTION_SQL, [{"asset_id": ASSET_ID, "fs_path": str(img)}]),
+        fixture(_TOPIC_BUNDLE_SQL, [{"asset_id": ASSET_ID, "fs_path": str(img)}]),
         fixture(_TARGET_SQL, _target_row(img)),
         fixture(_TAGS_SQL, [{"tag": "한옥", "count": 3}]),
         fixture(_SUGGEST_SQL, [{"value": "역사·문화유산", "kind": "topic", "count": 5}]),
@@ -118,6 +119,15 @@ NONE: list[Fixture] = []                                   # 행 없음 → 404
 
 # 개체 묶음(IF-ENTITY-04)의 대상 질의 — 용량 판정에 쓰는 행을 여기서 공급한다.
 _ENTITY_ASSETS_SQL = (r"SELECT DISTINCT a\.asset_id::text AS asset_id, a\.modality, a\.fs_path")
+
+
+# 분류 묶음(IF-ASSET-18)의 대상 질의.
+_TOPIC_BUNDLE_SQL = r"SELECT DISTINCT a\.asset_id::text AS asset_id, a\.fs_path\s+FROM asset_topic at"
+
+
+def topic_pathless() -> list[Fixture]:
+    """분류에 자산은 있는데 **경로를 아는 파일이 하나도 없다** → 409."""
+    return [fixture(_TOPIC_BUNDLE_SQL, [{"asset_id": ASSET_ID, "fs_path": None}])]
 
 
 def entity_card_empty() -> list[Fixture]:
@@ -198,6 +208,8 @@ ERROR_PROBES: dict[str, list[tuple[str, str, dict, dict | None, dict]]] = {
                     ("파일 없음", "gone", {}, None, {}),
                     ("Range 위반", "found", {}, None, {"Range": "bytes=99999-"})],
     "IF-ASSET-15": [("행 없음", "none", {}, None, {})],
+    "IF-ASSET-18": [("분류에 자료 없음", "none", {}, None, {}),
+                    ("전부 경로 미상", "topic_pathless", {}, None, {})],
     "IF-ASSET-16": [("묶음이 아닌 주소", "found", {}, {"url": "/me"}, {}),
                     ("url 없음", "found", {}, {}, {})],
     "IF-ASSET-17": [("폼이 아님", "found", {}, {"asset_ids": []}, {})],
@@ -267,7 +279,7 @@ UNREACHABLE = {
 
 def fixtures_for(kind: str) -> list[Fixture]:
     return {"found": found(), "none": NONE, "gone": gone(),
-            "entity_pathless": entity_assets_pathless(),
+            "entity_pathless": entity_assets_pathless(), "topic_pathless": topic_pathless(),
             "entity_card_empty": entity_card_empty()}[kind]
 
 
