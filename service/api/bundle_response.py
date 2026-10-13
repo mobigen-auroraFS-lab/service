@@ -1,7 +1,7 @@
 """묶음(zip) 응답 만들기 — 네 묶음 창구가 함께 쓴다.
 
 시작 전에 계획(``plan_bundle``)으로 건수 · 용량 헤더를 정하고, ZIP 은 임시 파일 없이 흘려 보낸다. 동시에 만드는 묶음 수는 프로세스당 제한한다.
-헤더: X-Bundle-Count 와 X-Bundle-Files(같은 값 — 창구마다 달랐던 이름을 둘 다 준다) 담길 수 · X-Bundle-Missing 빠진 수(이름은 ZIP 끝 _manifest.json) · X-Bundle-Bytes 원본 합계 · X-Bundle-Truncated 카드가 200건에서 잘렸을 때.
+헤더: X-Bundle-Count 와 X-Bundle-Files(같은 값 — 창구마다 달랐던 이름을 둘 다 준다) 담길 수 · X-Bundle-Missing 빠진 수(이름은 ZIP 끝 _manifest.json) · X-Bundle-Bytes 원본 합계.
 """
 
 from __future__ import annotations

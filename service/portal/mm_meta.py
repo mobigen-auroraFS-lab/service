@@ -314,13 +314,6 @@ def name_first_keys(
     return {(etype, uid) for etype, uid in keys if uid in wanted}
 
 
-# 카드 한 장을 zip 으로 내보낼 때의 자산 수 상한.
-CARD_BUNDLE_MAX_ASSETS = 200
-
-# 좁힌 대상 전부를 zip 으로 받을 때의 용량 상한 — 자산 크기가 제각각이라 건수가 아니라 용량으로 막는다.
-ENTITIES_BUNDLE_MAX_BYTES = 500 * 1024 * 1024
-
-
 def decode_entity_cursor(token: str, *, scope: str) -> tuple[int, int, str, str]:
     """개체 목록 커서(책갈피)를 풀어 ``(우선 티어, 구성 자산 수, 표기 키, 종류)`` 로 돌려준다.
 
@@ -630,10 +623,10 @@ def _fetch_type_vocab_head(conn: Connection[Any]) -> dict[str, Any]:
 
 def card_zip_targets(
     conn: Connection[Any], *, entity_type: str, entity_uid: str
-) -> tuple[list[dict[str, Any]], str, bool] | None:
-    """카드 한 장의 구성 자산을 zip 대상으로 모은다. ``(대상, 개체 이름, 잘렸는지)`` — 개체가 없으면 ``None``.
+) -> tuple[list[dict[str, Any]], str] | None:
+    """카드 한 장의 구성 자산을 zip 대상으로 모은다. ``(대상, 개체 이름)`` — 개체가 없으면 ``None``.
 
-    코어 묶음이 준 구성 자산 중 경로 조회를 통과하는(등록 완료) 것만 담고, 상한을 넘으면 앞에서부터 잘라 잘렸음을 알린다.
+    코어 묶음이 준 구성 자산 중 경로 조회를 통과하는(등록 완료) 것만 담는다. 건수 상한은 두지 않는다(2026-10-13).
     """
     bundle = mm_meta_bundle(conn, entity_type=entity_type, entity_uid=entity_uid)
     if bundle is None:
@@ -645,15 +638,13 @@ def card_zip_targets(
             aid = str(item.get("asset_id") or "")
             if aid and aid not in asset_ids:
                 asset_ids.append(aid)
-    truncated = len(asset_ids) > CARD_BUNDLE_MAX_ASSETS
-    asset_ids = asset_ids[:CARD_BUNDLE_MAX_ASSETS]
     paths = fetch_asset_paths(conn, asset_ids)
     targets = [
         {"asset_id": aid, "fs_path": paths[aid], "file_name": display_file_name(paths[aid])}
         for aid in asset_ids
         if aid in paths
     ]
-    return targets, str(bundle.get("name") or entity_uid), truncated
+    return targets, str(bundle.get("name") or entity_uid)
 
 
 def entities_zip_rows(

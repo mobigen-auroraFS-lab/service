@@ -12,5 +12,5 @@ CORS_ALLOW_HEADERS: tuple[str, ...] = ("Authorization", "Content-Type", "Range",
 CORS_EXPOSE_HEADERS: tuple[str, ...] = (
     REQUEST_ID_HEADER, "Content-Disposition", "Content-Range", "Accept-Ranges", "ETag",
     # 묶음(zip) 응답: 담긴 수 · 빠진 수 · 원본 합계 · 잘림 — 화면이 받은 zip 이 온전한지 맞춰 본다(``bundle_response``).
-    "X-Bundle-Count", "X-Bundle-Files", "X-Bundle-Missing", "X-Bundle-Bytes", "X-Bundle-Truncated",
+    "X-Bundle-Count", "X-Bundle-Files", "X-Bundle-Missing", "X-Bundle-Bytes",
 )

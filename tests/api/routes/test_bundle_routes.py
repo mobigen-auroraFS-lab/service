@@ -169,7 +169,7 @@ class TestEntityBundles(_Base):
         self.assertIn("person", r.headers["content-disposition"])
         self.assertTrue(r.headers["content-disposition"].isascii())           # 한글 이름은 헤더에서 깨지므로 ASCII 만
 
-    def test_좁힌_결과가_비면_404_용량_초과면_413_경로가_없으면_409(self) -> None:
+    def test_좁힌_결과가_비면_404_경로가_없으면_409_용량_상한은_없다(self) -> None:
         def run(rows):
             class _Entity:
                 def zip_rows(self, **kw):
@@ -180,9 +180,7 @@ class TestEntityBundles(_Base):
                 return self.client.get("/mm-meta/bundle")
         self.assertEqual(404, run([]).status_code)
         big = [{"asset_id": A1, "modality": "video", "file_name": "v.mp4", "file_size": 600 * 1024 * 1024, "fs_path": "/x"}]
-        r = run(big)
-        self.assertEqual(413, r.status_code)
-        self.assertIn("영상을 제외", r.json()["detail"])
+        self.assertNotEqual(413, run(big).status_code, "용량 상한을 없앴다(2026-10-13) — DB 에 적힌 크기가 커도 거절하지 않는다")
         self.assertEqual(409, run([{"asset_id": A1, "modality": "text", "file_name": "a", "file_size": 1, "fs_path": None}]).status_code)
 
     def test_옛_이름_labels도_받는다(self) -> None:
@@ -198,24 +196,37 @@ class TestEntityBundles(_Base):
             self.client.get("/mm-meta/bundle", params={"labels": "배우,감독"})
         self.assertEqual(["배우", "감독"], seen["areas"])
 
-    def test_카드_묶음과_잘림_헤더(self) -> None:
+    def test_카드_묶음_헤더(self) -> None:
         t = [{"asset_id": A1, "fs_path": self.make("a.txt", b"A"), "file_name": "a.txt"}]
 
         class _Entity:
-            def __init__(self, truncated): self._tr = truncated
             def card_zip_targets(self, **kw):
-                return (t, "이순신", self._tr)
-        for truncated in (False, True):
-            with self.subTest(truncated=truncated):
-                class _Repo:
-                    entity = _Entity(truncated)
-                with mock.patch.object(routes_mm_meta.DbManager, "read", side_effect=lambda fn: fn(_Repo())):
-                    r = self.client.get("/mm-meta/person/u1/bundle")
-                self.assertEqual(200, r.status_code)
-                self.assertEqual("1", r.headers["x-bundle-count"])
-                self.assertEqual("1", r.headers["x-bundle-files"])
-                self.assertEqual("200" if truncated else None, r.headers.get("x-bundle-truncated"))
-                self.assertTrue(r.headers["content-disposition"].isascii())
+                return (t, "이순신")
+
+        class _Repo:
+            entity = _Entity()
+        with mock.patch.object(routes_mm_meta.DbManager, "read", side_effect=lambda fn: fn(_Repo())):
+            r = self.client.get("/mm-meta/person/u1/bundle")
+        self.assertEqual(200, r.status_code)
+        self.assertEqual("1", r.headers["x-bundle-count"])
+        self.assertEqual("1", r.headers["x-bundle-files"])
+        self.assertNotIn("x-bundle-truncated", r.headers, "건수 상한을 없앴다(2026-10-13) — 잘림 헤더도 없다")
+        self.assertTrue(r.headers["content-disposition"].isascii())
+
+    def test_카드_묶음은_200건을_넘어도_자르지_않는다(self) -> None:
+        many = [{"asset_id": f"018f0000-0000-7000-8000-{i:012d}", "fs_path": self.make(f"f{i}.txt", b"x"), "file_name": f"f{i}.txt"}
+                for i in range(250)]
+
+        class _Entity:
+            def card_zip_targets(self, **kw):
+                return (many, "큰 개체")
+
+        class _Repo:
+            entity = _Entity()
+        with mock.patch.object(routes_mm_meta.DbManager, "read", side_effect=lambda fn: fn(_Repo())):
+            r = self.client.get("/mm-meta/person/u1/bundle")
+        self.assertEqual("250", r.headers["x-bundle-count"])
+        self.assertEqual(250, len([n for n in self.zip_of(r).namelist() if n != "_manifest.json"]))
 
     def test_카드_묶음_오류(self) -> None:
         def run(result):
@@ -227,13 +238,13 @@ class TestEntityBundles(_Base):
             with mock.patch.object(routes_mm_meta.DbManager, "read", side_effect=lambda fn: fn(_Repo())):
                 return self.client.get("/mm-meta/person/u1/bundle")
         self.assertEqual(404, run(None).status_code)
-        self.assertEqual(409, run(([], "이름", False)).status_code)
+        self.assertEqual(409, run(([], "이름")).status_code)
 
 
 class TestCorsExposeBundle(unittest.TestCase):
     def test_묶음_헤더를_화면이_읽을_수_있다(self) -> None:
         from service.api import CORS_EXPOSE_HEADERS
-        for h in ("X-Bundle-Count", "X-Bundle-Files", "X-Bundle-Missing", "X-Bundle-Bytes", "X-Bundle-Truncated"):
+        for h in ("X-Bundle-Count", "X-Bundle-Files", "X-Bundle-Missing", "X-Bundle-Bytes"):
             self.assertIn(h, CORS_EXPOSE_HEADERS)
 
 
