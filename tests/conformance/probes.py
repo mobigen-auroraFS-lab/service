@@ -120,13 +120,6 @@ NONE: list[Fixture] = []                                   # 행 없음 → 404
 _ENTITY_ASSETS_SQL = (r"SELECT DISTINCT a\.asset_id::text AS asset_id, a\.modality, a\.fs_path")
 
 
-def entity_assets_huge() -> list[Fixture]:
-    """개체 구성 자산이 **상한을 넘는 용량**으로 잡힌다 → 413."""
-    return [fixture(_ENTITY_ASSETS_SQL,
-                    [{"asset_id": ASSET_ID, "modality": "video", "fs_path": "/tmp/huge.mp4",
-                      "file_size": 900 * 1024 * 1024}])]
-
-
 def entity_card_empty() -> list[Fixture]:
     """개체는 있는데 **구성 자산이 하나도 없다** → 409(빈 zip 대신 오류로 알린다)."""
     return [fixture(r"SELECT node_id,\s+COALESCE\(NULLIF\(canonical->>'name'",
@@ -195,7 +188,7 @@ ERROR_PROBES: dict[str, list[tuple[str, str, dict, dict | None, dict]]] = {
                     ("confidence 범위 밖", "found", {"min_confidence": "5"}, None, {}),
                     ("날짜 형식 오류", "found", {"from": "notadate"}, None, {})],
     "IF-ADMIN-17": [("status 오타", "found", {"status": "bogus"}, None, {})],
-    # 개체 묶음·카드 — 좁힌 결과가 비면 404, 용량 상한 초과면 413, 경로를 아는 파일이 없으면 409
+    # 개체 묶음·카드 — 좁힌 결과가 비면 404, 경로를 아는 파일이 없으면 409
     "IF-ENTITY-02": [("modalities 오타", "found", {"modalities": "pdf"}, None, {})],
     "IF-ENTITY-05": [("개체 없음", "none", {}, None, {})],
     # 원본 다운로드 · 묶음 네 창구(묶음은 임시 파일 없이 만들면서 흘려 보낸다).
@@ -208,7 +201,6 @@ ERROR_PROBES: dict[str, list[tuple[str, str, dict, dict | None, dict]]] = {
                     ("UUID 아님", "found", {}, {"asset_ids": ["nope"]}, {}),
                     ("전부 노출 대상 아님", "none", {}, {"asset_ids": [ASSET_ID]}, {})],
     "IF-ENTITY-04": [("좁힌 결과 없음", "none", {}, None, {}),
-                     ("용량 상한 초과", "entity_huge", {}, None, {}),
                      ("전부 경로 미상", "entity_pathless", {}, None, {})],
     "IF-ENTITY-06": [("개체 없음", "none", {}, None, {}),
                      ("구성 자산 없음", "entity_card_empty", {}, None, {})],
@@ -270,7 +262,7 @@ UNREACHABLE = {
 
 def fixtures_for(kind: str) -> list[Fixture]:
     return {"found": found(), "none": NONE, "gone": gone(),
-            "entity_huge": entity_assets_huge(), "entity_pathless": entity_assets_pathless(),
+            "entity_pathless": entity_assets_pathless(),
             "entity_card_empty": entity_card_empty()}[kind]
 
 

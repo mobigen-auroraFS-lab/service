@@ -75,7 +75,7 @@ def _external_patches(*, mm_meta_stubs: bool = True):
         }),
         patch.object(mm_meta, "card_zip_targets", lambda *a, **k: (
             [{"asset_id": probes.ASSET_ID, "fs_path": img, "file_name": "photo.jpg"}],
-            "card", False)),
+            "card")),
         patch.object(mm_meta, "entities_zip_rows", lambda *a, **k: [
             {"asset_id": probes.ASSET_ID, "fs_path": img, "file_name": "photo.jpg",
              "file_size": 512, "modality": "image", "entity_type": "person",
