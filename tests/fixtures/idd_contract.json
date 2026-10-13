@@ -1528,6 +1528,9 @@
       "req": {
         "Path": [
           "asset_id"
+        ],
+        "Query": [
+          "link"
         ]
       },
       "req_meta": {
@@ -1538,6 +1541,14 @@
           "min": null,
           "required": true,
           "type": "string(UUID)"
+        },
+        "link": {
+          "default": null,
+          "loc": "Query",
+          "max": null,
+          "min": null,
+          "required": false,
+          "type": "string"
         }
       },
       "resp": {},
@@ -2391,6 +2402,105 @@
       "resp_opt": {},
       "same_as": "",
       "url": "/assets/{asset_id}/download-link"
+    },
+    "IF-ASSET-16": {
+      "errors": {
+        "400": "묶음 창구가 아닌 주소 · 절대 주소 · 메서드가 맞지 않음 — 「묶음 링크를 받을 수 없는 주소입니다 …」. 대상이 있는지는 보지 않는다(받을 때 404 · 409)",
+        "401": "인증 필요 — 헤더 없음 · 틀린 토큰. **링크로는 이 창구를 못 연다**",
+        "422": "본문 형식 오류 — `url` 없음 · `method` 가 GET · POST 가 아님"
+      },
+      "gubun": "현행 정본",
+      "method": "POST",
+      "name": "묶음 다운로드 링크",
+      "req": {
+        "Body": [
+          "method",
+          "url"
+        ]
+      },
+      "req_meta": {
+        "method": {
+          "default": null,
+          "loc": "Body",
+          "max": null,
+          "min": null,
+          "required": false,
+          "type": "string"
+        },
+        "url": {
+          "default": null,
+          "loc": "Body",
+          "max": null,
+          "min": null,
+          "required": true,
+          "type": "string"
+        }
+      },
+      "resp": {
+        "200": [
+          "url",
+          "method",
+          "expires_in"
+        ]
+      },
+      "resp_alt": {},
+      "resp_kind": {},
+      "resp_meta": {
+        "200": {
+          "expires_in": "integer",
+          "method": "string",
+          "url": "string"
+        }
+      },
+      "resp_nested": {},
+      "resp_opt": {},
+      "same_as": "",
+      "url": "/bundle-links"
+    },
+    "IF-ASSET-17": {
+      "errors": {
+        "400": "폼이 아님(`application/x-www-form-urlencoded` 가 아니다) · 빈 목록 · UUID 형식이 아닌 값",
+        "401": "인증 필요 — 링크도 헤더도 없음 · 틀리거나 만료된 링크 · 다른 요청 대상용 링크"
+      },
+      "gubun": "현행 정본",
+      "method": "POST",
+      "name": "고른 자산 묶음 · 폼 제출",
+      "req": {
+        "Body": [
+          "asset_ids"
+        ],
+        "Query": [
+          "link"
+        ]
+      },
+      "req_meta": {
+        "asset_ids": {
+          "default": null,
+          "loc": "Body",
+          "max": null,
+          "min": null,
+          "required": true,
+          "type": "string[]"
+        },
+        "link": {
+          "default": null,
+          "loc": "Query",
+          "max": null,
+          "min": null,
+          "required": false,
+          "type": "string"
+        }
+      },
+      "resp": {},
+      "resp_alt": {},
+      "resp_kind": {
+        "200": "application/zip"
+      },
+      "resp_meta": {},
+      "resp_nested": {},
+      "resp_opt": {},
+      "same_as": "",
+      "url": "/assets/bundle/download"
     },
     "IF-AUTH-01": {
       "errors": {
@@ -3291,7 +3401,8 @@
           "entity_type",
           "areas",
           "labels",
-          "exclude_video"
+          "exclude_video",
+          "link"
         ]
       },
       "req_meta": {
@@ -3320,6 +3431,14 @@
           "type": "boolean"
         },
         "labels": {
+          "default": null,
+          "loc": "Query",
+          "max": null,
+          "min": null,
+          "required": false,
+          "type": "string"
+        },
+        "link": {
           "default": null,
           "loc": "Query",
           "max": null,
@@ -3393,6 +3512,9 @@
         "Path": [
           "entity_type",
           "entity_uid"
+        ],
+        "Query": [
+          "link"
         ]
       },
       "req_meta": {
@@ -3410,6 +3532,14 @@
           "max": null,
           "min": null,
           "required": true,
+          "type": "string"
+        },
+        "link": {
+          "default": null,
+          "loc": "Query",
+          "max": null,
+          "min": null,
+          "required": false,
           "type": "string"
         }
       },
