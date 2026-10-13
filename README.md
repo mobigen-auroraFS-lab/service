@@ -105,7 +105,7 @@ zip 맨 끝 `_manifest.json` 에 적으며, 건수는 `X-Bundle-*` 응답 머리
 | `GET /assets/{id}/bundle` | 이 자산과 관계된 자산을 zip 하나로 |
 | `POST /assets/bundle` | 고른 자산 여러 개를 zip 하나로(JSON 본문 · 헤더 인증) |
 | `POST /assets/bundle/download` | 같은 일을 **폼 제출**로(묶음 링크로 인증 — 큰 묶음을 브라우저가 직접 받는다) |
-| `GET /topics/{topic}/bundle` | 한 분류(주제 · 하위주제)의 등록 완료 자산 전부를 zip 하나로 — 상세의 「분류 묶음」(`?subtopic=` · `exclude_video`) |
+| `GET /topics/{topic}/bundle` | 한 분류(주제 · 하위주제)의 등록 완료 자산 전부를 zip 하나로 — 상세의 「분류 묶음」(`?subtopic=` · `exclude_video`). `subtopic` 를 안 주면 주제 전체, **빈 값(`subtopic=`)이면 하위주제가 없는 자산만**(상세가 「하위주제 없음」으로 보이는 파일) |
 | `POST /bundle-links` | 묶음(zip)을 헤더 없이 받는 짧은 수명의 주소를 준다 |
 | `GET /mm-meta/bundle` · `/mm-meta/{type}/{uid}/bundle` | 개체들 · 개체 카드의 구성 자산을 zip 하나로 |
 

@@ -66,12 +66,17 @@ class AssetRepository(Repository):
     def topic_bundle_targets(self, *, topic: str, subtopic: str | None, exclude_video: bool) -> list[dict[str, Any]]:
         """분류(주제 · 하위주제) 묶음 대상 — 그 분류의 등록 완료 자산 전부(자산 id 순). ``fs_path`` 가 없는 행도 그대로 준다(빼는 판단은 호출부).
 
-        ``subtopic`` 이 없으면 주제 전체. 분류 자체가 없으면 빈 목록(호출부가 404).
+        ``subtopic`` 은 세 가지다 — ``None`` 이면 주제 전체 · **빈 문자열이면 하위주제가 없는 자산만**(상세가 「주제 · 하위주제 없음」으로 보이는 자료) · 값이 있으면 그 하위주제.
+        분류 자체가 없으면 빈 목록(호출부가 404).
         """
-        sql = _TOPIC_BUNDLE_SQL.format(
-            sub=" AND at.subtopic_ko = %s" if subtopic else "",
-            video=" AND a.modality <> 'video'" if exclude_video else "")
-        rows = self.rows(sql, (topic, subtopic) if subtopic else (topic,))
+        if subtopic is None:
+            sub, args = "", (topic,)
+        elif subtopic == "":
+            sub, args = " AND COALESCE(at.subtopic_ko, '') = ''", (topic,)
+        else:
+            sub, args = " AND at.subtopic_ko = %s", (topic, subtopic)
+        sql = _TOPIC_BUNDLE_SQL.format(sub=sub, video=" AND a.modality <> 'video'" if exclude_video else "")
+        rows = self.rows(sql, args)
         return [{"asset_id": r["asset_id"], "fs_path": r["fs_path"],
                  "file_name": display_file_name(r["fs_path"]) if r["fs_path"] else None} for r in rows]
 
