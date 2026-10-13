@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
+import time
 from collections.abc import Mapping, Sequence
 from typing import Any, NamedTuple
 
@@ -36,6 +38,7 @@ from src.relations.graph_query import (
     list_entities,
     mm_meta_bundle,
 )
+from src.relations.schema import MM_MEMBER_KIND_CODE
 from src.search.cursor import CursorError, decode_cursor, encode_cursor
 from src.search.entity_search_os import EntityMatchSet, match_entity_keys
 from src.search.facets import aggregate_facets
@@ -89,6 +92,92 @@ def form_skill_codes() -> tuple[str, ...]:
     raw = os.getenv(FORM_SKILLS_ENV, "")
     codes = tuple(c.strip() for c in raw.split(",") if c.strip())
     return codes or DEFAULT_FORM_SKILL_CODES
+
+
+# ── 자료 유형(모달리티) 좁히기 ────────────────────────────────────────────────
+
+# 고를 수 있는 자료 유형 — 문서 · 이미지 · 영상 · 음성(자산의 modality 값). 개체 항목의 ``modalities`` 와 같은 값이다.
+MODALITY_CODES: tuple[str, ...] = ("text", "image", "video", "audio")
+
+# 개체별 보유 자료 유형 캐시 수명(초). 0 이면 캐시하지 않는다. 파이프라인이 새로 적재하면 최대 이 시간 동안 건수가 늦게 반영된다.
+MODALITY_CACHE_ENV = "PORTAL_MODALITY_CACHE_SECONDS"
+MODALITY_CACHE_DEFAULT = 300.0
+
+# 개체마다 구성 자산의 자료 유형 집합 — 코어 목록의 ``modalities``(ARRAY_AGG(DISTINCT a.modality))와 **같은 엣지 · 같은 상태**로 모은다.
+# 노출 임계 · 종류 · 갈래는 걸지 않는다(그것은 코어 목록 · 개수 질의가 허용 목록과 함께 적용한다). 개체 약 2천 개에서 2초쯤 걸려 캐시한다.
+# ⚠️ 코어가 허용 목록(``uid_allow``)에 이 조건을 직접 받게 되면 이 질의와 캐시는 없앤다(체크리스트 「코어」).
+_ENTITY_MODALITIES_SQL = """
+SELECT n.entity_type, n.entity_uid, ARRAY_AGG(DISTINCT a.modality) AS modalities
+  FROM node n
+  JOIN graph_edge ge    ON ge.dst_node = n.node_id
+  JOIN relation_kind rk ON rk.relation_kind_id = ge.relation_kind_id
+  JOIN node sn          ON sn.node_id = ge.src_node
+  JOIN asset a          ON a.asset_id = sn.asset_id
+ WHERE n.node_kind = 'entity' AND rk.kind_code = %(kind)s AND ge.status = ANY(%(statuses)s)
+ GROUP BY n.entity_type, n.entity_uid
+"""
+
+# 구성 엣지 상태 — 코어 목록의 기본값(active + proposed)과 같아야 ``modalities`` 배열과 어긋나지 않는다(코어의 밑줄 이름은 가져오지 않는다).
+_MODALITY_EDGE_STATUSES = ("active", "proposed")
+
+_modality_lock = threading.Lock()
+_modality_cache: dict[str, Any] = {"at": 0.0, "map": None}
+
+
+def parse_modalities(raw: str | None) -> list[str]:
+    """쉼표로 이은 자료 유형 목록을 파싱한다(중복 제거 · 정렬). 알 수 없는 값이 있으면 ``ValueError``(라우트가 422)."""
+    names = sorted({x.strip().lower() for x in (raw or "").split(",") if x.strip()})
+    bad = [n for n in names if n not in MODALITY_CODES]
+    if bad:
+        raise ValueError(f"modalities 는 {', '.join(MODALITY_CODES)} 중에서 쉼표로 골라야 합니다(알 수 없는 값: {', '.join(bad)})")
+    return names
+
+
+def _modality_ttl() -> float:
+    try:
+        return max(0.0, float(os.getenv(MODALITY_CACHE_ENV, MODALITY_CACHE_DEFAULT)))
+    except ValueError:
+        return MODALITY_CACHE_DEFAULT
+
+
+def entity_modality_map(conn: Connection[Any]) -> dict[tuple[str, str], frozenset[str]]:
+    """``{(종류, 표기): 보유 자료 유형 집합}`` — 수명 안이면 캐시를 준다(프로세스 안 · 한 번에 한 요청만 새로 읽는다)."""
+    ttl = _modality_ttl()
+    with _modality_lock:
+        cached = _modality_cache["map"]
+        if cached is not None and ttl > 0 and time.monotonic() - _modality_cache["at"] < ttl:
+            return cached
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(_ENTITY_MODALITIES_SQL, {"kind": MM_MEMBER_KIND_CODE, "statuses": list(_MODALITY_EDGE_STATUSES)})
+            rows = cur.fetchall()
+        fresh = {(str(r["entity_type"]), str(r["entity_uid"])): frozenset(str(m) for m in (r["modalities"] or []) if m) for r in rows}
+        _modality_cache["map"], _modality_cache["at"] = fresh, time.monotonic()
+        return fresh
+
+
+def reset_modality_cache() -> None:
+    """캐시를 비운다(시험 · 운영 점검용)."""
+    with _modality_lock:
+        _modality_cache["map"], _modality_cache["at"] = None, 0.0
+
+
+def modality_allow(conn: Connection[Any], modalities: Sequence[str] | None) -> set[tuple[str, str]] | None:
+    """고른 자료 유형을 **모두** 가진 개체 집합(허용 목록). 고른 것이 없으면 ``None``(필터 없음) — 빈 집합(0건)과 섞지 않는다."""
+    if not modalities:
+        return None
+    want = frozenset(modalities)
+    return {key for key, have in entity_modality_map(conn).items() if want <= have}
+
+
+def intersect_allow(
+    a: set[tuple[str, str]] | None, b: set[tuple[str, str]] | None
+) -> set[tuple[str, str]] | None:
+    """허용 목록 둘의 교집합 — ``None``(필터 없음)은 상대를 그대로 둔다. 빈 집합은 0건이라 ``None`` 으로 접지 않는다."""
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return a & b
 
 
 # ── 목록 ─────────────────────────────────────────────────────────────────────
@@ -179,11 +268,11 @@ def fetch_total(
 
 def entity_cursor_scope(
     *, q: str | None, refine: str | None, entity_type: str | None,
-    areas: Sequence[str] | None, min_bundle_size: int,
+    areas: Sequence[str] | None, min_bundle_size: int, modalities: Sequence[str] | None = None,
 ) -> str:
     """이번 결과 집합을 정의하는 조건 전부를 문자열 하나로 모은다(커서 조건 지문 재료). 코어는 이 문자열의 지문만 커서에 싣는다.
 
-    넣은 것: ``q`` · ``refine``(결과 집합을 정한다) · ``entity_type`` · ``areas``(정렬해 담는다) · ``min_bundle_size``. 우선 티어는 ``q``/``refine`` 에서 파생되므로 넣지 않는다.
+    넣은 것: ``q`` · ``refine``(결과 집합을 정한다) · ``entity_type`` · ``areas`` · ``modalities``(정렬해 담는다 · 고른 것이 있을 때만) · ``min_bundle_size``. 우선 티어는 ``q``/``refine`` 에서 파생되므로 넣지 않는다.
     뺀 것: ``limit``(집합을 바꾸지 않는다) · 정렬 이름(코어 커서가 따로 대조한다).
     ⚠️ 조건을 늘리면 여기도 늘린다 — 빠뜨리면 그 조건만 바뀐 커서가 조용히 통과해 자료가 빠진다.
     """
@@ -194,6 +283,8 @@ def entity_cursor_scope(
         "areas": sorted(str(a) for a in (areas or [])),
         "min_bundle_size": int(min_bundle_size),
     }
+    if modalities:      # 고른 것이 없으면 키를 넣지 않는다 — 종전 커서의 지문이 그대로 유효하다
+        material["modalities"] = sorted(str(m) for m in modalities)
     return json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
@@ -470,11 +561,14 @@ def fetch_facets(
     entity_type: str | None,
     areas: Sequence[str] | None,
     min_bundle_size: int,
+    modalities: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """좁히기 축 둘의 건수 — 종류(타입)와 갈래(개체 라벨). 둘 다 개체에 붙어 있어 좁혀도 개체가 쪼개지지 않는다.
 
     종류 칩(단일 선택)은 조건을 적용하지 않고 센다(갈아타는 축이라 "이 종류로 갈아타면 몇 개"가 필요하다). 갈래 칩(다중 · AND)은 고른 종류와 갈래를 적용한 뒤 센다(누르면 나올 수).
-    ``min_bundle_size`` 는 목록과 같은 값을 준다. ``{vocab, types, areas, min_members, scoped_by}`` — ``types`` 는 어휘 순서 그대로이고 개체가 없는 종류도 0 으로 담으며, 0건 갈래도 담는다(커버리지 갭 신호).
+    자료 유형 칩(다중 · AND)은 고른 종류 · 갈래 · 이미 고른 자료 유형을 적용한 뒤 "이 칩을 더 누르면 몇 개"를 센다(이미 고른 칩은 지금 결과 수와 같다). 네 유형을 모두 싣고 0건도 담는다.
+    ⚠️ 갈래 칩 건수는 자료 유형 조건을 적용하지 않는다 — 코어의 갈래 개수 질의가 허용 목록을 받지 않는다(체크리스트 「코어」).
+    ``min_bundle_size`` 는 목록과 같은 값을 준다. ``{vocab, types, areas, modalities, min_members, scoped_by}`` — ``types`` 는 어휘 순서 그대로이고 개체가 없는 종류도 0 으로 담으며, 0건 갈래도 담는다(커버리지 갭 신호).
     """
     picked = [str(a) for a in (areas or []) if str(a).strip()]
     head = _fetch_type_vocab_head(conn)
@@ -483,6 +577,13 @@ def fetch_facets(
         conn, entity_type=entity_type, area_names=picked or None,
         min_bundle_size=min_bundle_size,
     )
+    picked_mods = list(modalities or [])
+    modality_counts = [
+        {"name": m, "entities": count_entities(
+            conn, entity_type=entity_type, area_names=picked or None, min_bundle_size=min_bundle_size,
+            uid_allow=modality_allow(conn, sorted({*picked_mods, m})))}
+        for m in MODALITY_CODES
+    ]
     return {
         "vocab": head["vocab"],
         "types": [
@@ -499,8 +600,9 @@ def fetch_facets(
              "entities": r["count"]}
             for r in area_rows
         ],
+        "modalities": modality_counts,
         "min_members": min_bundle_size,
-        "scoped_by": {"entity_type": entity_type, "areas": picked},
+        "scoped_by": {"entity_type": entity_type, "areas": picked, "modalities": picked_mods},
     }
 
 

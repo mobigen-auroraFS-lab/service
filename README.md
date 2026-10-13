@@ -92,9 +92,9 @@ experiments/          # 파일 전송 방식 실험(측정기 · 실험 서버 �
 | `GET /assets/unclassified` | 분류되지 않은 자산 |
 | `GET /topics` | 주제 목록. 대주제와 세부주제를 자산 수와 함께 |
 | `GET /topics/{topic}` | 그 주제에 속한 자산 |
-| `GET /mm-meta` | 개체 목록 |
+| `GET /mm-meta` | 개체 목록 · `modalities=image,video` 로 고른 자료 유형을 **모두** 가진 개체만(AND) |
 | `GET /mm-meta/{type}/{uid}` | 개체 상세 |
-| `GET /mm-meta/facets` | 개체 칩 집계 |
+| `GET /mm-meta/facets` | 개체 칩 집계(종류 · 갈래 · 자료 유형). 자료 유형 칩 건수 = 이미 고른 조건에서 그 칩을 더 눌렀을 때 나오는 개체 수 |
 | `GET /tags` · `/relation-kinds` | 태그·관계 종류 목록 |
 
 여러 파일을 zip 하나로 받는 창구입니다(만들면서 바로 흘려 보냅니다 · 고른 자산 묶음은 건수 · 용량 상한이 없습니다 — 요청 본문 1MiB 와 동시 묶음 수 제한만 걸립니다). 읽을 수 없는 파일은 빼고
@@ -191,6 +191,7 @@ TEXT_EMBED_NORMALIZE=true
 | `PORTAL_ZIP_READ_WINDOW` · `PORTAL_ZIP_FILES_AHEAD` | 저장소 읽기 지연이 클 때만 켭니다. 큰 파일 한 개를 조각 N 개로 동시에 읽기 · 다음 파일 N 개를 미리 읽기. 기본은 둘 다 꺼짐 |
 | `PORTAL_ROLE` | `all`(기본) · `api`(파일 창구 뺀 나머지) · `files`(원본 · 묶음 zip만). 파일 창구를 별도 프로세스로 띄울 때 씁니다 — 아래 「파일 창구를 따로 띄우기」 |
 | `PORTAL_DB_STATEMENT_TIMEOUT_MS` | DB 질의 한 건의 시간 제한. 기본 30000(30초), `0` 이면 제한 없음. 넘으면 DB 가 질의를 취소하고 요청은 503 입니다 |
+| `PORTAL_MODALITY_CACHE_SECONDS` | 개체별 보유 자료 유형(`modalities` 좁히기 · 칩 건수)의 캐시 수명. 기본 300초, `0` 이면 캐시하지 않는다(읽기가 2초쯤 걸린다). 파이프라인이 새로 적재하면 최대 이 시간 동안 건수가 늦게 반영된다 |
 | `PORTAL_BUNDLE_MAX_CONCURRENT` | 프로세스당 동시에 만드는 묶음(zip) 수. 기본은 코어 수의 절반(2~8), `0` 이면 제한 없음. 넘으면 기다리지 않고 503 + `Retry-After` |
 | `PORTAL_DOWNLOAD_LINK_TTL_SECONDS` | 다운로드 링크(`POST /assets/{id}/download-link`)의 수명. 기본 300초(30~3600) |
 | `PORTAL_ALLOWED_CLIENT_CIDRS` | 접속을 허용할 네트워크(쉼표로 나열, 예: `172.16.0.0/24`). 비우면 제한 없음, 이 장비(루프백)는 늘 허용. **인증을 끈 개발 서버를 사내망에 열어 둘 때** 씁니다. 프록시 뒤에서는 쓰지 못합니다 |

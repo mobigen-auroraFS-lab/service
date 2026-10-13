@@ -37,6 +37,16 @@ _QUERY_MAX_LEN = 300
 _MIN_BUNDLE_SIZE = MIN_BUNDLE_SIZE
 
 
+def _parse_modalities(raw: str | None) -> list[str]:
+    """고른 자료 유형 — 알 수 없는 값은 422(고칠 수 있는 입력 오류). 문자열이 아니면(라우트 함수를 직접 부를 때의 기본값) 고른 것이 없다."""
+    if not isinstance(raw, str):
+        return []
+    try:
+        return mm_meta.parse_modalities(raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 def _parse_names(raw: str | None) -> list[str]:
     """쉼표로 이은 이름 목록을 파싱한다(빈 값 · 공백 제거). ``None`` · 빈 값이면 빈 목록."""
     return [x.strip() for x in (raw or "").split(",") if x.strip()]
@@ -58,6 +68,14 @@ def list_mm_meta(
         description=(
             "갈래(개체에 붙은 분류 라벨) — 쉼표로 이어 보내면 **모두** 가진 개체만 남는다(AND)."
             " 자산에 붙은 라벨이 아니라 개체에 붙은 라벨이라 좁혀도 개체가 쪼개지지 않는다."
+        ),
+    ),
+    modalities: str | None = Query(
+        None,
+        description=(
+            "자료 유형 — text · image · video · audio 를 쉼표로 이어 보내면 **모두** 가진 개체만 남는다(AND)."
+            " 개체 항목의 ``modalities`` 배열 기준이다. 종류 · 갈래 · 검색어와 함께 걸린다."
+            " 🔴 조건이라 바뀌면 커서는 무효(400). 알 수 없는 값은 422"
         ),
     ),
     refine: str | None = Query(
@@ -104,13 +122,14 @@ def list_mm_meta(
         HTTPException: 커서가 깨졌거나 정렬 · 조건이 어긋나면 400 · 집합 판정 실패(엔진 · 임베딩 연결 실패 · 되돌림 백엔드)는 503(전체 목록으로 되돌리지 않는다).
     """
     picked_areas = _parse_names(areas)
+    picked_mods = _parse_modalities(modalities)
     # 커서에 실을 **조건 지문 재료**(099 G7) — 이번 결과 집합을 정의하는 것 전부를 한 문자열로.
     #   같은 값을 되읽기와 다음 커서 발급에 함께 쓴다(두 곳이 갈라지면 서버가 준 커서를 서버가
     #   거부한다). 무엇이 재료이고 무엇을 뺐는지는 `mm_meta.entity_cursor_scope` 주석에 있다.
     cursor = params.cursor_or_none(cursor)   # 빈 커서(cursor=)는 커서 없음(첫 쪽) — "커서가 비었다" 400 이 아니다
     scope_material = mm_meta.entity_cursor_scope(
         q=q, refine=refine, entity_type=entity_type, areas=picked_areas,
-        min_bundle_size=_MIN_BUNDLE_SIZE)
+        min_bundle_size=_MIN_BUNDLE_SIZE, modalities=picked_mods)
     after_tier: int | None = None
     after_count: int | None = None
     after_uid: str | None = None
@@ -147,21 +166,25 @@ def list_mm_meta(
 
     def _read(repo: Any) -> tuple[list[dict[str, Any]], int, int]:
         """이 쪽의 행과 두 모수를 한 트랜잭션에서 읽는다(세 값이 서로 다른 시점을 말하지 않게) — ``(목록, 좁히기 이후 모수, 이전 모수)``."""
+        # 자료 유형 조건은 검색 집합에 **교집합**으로 얹는다(None = 걸지 않음 — 빈 집합과 섞지 않는다).
+        mod_allow = repo.entity.modality_allow(picked_mods)
+        uid_allow = mm_meta.intersect_allow(scope.uid_allow, mod_allow)
+        scope_allow = mm_meta.intersect_allow(scope.scope_allow, mod_allow)
         page = repo.entity.page(
             entity_type=entity_type, areas=picked_areas,
             min_bundle_size=_MIN_BUNDLE_SIZE, limit=limit,
             after_tier=after_tier, after_count=after_count,
             after_uid=after_uid, after_type=after_type,
-            uid_allow=scope.uid_allow, uid_first=uid_first, uid_semantic=uid_semantic,
+            uid_allow=uid_allow, uid_first=uid_first, uid_semantic=uid_semantic,
         )
         after = repo.entity.total(
             entity_type=entity_type, areas=picked_areas,
-            min_bundle_size=_MIN_BUNDLE_SIZE, uid_allow=scope.uid_allow,
+            min_bundle_size=_MIN_BUNDLE_SIZE, uid_allow=uid_allow,
         )
         # 좁히기가 없으면 두 모수가 **같은 값**이다 — 같은 수를 두 번 묻지 않는다.
         before = after if not scope.refined else repo.entity.total(
             entity_type=entity_type, areas=picked_areas,
-            min_bundle_size=_MIN_BUNDLE_SIZE, uid_allow=scope.scope_allow,
+            min_bundle_size=_MIN_BUNDLE_SIZE, uid_allow=scope_allow,
         )
         return page, after, before
 
@@ -187,12 +210,20 @@ def list_mm_meta(
 def mm_meta_facets(
     entity_type: str | None = Query(None, description="지금 고른 종류 — 갈래 건수를 이 안으로 좁힌다"),
     areas: str | None = Query(None, description="지금 고른 갈래들(쉼표) — 갈래 건수를 더 좁힌다"),
+    modalities: str | None = Query(
+        None,
+        description=(
+            "지금 고른 자료 유형들(text · image · video · audio 쉼표) — 자료 유형 칩 건수가 \"이 칩을 더 누르면 몇 개\"가 되도록 더 좁힌다."
+            " ⚠️ 갈래 칩 건수에는 아직 적용하지 않는다(코어 제약). 알 수 없는 값은 422"
+        ),
+    ),
 ) -> dict[str, Any]:
-    """좁히기 칩 두 축의 건수 — 종류와 갈래. 건수는 노출 임계를 통과한 개체 수이고 목록과 같은 임계를 쓴다. 0건 축도 싣는다(감출지는 화면이 정한다). ``{vocab, types, areas, min_members, scoped_by}``."""
+    """좁히기 칩 세 축의 건수 — 종류 · 갈래 · 자료 유형. 건수는 노출 임계를 통과한 개체 수이고 목록과 같은 임계를 쓴다. 0건 축도 싣는다(감출지는 화면이 정한다). ``{vocab, types, areas, modalities, min_members, scoped_by}``."""
+    picked_mods = _parse_modalities(modalities)
     return DbManager.read(
         lambda repo: repo.entity.facets(
             entity_type=entity_type, areas=_parse_names(areas),
-            min_bundle_size=_MIN_BUNDLE_SIZE,
+            min_bundle_size=_MIN_BUNDLE_SIZE, modalities=picked_mods,
         )
     )
 

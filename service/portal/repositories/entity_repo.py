@@ -20,6 +20,10 @@ class EntityRepository(Repository):
     def facets(self, **kw: Any) -> dict[str, Any]:
         return mm_meta.fetch_facets(self._conn, **kw)
 
+    def modality_allow(self, modalities: Any) -> Any:
+        """고른 자료 유형을 모두 가진 개체 집합(허용 목록) — 고른 것이 없으면 ``None``."""
+        return mm_meta.modality_allow(self._conn, modalities)
+
     def card(self, *, entity_type: str, entity_uid: str) -> dict[str, Any] | None:
         return mm_meta.fetch_card(self._conn, entity_type=entity_type, entity_uid=entity_uid)
 

@@ -3105,8 +3105,8 @@
     },
     "IF-ENTITY-01": {
       "errors": {
-        "400": "[2026-09-18] 깨진 커서 · 정렬값이 셋뿐인 옛 커서 · 조건(q · refine · entity_type · areas)이 바뀐 커서 — 조용히 다른 자리에서 잇지 않는다",
-        "422": "[2026-09-21] limit 범위 밖(1~500) · q·refine 300자 초과",
+        "400": "[2026-09-18] 깨진 커서 · 정렬값이 셋뿐인 옛 커서 · 조건(q · refine · entity_type · areas)이 바뀐 커서 — 조용히 다른 자리에서 잇지 않는다\n🔴 [2026-10-13 자료 유형 좁히기] 조건에 `modalities` 도 들어간다 — 고른 자료 유형이 바뀐 커서도 400.",
+        "422": "[2026-09-21] limit 범위 밖(1~500) · q·refine 300자 초과\n🔴 [2026-10-13 자료 유형 좁히기] `modalities` 에 알 수 없는 값이 있다 — 「modalities 는 text, image, video, audio 중에서 쉼표로 골라야 합니다(알 수 없는 값: …)」",
         "503": "[2026-09-18] 개체 집합 판정 불가 — 검색 엔진·임베딩 서버 연결 실패, 되돌림 백엔드(MM_META_SEARCH_BACKEND 가 opensearch 가 아님). 🔴 전체 목록이나 빈 결과로 되돌리지 않는다"
       },
       "gubun": "현행 정본",
@@ -3117,6 +3117,7 @@
           "q",
           "entity_type",
           "areas",
+          "modalities",
           "refine",
           "cursor",
           "limit"
@@ -3154,6 +3155,14 @@
           "min": 1,
           "required": false,
           "type": "integer"
+        },
+        "modalities": {
+          "default": null,
+          "loc": "Query",
+          "max": null,
+          "min": null,
+          "required": false,
+          "type": "string"
         },
         "q": {
           "default": null,
@@ -3210,7 +3219,8 @@
       "req": {
         "Query": [
           "entity_type",
-          "areas"
+          "areas",
+          "modalities"
         ]
       },
       "req_meta": {
@@ -3223,6 +3233,14 @@
           "type": "string"
         },
         "entity_type": {
+          "default": null,
+          "loc": "Query",
+          "max": null,
+          "min": null,
+          "required": false,
+          "type": "string"
+        },
+        "modalities": {
           "default": null,
           "loc": "Query",
           "max": null,
