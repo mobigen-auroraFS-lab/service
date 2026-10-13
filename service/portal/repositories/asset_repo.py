@@ -11,6 +11,7 @@ from typing import Any
 from service.portal.asset.detail import fetch_asset_detail
 from service.portal.asset.download import collect_bundle_assets, resolve_download_target
 from service.portal.common.repository import Repository
+from src.config.filename_util import display_file_name
 from src.relations.graph_query import mm_meta_of_asset
 from src.topic.asset_topic_query import (
     assets_in_topic,
@@ -19,6 +20,16 @@ from src.topic.asset_topic_query import (
     find_same_topic_groups,
     list_topics,
 )
+
+# 분류(주제 · 하위주제) 묶음 대상 — 등록 완료 자산만(노출 게이트). 자산마다 주제 행이 하나라 중복은 없지만 방어로 DISTINCT.
+_TOPIC_BUNDLE_SQL = """
+SELECT DISTINCT a.asset_id::text AS asset_id, a.fs_path
+FROM asset_topic at
+JOIN asset a ON a.asset_id = at.asset_id
+WHERE at.topic_ko = %s{sub}
+  AND a.status = 'registered'{video}
+ORDER BY 1
+"""
 
 
 class AssetRepository(Repository):
@@ -51,6 +62,18 @@ class AssetRepository(Repository):
         if resolve_download_target(self._conn, asset_id=seed_asset_id) is None:
             return None
         return collect_bundle_assets(self._conn, seed_asset_id=seed_asset_id)
+
+    def topic_bundle_targets(self, *, topic: str, subtopic: str | None, exclude_video: bool) -> list[dict[str, Any]]:
+        """분류(주제 · 하위주제) 묶음 대상 — 그 분류의 등록 완료 자산 전부(자산 id 순). ``fs_path`` 가 없는 행도 그대로 준다(빼는 판단은 호출부).
+
+        ``subtopic`` 이 없으면 주제 전체. 분류 자체가 없으면 빈 목록(호출부가 404).
+        """
+        sql = _TOPIC_BUNDLE_SQL.format(
+            sub=" AND at.subtopic_ko = %s" if subtopic else "",
+            video=" AND a.modality <> 'video'" if exclude_video else "")
+        rows = self.rows(sql, (topic, subtopic) if subtopic else (topic,))
+        return [{"asset_id": r["asset_id"], "fs_path": r["fs_path"],
+                 "file_name": display_file_name(r["fs_path"]) if r["fs_path"] else None} for r in rows]
 
     def unclassified(self, **kw: Any) -> dict[str, Any]:
         return assets_unclassified(self._conn, **kw)
