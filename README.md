@@ -103,7 +103,9 @@ zip 맨 끝 `_manifest.json` 에 적으며, 건수는 `X-Bundle-*` 응답 머리
 | 경로 | 용도 |
 |---|---|
 | `GET /assets/{id}/bundle` | 이 자산과 관계된 자산을 zip 하나로 |
-| `POST /assets/bundle` | 고른 자산 여러 개를 zip 하나로 |
+| `POST /assets/bundle` | 고른 자산 여러 개를 zip 하나로(JSON 본문 · 헤더 인증) |
+| `POST /assets/bundle/download` | 같은 일을 **폼 제출**로(묶음 링크로 인증 — 큰 묶음을 브라우저가 직접 받는다) |
+| `POST /bundle-links` | 묶음(zip)을 헤더 없이 받는 짧은 수명의 주소를 준다 |
 | `GET /mm-meta/bundle` · `/mm-meta/{type}/{uid}/bundle` | 개체들 · 개체 카드의 구성 자산을 zip 하나로 |
 
 서버를 띄운 뒤 `/docs` 로 접속하면 전체 목록과 파라미터를 확인할 수 있습니다.
@@ -322,7 +324,7 @@ PORTAL_ROLE=api   uvicorn service.api:app --port 8000   # 검색 · 상세 · �
 PORTAL_ROLE=files uvicorn service.api:app --port 8100   # 원본 · 묶음 zip
 ```
 
-앞단(인그레스)이 `/assets/{id}/download` · `/assets/{id}/download-link` · `/assets/{id}/bundle` · `POST /assets/bundle` · `/mm-meta/bundle` · `/mm-meta/{type}/{uid}/bundle` 만 files 로 보내고 나머지는 api 로 보냅니다.
+앞단(인그레스)이 `/assets/{id}/download` · `/assets/{id}/download-link` · `/assets/{id}/bundle` · `POST /assets/bundle` · `POST /assets/bundle/download` · `/bundle-links` · `/mm-meta/bundle` · `/mm-meta/{type}/{uid}/bundle` 만 files 로 보내고 나머지는 api 로 보냅니다.
 웹은 바뀌지 않습니다. 두 프로세스는 JWT 서명 키 · CORS 설정을 같게 가져야 하고, DB 풀 합이 PostgreSQL `max_connections` 안이어야 합니다. files 의 DB 풀을 줄이면 묶음 처리량이 줄어드니 기본값으로 두고 CPU 상한은 파드의 limit 으로 겁니다.
 측정 근거와 방식 비교는 `experiments/RESULTS.md` 입니다. 파드 CPU 한도에서의 효과는 아직 재지 못했습니다.
 
@@ -370,7 +372,7 @@ psycopg 는 LGPL 입니다. 파이썬에서 불러 쓰는 것은 이 소프트�
 1. 로그인한 헤더로 `POST /assets/{id}/download-link` 를 부르면 `{"url": "/assets/{id}/download?link=…", "expires_in": 300}` 가 옵니다.
 2. 그 `url`(서버 주소를 앞에 붙여)을 `<a href>` · `<video src>` · `window.location` 에 그대로 넣습니다 — 헤더가 필요 없고 이어받기(`Range`) · 영상 구간 재생이 됩니다.
 
-링크는 그 자산의 내려받기에만 통하고 5분 뒤 만료되며, 접속 토큰과 다른 키로 서명돼 링크로 다른 창구를 열 수 없습니다. 묶음(zip)은 이 방식이 아니라 헤더로 받습니다.
+링크는 그 자산의 내려받기에만 통하고 5분 뒤 만료되며, 접속 토큰과 다른 키로 서명돼 링크로 다른 창구를 열 수 없습니다. 묶음(zip)은 아래 「묶음 링크」를 씁니다.
 `HEAD /assets/{id}/download` 도 받습니다(본문 없이 같은 머리 — 다운로드 도구가 크기를 먼저 물을 때).
 
 ### 화면(클라이언트)에서 받을 때
@@ -378,8 +380,26 @@ psycopg 는 LGPL 입니다. 파이썬에서 불러 쓰는 것은 이 소프트�
 | 대상 | 권장 방식 | 이유 |
 |---|---|---|
 | 원본 한 건 | **다운로드 링크** 를 열기 | 브라우저 다운로드 관리자가 받아 큰 파일도 메모리에 모으지 않고, 진행률 · 이어받기가 됩니다 |
-| 묶음(zip) | 헤더를 붙인 `fetch` 로 받아 저장 | 링크 방식이 아닙니다(`POST` 이거나 개체 단위) |
+| 묶음(zip) | **묶음 링크** 를 열기(GET 묶음) · **폼 제출**(선택 묶음) | 건수 · 용량 상한이 없어 수 GB 묶음도 가능합니다 — 브라우저 다운로드 관리자가 받아 메모리에 모으지 않습니다 |
 
 - 링크를 열었다가 실패하면 브라우저가 JSON 오류 화면으로 이동하므로, 열기 전에 `HEAD`(링크로도 됩니다)로 상태를 확인하면 `404`(대상 아님) · `410`(원본 없음) · `503`(혼잡) 을 안내 문장으로 보여 줄 수 있습니다. `HEAD` 는 접근 기록을 남기지 않습니다.
-- `fetch` 로 받은 응답을 `blob()` 으로 모으는 방식은 파일 전체가 다 받아진 뒤에야 저장이 시작되고 이어받기가 없어, 수 GB 파일에는 맞지 않습니다.
+- 묶음을 `fetch` 로 받아 `blob()` 으로 모으는 방식은 파일 전체가 다 받아진 뒤에야 저장이 시작되고 이어받기가 없어, 수 GB 파일에는 맞지 않습니다.
 - 묶음을 받다가 서버가 끊기면 `blob()` 이 네트워크 오류로 던집니다 — 서버는 응답을 시작한 뒤의 실패에 봉투를 줄 수 없습니다(헤더의 `X-Bundle-Count` · `X-Bundle-Missing` 으로 먼저 안내하세요).
+
+### 묶음 링크 (zip 을 브라우저가 직접 받게)
+
+묶음 창구도 링크로 받을 수 있습니다. 링크는 **그 요청 대상(메서드 + 경로 + 조건)에만** 통해서, 다른 묶음이나 조건을 바꾼 요청에는 안 통합니다(예: `areas` 를 바꾸면 새 링크가 필요합니다).
+
+1. 로그인한 헤더로 `POST /bundle-links` 에 `{"method": "GET", "url": "/mm-meta/bundle?entity_type=작품&areas=문화유산·역사"}` 를 보내면 `{"url": "…?…&link=…", "method": "GET", "expires_in": 300}` 가 옵니다. 받을 수 있는 대상은 `GET /assets/{id}/bundle` · `GET /mm-meta/bundle` · `GET /mm-meta/{type}/{uid}/bundle` · `POST /assets/bundle/download` 입니다(그 밖은 400).
+2. **GET 묶음**: 받은 `url` 을 `<a href>` · `window.location` 으로 엽니다. 열기 전에 `HEAD` 로 같은 주소를 부르면 `404`(대상 없음) · `409`(담을 파일 없음) · 담길 수(`X-Bundle-Count`)를 먼저 확인할 수 있습니다(`HEAD` 는 동시 묶음 자리 · 접근 기록을 쓰지 않습니다).
+3. **선택 묶음**(고른 자산 id 목록): `method` 를 `POST`, `url` 을 `/assets/bundle/download` 로 링크를 받고, 그 `url` 로 **숨은 폼을 제출**합니다 — `method=POST`, `action=<url>`, 자산마다 `<input name="asset_ids" value="<id>">`. 목록은 링크에 묶이지 않고 매번 서버가 노출 기준으로 다시 거릅니다.
+
+```html
+<form method="POST" action="/api/assets/bundle/download?...&link=..." target="_blank">   <!-- 링크 받은 url 앞에 서버 접두사를 붙인다 -->
+  <input type="hidden" name="asset_ids" value="018f...">
+  <input type="hidden" name="asset_ids" value="018f...">
+</form>
+```
+
+- 링크는 5분 뒤 만료되고 접속 토큰과 다른 키로 서명됩니다. 받을 때마다 새로 발급하세요.
+- 응답이 시작된 뒤 서버가 끊기면 다운로드가 중간에 실패로 표시됩니다(헤더 `X-Bundle-Count` · `X-Bundle-Missing` 은 시작 전에 정해집니다).

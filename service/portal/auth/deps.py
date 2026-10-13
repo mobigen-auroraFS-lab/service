@@ -131,6 +131,24 @@ def require_principal(
     return principal
 
 
+def get_bundle_principal(
+    request: Request,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(portal_bearer_scheme)] = None,
+) -> Principal:
+    """묶음 내려받기 전용 의존성 — ``Authorization`` 헤더 **또는** 묶음 링크(``?link=``)로 인증한다.
+
+    링크는 이 요청 대상(메서드 + 경로 + 조건)에만 통한다. 헤더가 있으면 평소와 같다. 계정 상태는 링크로도 다시 확인한다.
+    """
+    link = request.query_params.get("link")
+    if credentials is None and link:
+        from service.portal.auth.download_link import canonical_target, verify_bundle_link_token
+
+        target = canonical_target(request.method, request.url.path, request.query_params.multi_items())
+        principal = claims_to_principal({"sub": verify_bundle_link_token(link, target)})
+        return with_account(principal, auth_disabled=load_portal_auth_config().auth_disabled)
+    return get_principal(credentials)
+
+
 def get_download_principal(
     request: Request,
     asset_id: str,

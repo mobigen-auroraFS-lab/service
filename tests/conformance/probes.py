@@ -146,6 +146,8 @@ PATH_VALUES = {"{asset_id}": ASSET_ID, "{modality}": "image", "{topic}": "요리
 # 200 을 얻으려면 값이 필요한 엔드포인트
 HAPPY_QUERY = {"/search": {"q": "김치"}, "/admin/asset-stats": {"snapshot_buckets": "true"},
                "/file-search/suggest": {"q": "역사"}}
+# 폼으로 받는 창구(``application/x-www-form-urlencoded``) — JSON 본문이 아니라 폼 필드로 보낸다.
+HAPPY_FORM = {"/assets/bundle/download": {"asset_ids": ASSET_ID}}
 HAPPY_BODY = {"/auth/token": {"user_id": "conformance"},
               "/assets/bundle": {"asset_ids": [ASSET_ID]},
               # 계정 창구는 아직 501 이라 본문이 형식만 맞으면 된다(저장소가 생기면 계약이 산다).
@@ -196,6 +198,9 @@ ERROR_PROBES: dict[str, list[tuple[str, str, dict, dict | None, dict]]] = {
                     ("파일 없음", "gone", {}, None, {}),
                     ("Range 위반", "found", {}, None, {"Range": "bytes=99999-"})],
     "IF-ASSET-15": [("행 없음", "none", {}, None, {})],
+    "IF-ASSET-16": [("묶음이 아닌 주소", "found", {}, {"url": "/me"}, {}),
+                    ("url 없음", "found", {}, {}, {})],
+    "IF-ASSET-17": [("폼이 아님", "found", {}, {"asset_ids": []}, {})],
     "IF-ASSET-05": [("seed 없음", "none", {}, None, {})],
     "IF-ASSET-12": [("빈 asset_ids", "found", {}, {"asset_ids": []}, {}),
                     ("UUID 아님", "found", {}, {"asset_ids": ["nope"]}, {}),
@@ -270,3 +275,8 @@ def fill_path(url: str) -> str:
     for token, value in PATH_VALUES.items():
         url = url.replace(token, value)
     return url
+
+
+def happy_body_kwargs(url: str) -> dict[str, Any]:
+    """200 을 얻는 요청 본문 — 폼 창구는 ``data=``, 나머지는 ``json=``."""
+    return {"data": HAPPY_FORM[url]} if url in HAPPY_FORM else {"json": HAPPY_BODY.get(url)}
