@@ -59,6 +59,7 @@ class TestRelationBundle(_Base):
         self.assertEqual("application/zip", r.headers["content-type"])
         self.assertEqual(["a.txt", "b.jpg"], self.zip_of(r).namelist())
         self.assertEqual(("2", "0", "130"), (r.headers["x-bundle-count"], r.headers["x-bundle-missing"], r.headers["x-bundle-bytes"]))
+        self.assertEqual(r.headers["x-bundle-count"], r.headers["x-bundle-files"])       # 창구마다 달랐던 두 이름이 같은 값
         self.assertIn(f"bundle_{A1}.zip", r.headers["content-disposition"])
         self.assertNotIn("content-length", r.headers)              # 만들면서 보내므로 크기를 미리 모른다(청크 전송)
         self.assertEqual("private, no-store", r.headers["cache-control"])
@@ -100,16 +101,17 @@ class TestSelectionBundle(_Base):
             r = self.client.post("/assets/bundle", json=body)
         return r, wr, audited
 
-    def _picked(self, *names, missing=(), total=None):
+    def _picked(self, *names, missing=()):
         targets = [{"asset_id": f"018f0000-0000-7000-8000-0000000000b{i}", "fs_path": self.make(n, n.encode() * 10), "file_name": n}
                    for i, n in enumerate(names)]
-        return {"targets": targets, "missing": list(missing), "total_bytes": total if total is not None else sum(10 * len(n) for n in names)}
+        return {"targets": targets, "missing": list(missing)}
 
     def test_고른_자산을_zip으로(self) -> None:
         r, wr, _ = self._post({"asset_ids": [A1, A2]}, self._picked("a.txt", "b.png"))
         self.assertEqual(200, r.status_code)
         self.assertEqual(["a.txt", "b.png"], self.zip_of(r).namelist())
         self.assertEqual(("2", "0"), (r.headers["x-bundle-files"], r.headers["x-bundle-missing"]))
+        self.assertEqual(r.headers["x-bundle-files"], r.headers["x-bundle-count"])
         wr.assert_called_once()                                    # 담긴 자산의 감사 기록(한 번의 쓰기 트랜잭션)
 
     def test_노출_대상이_아니라_뺀_것과_원본이_없어_빠진_것을_합쳐_센다(self) -> None:
@@ -118,28 +120,21 @@ class TestSelectionBundle(_Base):
         r, _, _ = self._post({"asset_ids": [A1, A2, A3]}, picked)
         self.assertEqual(("1", "2"), (r.headers["x-bundle-files"], r.headers["x-bundle-missing"]))
 
-    def test_빈_목록_형식_오류_건수_초과는_400(self) -> None:
-        for body in ({"asset_ids": []}, {"asset_ids": ["nope"]}, {"asset_ids": [f"018f0000-0000-7000-8000-{i:012d}" for i in range(201)]}):
+    def test_빈_목록_형식_오류는_400(self) -> None:
+        for body in ({"asset_ids": []}, {"asset_ids": ["nope"]}):
             with self.subTest(n=len(body["asset_ids"])):
                 r, _, _ = self._post(body, self._picked("a.txt"))
                 self.assertEqual(400, r.status_code)
 
     def test_모두_노출_대상이_아니면_409(self) -> None:
-        r, _, _ = self._post({"asset_ids": [A1]}, {"targets": [], "missing": [A1], "total_bytes": 0})
+        r, _, _ = self._post({"asset_ids": [A1]}, {"targets": [], "missing": [A1]})
         self.assertEqual(409, r.status_code)
 
-    def test_DB_크기_합이_상한을_넘으면_413_파일을_건드리기_전에(self) -> None:
-        with mock.patch.object(routes_assets, "make_plan") as plan:
-            r, _, _ = self._post({"asset_ids": [A1]}, self._picked("a.txt", total=600 * 1024 * 1024))
-        self.assertEqual(413, r.status_code)
-        self.assertIn("MB > 500MB", r.json()["detail"])
-        plan.assert_not_called()
-
-    def test_디스크의_실제_크기가_상한을_넘으면_413(self) -> None:
-        picked = self._picked("a.txt")                              # DB 에는 작게 적혀 있다
-        with mock.patch.object(routes_assets, "MAX_SELECTION_BYTES", 5):
-            r, _, _ = self._post({"asset_ids": [A1]}, picked)
-        self.assertEqual(413, r.status_code)
+    def test_건수와_용량_상한은_없다(self) -> None:
+        """200건을 넘는 요청도 받는다(2026-10-13 상한을 없앴다). 걸리는 것은 요청 본문 상한과 동시 묶음 수 제한뿐이다."""
+        ids = [f"018f0000-0000-7000-8000-{i:012d}" for i in range(500)]
+        r, _, _ = self._post({"asset_ids": ids}, self._picked("a.txt"))
+        self.assertEqual(200, r.status_code)
 
     def test_감사_기록이_실패해도_내려받기는_된다(self) -> None:
         class _Sel:
@@ -170,6 +165,7 @@ class TestEntityBundles(_Base):
         self.assertEqual(200, r.status_code)
         self.assertEqual(["a.txt", "b.jpg"], self.zip_of(r).namelist())
         self.assertEqual(("2", "0", "30"), (r.headers["x-bundle-count"], r.headers["x-bundle-missing"], r.headers["x-bundle-bytes"]))
+        self.assertEqual(r.headers["x-bundle-count"], r.headers["x-bundle-files"])       # 창구마다 달랐던 두 이름이 같은 값
         self.assertIn("person", r.headers["content-disposition"])
         self.assertTrue(r.headers["content-disposition"].isascii())           # 한글 이름은 헤더에서 깨지므로 ASCII 만
 
@@ -217,6 +213,7 @@ class TestEntityBundles(_Base):
                     r = self.client.get("/mm-meta/person/u1/bundle")
                 self.assertEqual(200, r.status_code)
                 self.assertEqual("1", r.headers["x-bundle-count"])
+                self.assertEqual("1", r.headers["x-bundle-files"])
                 self.assertEqual("200" if truncated else None, r.headers.get("x-bundle-truncated"))
                 self.assertTrue(r.headers["content-disposition"].isascii())
 

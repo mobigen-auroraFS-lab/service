@@ -82,7 +82,7 @@ class TestOpenOriginal(unittest.TestCase):
             try:
                 self.assertEqual(10, src.size)
                 self.assertEqual(os.stat(tmp.name).st_mtime_ns, src.mtime_ns)
-                self.assertEqual(b"0123", src.read_head(4))         # 바로 읽을 수 있게 열려 있다
+                self.assertEqual(b"0123", b"".join(src.read_range(0, 3)))   # 바로 읽을 수 있게 열려 있다
             finally:
                 src.close()
         finally:

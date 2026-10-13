@@ -150,7 +150,7 @@ class TestRoutes(unittest.TestCase):
     def test_링크로는_다른_창구를_못_연다(self) -> None:
         url = self._mint().json()["url"]
         link = url.split("link=")[1]
-        for path in (f"/assets/{A1}", f"/assets/{A1}/content", "/file-search", "/me"):
+        for path in (f"/assets/{A1}", f"/assets/{A1}/bundle", "/file-search", "/me"):
             self.assertEqual(401, self.client.get(f"{path}?link={link}").status_code, path)
 
     def test_접속_토큰은_링크로_통하지_않는다(self) -> None:

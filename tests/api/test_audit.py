@@ -37,13 +37,12 @@ class DeriveActionTest(unittest.TestCase):
     def test_routes(self):
         self.assertEqual(derive_access_action("GET", "/search"), ("search", None))
         self.assertEqual(derive_access_action("GET", f"/assets/{_UUID}"), ("asset_view", _UUID))
-        # 원본 다운로드 · 원문은 다시 구현했다(2026-10-01) — 기록 대상이다. 원문은 상세(asset_view)와 구분한다.
         self.assertEqual(derive_access_action("GET", f"/assets/{_UUID}/download"), ("download", _UUID))
-        self.assertEqual(derive_access_action("GET", f"/assets/{_UUID}/content"), ("content", _UUID))
         # 관계 묶음(GET)도 다시 기록한다. 고른 자산 묶음은 POST 라 미들웨어가 아니라 라우트가 담긴 자산마다 남긴다.
         self.assertEqual(derive_access_action("GET", f"/assets/{_UUID}/bundle"), ("bundle", _UUID))
         self.assertIsNone(derive_access_action("POST", "/assets/bundle"))
-        # 썸네일은 아직 자리만 있다(501) — 기록 대상이 아니다.
+        # 원문 · 썸네일 창구는 없다(2026-10-13) — 기록 대상이 아니다.
+        self.assertIsNone(derive_access_action("GET", f"/assets/{_UUID}/content"))
         self.assertIsNone(derive_access_action("GET", f"/assets/{_UUID}/thumbnail"))
 
     def test_non_uuid_segment_none(self):

@@ -18,7 +18,6 @@ from service.portal.repositories.account_repo import AccountRepository
 from service.portal.repositories.admin_repo import AdminRepository
 from service.portal.repositories.asset_repo import AssetRepository
 from service.portal.repositories.catalog_repo import CatalogRepository
-from service.portal.repositories.content_repo import AssetContentRepository
 from service.portal.repositories.entity_repo import EntityRepository
 from service.portal.repositories.review_repo import ReviewRepository
 from service.portal.repositories.search_repo import SearchRepository
@@ -36,7 +35,6 @@ class Repositories:
         self.admin = AdminRepository(conn)
         self.asset = AssetRepository(conn)
         self.catalog = CatalogRepository(conn)
-        self.content = AssetContentRepository(conn)
         self.entity = EntityRepository(conn)
         self.review = ReviewRepository(conn)
         self.search = SearchRepository(conn)

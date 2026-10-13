@@ -22,7 +22,7 @@ def _routes(role: str) -> set[tuple[str, str]]:
 
 class IsFilePathTest(unittest.TestCase):
     def test_파일_창구_경로만_참(self) -> None:
-        for p in ("/assets/{asset_id}/download", "/assets/{asset_id}/content", "/assets/{asset_id}/bundle", "/assets/{asset_id}/thumbnail",
+        for p in ("/assets/{asset_id}/download", "/assets/{asset_id}/bundle",
                   "/assets/bundle", "/mm-meta/bundle", "/mm-meta/{entity_type}/{entity_uid}/bundle"):
             self.assertTrue(is_file_path(p), p)
         for p in ("/assets/{asset_id}", "/assets/unclassified", "/assets/{asset_id}/mm-meta", "/mm-meta", "/mm-meta/facets",

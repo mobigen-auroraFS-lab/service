@@ -7,10 +7,10 @@
 웹 화면이 호출하는 API 를 제공합니다. 검색, 자산 상세 조회, 개체 조회, 계정과 로그인을
 담당합니다.
 
-**원본 내려받기와 원문은 동작합니다**(2026-10-01). 원본 파일은 **DB 에 적힌 경로(`fs_path`)에 있다고 보고** 읽습니다 — 경로를
+**원본 내려받기는 동작합니다**(원문 · 썸네일 창구는 2026-10-13 에 없앴습니다 — 화면이 두 기능을 뺐습니다). 원본 파일은 **DB 에 적힌 경로(`fs_path`)에 있다고 보고** 읽습니다 — 경로를
 바꿔 여는 설정은 없고, 그 경로에 파일이 없으면 410 입니다(그 서버에서 그 경로가 보여야 합니다). 이어받기(`Range` · `If-Range`)와
 `ETag` 를 지원합니다. **여러 파일 묶음(zip) 4개 창구도 동작합니다** — 임시 파일 없이 zip 을 만들면서 바로 흘려 보냅니다
-(첫 바이트가 바로 나가고, `Content-Length` 가 없으며, 이어받기는 없습니다). 썸네일만 경로와 파라미터가 등록돼 있고 부르면 501 입니다.
+(첫 바이트가 바로 나가고, `Content-Length` 가 없으며, 이어받기는 없습니다).
 묶음 방식의 사정과 대안(브라우저에서 zip · 비동기 서버 zip)은 `service/portal/asset/bundle_stream.py` 머리말에, 원본 파일 전제는
 `service/portal/asset/__init__.py` 에 적어 두었습니다.
 
@@ -37,7 +37,6 @@ service/
       file_search.py    # 파일 목록 형태의 검색
       assets.py         # 자산 상세, 주제, 자산의 개체
       mm_meta.py        # 개체 목록과 상세
-      files.py          # 아직 자리만 있는 파일 제공 경로(썸네일 · 501)
       catalog.py        # 태그·관계 종류 목록
       account.py        # 회원가입·로그인
       admin.py          # 운영 통계 — 등재 보류
@@ -53,7 +52,7 @@ service/
     params.py         # 여러 경로가 함께 쓰는 요청 검증
 
   portal/             # 실제 조회와 가공
-    asset/            # 자산 상세, 집계, 파일 메타, 원본 · 원문 · 묶음 zip(bundle_stream.py)
+    asset/            # 자산 상세, 집계, 파일 메타, 원본 · 묶음 zip(bundle_stream.py)
     auth/             # 로그인, 토큰, 비밀번호
     search/           # 검색 결과 묶기, 정렬 기준, 칩 집계
     history/          # 접근 기록, 처리 이력
@@ -89,7 +88,6 @@ experiments/          # 파일 전송 방식 실험(측정기 · 실험 서버 �
 | `GET /file-search/facet-extra` | 추가 칩 집계 |
 | `GET /assets/{id}` | 자산 상세 |
 | `GET /assets/{id}/download` | 원본 파일 내려받기(이어받기 지원). 파일이 없으면 410 |
-| `GET /assets/{id}/content` | 원문(문서 글자 · 소리의 받아쓰기). 1MiB 까지, 잘리면 `truncated` |
 | `GET /assets/{id}/mm-meta` | 이 자산에서 나온 개체 |
 | `GET /assets/unclassified` | 분류되지 않은 자산 |
 | `GET /topics` | 주제 목록. 대주제와 세부주제를 자산 수와 함께 |
@@ -99,20 +97,14 @@ experiments/          # 파일 전송 방식 실험(측정기 · 실험 서버 �
 | `GET /mm-meta/facets` | 개체 칩 집계 |
 | `GET /tags` · `/relation-kinds` | 태그·관계 종류 목록 |
 
-여러 파일을 zip 하나로 받는 창구입니다(만들면서 바로 흘려 보냅니다 · 건수 200 · 용량 500MB 상한). 읽을 수 없는 파일은 빼고
-zip 맨 끝 `_manifest.json` 에 적으며, 건수는 `X-Bundle-*` 응답 머리로 알립니다.
+여러 파일을 zip 하나로 받는 창구입니다(만들면서 바로 흘려 보냅니다 · 고른 자산 묶음은 건수 · 용량 상한이 없습니다 — 요청 본문 1MiB 와 동시 묶음 수 제한만 걸립니다). 읽을 수 없는 파일은 빼고
+zip 맨 끝 `_manifest.json` 에 적으며, 건수는 `X-Bundle-*` 응답 머리로 알립니다 — 담긴 수 `X-Bundle-Count`(= `X-Bundle-Files`, 네 창구 모두 같은 값을 두 이름으로) · 빠진 수 `X-Bundle-Missing` · 원본 합계 `X-Bundle-Bytes`.
 
 | 경로 | 용도 |
 |---|---|
 | `GET /assets/{id}/bundle` | 이 자산과 관계된 자산을 zip 하나로 |
 | `POST /assets/bundle` | 고른 자산 여러 개를 zip 하나로 |
 | `GET /mm-meta/bundle` · `/mm-meta/{type}/{uid}/bundle` | 개체들 · 개체 카드의 구성 자산을 zip 하나로 |
-
-아래는 아직 자리만 있습니다(부르면 501). 화면이 이 이름으로 미리 코딩할 수 있고 `/docs` 에 파라미터가 보입니다.
-
-| 경로 | 용도 |
-|---|---|
-| `GET /assets/{id}/thumbnail` | 미리보기 이미지 |
 
 서버를 띄운 뒤 `/docs` 로 접속하면 전체 목록과 파라미터를 확인할 수 있습니다.
 
@@ -197,7 +189,7 @@ TEXT_EMBED_NORMALIZE=true
 | `PORTAL_ZIP_LEVEL` | 묶음 zip 의 압축 수준 1~9. 기본 6. 낮추면 서버 CPU 가 줄고 파일이 커집니다(텍스트에서 1 은 CPU 1/3 · 크기 +45%) |
 | `PORTAL_ORIGIN_BACKEND` | 원본 파일을 읽는 방식. `local`(기본 · DB 경로를 마운트 경로로 직접 열기)만 있다. `storage_api`(스토리지 스트리밍 API)는 사양이 정해진 뒤 구현하며, 지금 지정하면 기동이 멈춘다. 잘못된 값도 기동 때 멈춘다 |
 | `PORTAL_ZIP_READ_WINDOW` · `PORTAL_ZIP_FILES_AHEAD` | 저장소 읽기 지연이 클 때만 켭니다. 큰 파일 한 개를 조각 N 개로 동시에 읽기 · 다음 파일 N 개를 미리 읽기. 기본은 둘 다 꺼짐 |
-| `PORTAL_ROLE` | `all`(기본) · `api`(파일 창구 뺀 나머지) · `files`(원본 · 원문 · 묶음 zip · 썸네일만). 파일 창구를 별도 프로세스로 띄울 때 씁니다 — 아래 「파일 창구를 따로 띄우기」 |
+| `PORTAL_ROLE` | `all`(기본) · `api`(파일 창구 뺀 나머지) · `files`(원본 · 묶음 zip만). 파일 창구를 별도 프로세스로 띄울 때 씁니다 — 아래 「파일 창구를 따로 띄우기」 |
 | `PORTAL_DB_STATEMENT_TIMEOUT_MS` | DB 질의 한 건의 시간 제한. 기본 30000(30초), `0` 이면 제한 없음. 넘으면 DB 가 질의를 취소하고 요청은 503 입니다 |
 | `PORTAL_BUNDLE_MAX_CONCURRENT` | 프로세스당 동시에 만드는 묶음(zip) 수. 기본은 코어 수의 절반(2~8), `0` 이면 제한 없음. 넘으면 기다리지 않고 503 + `Retry-After` |
 | `PORTAL_DOWNLOAD_LINK_TTL_SECONDS` | 다운로드 링크(`POST /assets/{id}/download-link`)의 수명. 기본 300초(30~3600) |
@@ -326,10 +318,10 @@ $ curl -s "http://127.0.0.1:8001/file-search?q=김치&topic=음식&topic=전통�
 
 ```bash
 PORTAL_ROLE=api   uvicorn service.api:app --port 8000   # 검색 · 상세 · 계정 · 목록
-PORTAL_ROLE=files uvicorn service.api:app --port 8100   # 원본 · 원문 · 묶음 zip · 썸네일
+PORTAL_ROLE=files uvicorn service.api:app --port 8100   # 원본 · 묶음 zip
 ```
 
-앞단(인그레스)이 `/assets/{id}/download` · `/assets/{id}/content` · `/assets/{id}/bundle` · `/assets/{id}/thumbnail` · `POST /assets/bundle` · `/mm-meta/bundle` · `/mm-meta/{type}/{uid}/bundle` 만 files 로 보내고 나머지는 api 로 보냅니다.
+앞단(인그레스)이 `/assets/{id}/download` · `/assets/{id}/download-link` · `/assets/{id}/bundle` · `POST /assets/bundle` · `/mm-meta/bundle` · `/mm-meta/{type}/{uid}/bundle` 만 files 로 보내고 나머지는 api 로 보냅니다.
 웹은 바뀌지 않습니다. 두 프로세스는 JWT 서명 키 · CORS 설정을 같게 가져야 하고, DB 풀 합이 PostgreSQL `max_connections` 안이어야 합니다. files 의 DB 풀을 줄이면 묶음 처리량이 줄어드니 기본값으로 두고 CPU 상한은 파드의 limit 으로 겁니다.
 측정 근거와 방식 비교는 `experiments/RESULTS.md` 입니다. 파드 CPU 한도에서의 효과는 아직 재지 못했습니다.
 
@@ -349,8 +341,8 @@ PORTAL_ROLE=files uvicorn service.api:app --port 8100   # 원본 · 원문 · �
 | 화면에서 부르면 막힘 | `PORTAL_CORS_ORIGINS` 에 그 주소가 없습니다 |
 | 부하가 걸리면 응답이 느려짐 | DB 연결 풀이 모자라 요청이 줄을 서고 있습니다 |
 | 404 가 나옴 | `/admin` 과 `/review` 는 등재하지 않았습니다 |
-| 501 이 나옴 | 썸네일 경로는 자리만 있습니다. `size_bucket` 으로 거르기도 아직 없습니다 |
-| 410 이 나옴 | 원본 내려받기 · 원문이 읽을 파일이 DB 에 적힌 경로에 없습니다 — 그 서버에서 같은 경로가 보여야 합니다(마운트 · 권한 확인) |
+| 501 이 나옴 | `size_bucket` 으로 거르기는 아직 없습니다(건수는 `/file-search/facet-extra`) |
+| 410 이 나옴 | 원본 내려받기가 읽을 파일이 DB 에 적힌 경로에 없습니다 — 그 서버에서 같은 경로가 보여야 합니다(마운트 · 권한 확인) |
 | 검색 결과가 비어 있음 | 색인이 없거나, 검색어 임베딩 모델이 색인할 때와 다릅니다 |
 | 503 이 나옴 | 임베딩 서버 · OpenSearch · **DB** 중 하나에 연결하지 못했습니다. `Retry-After: 5` 가 붙고, 죽은 쪽은 연결 차단기가 열려 기다리지 않고 곧바로 503 으로 답합니다(서버 로그에 `DB 연결 불가 — 차단` · `검색 엔진 연결 불가 — 차단` 한 줄, 살아나면 `연결 복구`). `/health` 는 그동안에도 200 입니다 |
 | 413 이 나옴 | 요청 본문이 `PORTAL_MAX_BODY_BYTES` 를 넘었습니다 |
@@ -379,3 +371,14 @@ psycopg 는 LGPL 입니다. 파이썬에서 불러 쓰는 것은 이 소프트�
 
 링크는 그 자산의 내려받기에만 통하고 5분 뒤 만료되며, 접속 토큰과 다른 키로 서명돼 링크로 다른 창구를 열 수 없습니다. 묶음(zip)은 이 방식이 아니라 헤더로 받습니다.
 `HEAD /assets/{id}/download` 도 받습니다(본문 없이 같은 머리 — 다운로드 도구가 크기를 먼저 물을 때).
+
+### 화면(클라이언트)에서 받을 때
+
+| 대상 | 권장 방식 | 이유 |
+|---|---|---|
+| 원본 한 건 | **다운로드 링크** 를 열기 | 브라우저 다운로드 관리자가 받아 큰 파일도 메모리에 모으지 않고, 진행률 · 이어받기가 됩니다 |
+| 묶음(zip) | 헤더를 붙인 `fetch` 로 받아 저장 | 링크 방식이 아닙니다(`POST` 이거나 개체 단위) |
+
+- 링크를 열었다가 실패하면 브라우저가 JSON 오류 화면으로 이동하므로, 열기 전에 `HEAD`(링크로도 됩니다)로 상태를 확인하면 `404`(대상 아님) · `410`(원본 없음) · `503`(혼잡) 을 안내 문장으로 보여 줄 수 있습니다. `HEAD` 는 접근 기록을 남기지 않습니다.
+- `fetch` 로 받은 응답을 `blob()` 으로 모으는 방식은 파일 전체가 다 받아진 뒤에야 저장이 시작되고 이어받기가 없어, 수 GB 파일에는 맞지 않습니다.
+- 묶음을 받다가 서버가 끊기면 `blob()` 이 네트워크 오류로 던집니다 — 서버는 응답을 시작한 뒤의 실패에 봉투를 줄 수 없습니다(헤더의 `X-Bundle-Count` · `X-Bundle-Missing` 으로 먼저 안내하세요).

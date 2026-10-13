@@ -125,7 +125,7 @@ def uuid_or_404(value: str, *, detail: str) -> str:
 
     Args:
         value: 경로에서 받은 id.
-        detail: 404 응답 문구. 창구마다 다르므로(다운로드·썸네일·묶음) 호출부가 준다.
+        detail: 404 응답 문구. 창구마다 다르므로(다운로드·묶음) 호출부가 준다.
 
     Returns:
         형식을 통과한 값 그대로.

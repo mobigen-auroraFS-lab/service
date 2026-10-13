@@ -57,12 +57,6 @@ class TestLocalFile(unittest.TestCase):
             src.close()
         self.assertEqual(self.payload[:CHUNK + 5], got)
 
-    def test_머리만_읽는다(self) -> None:
-        src = self.reader.open(self.path)
-        try:
-            self.assertEqual(self.payload[:16], src.read_head(16))
-        finally:
-            src.close()
 
     def test_stat_은_크기와_수정시각(self) -> None:
         size, mtime_ns = self.reader.stat(self.path)
@@ -106,9 +100,6 @@ class _MemFile:
     def read_range(self, start: int, end: int, *, window: int = 1) -> Iterator[bytes]:
         for i in range(start, end + 1, 1000):
             yield self._d[i:min(i + 1000, end + 1)]
-
-    def read_head(self, n: int) -> bytes:
-        return self._d[:n]
 
     def close(self) -> None:
         self.closed = True
