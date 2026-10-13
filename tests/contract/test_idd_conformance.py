@@ -386,7 +386,7 @@ class TestResponseBody(unittest.TestCase):
             for api, spec in implemented():
                 r = client.request(spec["method"], probes.fill_path(spec["url"]),
                                    params=probes.HAPPY_QUERY.get(spec["url"]),
-                                   json=probes.HAPPY_BODY.get(spec["url"]))
+                                   **probes.happy_body_kwargs(spec["url"]))
                 if r.status_code != 200:
                     continue                                   # 픽스처로 200 을 못 만드는 경로
                 if "application/json" not in r.headers.get("content-type", ""):
@@ -458,7 +458,7 @@ class TestResponseKind(unittest.TestCase):
                     continue
                 r = client.request(spec["method"], probes.fill_path(spec["url"]),
                                    params=probes.HAPPY_QUERY.get(spec["url"]),
-                                   json=probes.HAPPY_BODY.get(spec["url"]))
+                                   **probes.happy_body_kwargs(spec["url"]))
                 if r.status_code != 200:
                     problems.append(f"{api} {spec['url']}: 200 을 못 만듦({r.status_code}) — 픽스처 필요")
                     continue
@@ -526,7 +526,7 @@ class TestNestedShape(unittest.TestCase):
                     continue
                 r = client.request(spec["method"], probes.fill_path(spec["url"]),
                                    params=probes.HAPPY_QUERY.get(spec["url"]),
-                                   json=probes.HAPPY_BODY.get(spec["url"]))
+                                   **probes.happy_body_kwargs(spec["url"]))
                 if r.status_code != 200 or "application/json" not in r.headers.get("content-type", ""):
                     continue
                 body = r.json()

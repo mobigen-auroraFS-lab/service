@@ -13,7 +13,7 @@ import weakref
 from typing import Any
 
 from fastapi import HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from starlette.background import BackgroundTask
 
 from service.portal.asset.bundle_stream import BundlePlan, plan_bundle, stream_zip
@@ -109,7 +109,16 @@ def zip_response(plan: BundlePlan, *, content_disposition: str, headers: dict[st
         stream_gen,
         media_type="application/zip",
         headers={"Content-Disposition": content_disposition, "Cache-Control": "private, no-store",
-                 "X-Content-Type-Options": "nosniff", **headers},
+                 "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", **headers},
         # 받다가 끊겨도 원본 핸들이 닫히도록 응답이 끝날 때 닫는다.
         background=BackgroundTask(done),
+    )
+
+
+def zip_head_response(*, content_disposition: str, headers: dict[str, str]) -> Response:
+    """``HEAD`` — 본문 없이 GET 과 같은 머리(담길 수 · 빠진 수 · 원본 합계). 동시 묶음 자리를 잡지 않고 접근 기록도 남기지 않는다(링크를 열기 전 확인용)."""
+    return Response(
+        status_code=200, media_type="application/zip",
+        headers={"Content-Disposition": content_disposition, "Cache-Control": "private, no-store",
+                 "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", **headers},
     )

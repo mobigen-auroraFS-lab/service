@@ -5,6 +5,7 @@
 
 from service.portal.auth.deps import (
     authenticate_token,
+    get_bundle_principal,
     get_download_principal,
     get_principal,
     require_principal,
@@ -17,6 +18,7 @@ __all__ = [
     "Principal",
     "authenticate_token",
     "claims_to_principal",
+    "get_bundle_principal",
     "get_download_principal",
     "get_principal",
     "issue_dev_token",
