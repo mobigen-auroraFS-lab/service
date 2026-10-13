@@ -30,7 +30,6 @@ from service.api.routes import (
     assets,
     catalog,
     file_search,
-    files,
     mm_meta,
     search,
 )
@@ -167,7 +166,6 @@ if _ROLE == "all":
     app.include_router(assets.router)
     app.include_router(assets.file_router)
     app.include_router(mm_meta.router)
-    app.include_router(files.router)
 elif _ROLE == "api":
     app.include_router(roles.filtered(assets.router, keep_files=False))
     app.include_router(roles.filtered(mm_meta.router, keep_files=False))
@@ -175,7 +173,6 @@ else:
     app.include_router(roles.filtered(assets.router, keep_files=True))
     app.include_router(assets.file_router)
     app.include_router(roles.filtered(mm_meta.router, keep_files=True))
-    app.include_router(files.router)
 if _ROLE in ("all", "api"):
     # 목록 창구(관계 종류·태그) — 화면이 "고를 값"을 받아 가는 자리. 검색 결과 칩과 쓰임이 다르다.
     app.include_router(catalog.router)

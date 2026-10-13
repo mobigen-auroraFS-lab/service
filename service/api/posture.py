@@ -60,7 +60,7 @@ def check_origin_paths() -> None:
     seen = sum(1 for p in paths if _readable(p))
     prefixes = sorted({_prefix(p) for p in paths})[:2]
     if seen == 0:
-        _LOG.warning("원본 경로 표본 %d개 중 0개가 보이지 않는다 — 원본 저장소가 이 서버에 마운트됐는지 확인한다(다운로드 · 원문이 410 이 된다). 경로 예: %s",
+        _LOG.warning("원본 경로 표본 %d개 중 0개가 보이지 않는다 — 원본 저장소가 이 서버에 마운트됐는지 확인한다(다운로드가 410 이 된다). 경로 예: %s",
                      len(paths), ", ".join(prefixes))
     elif seen < len(paths):
         _LOG.warning("원본 경로 표본 %d개 중 %d개만 보인다(경로 예: %s)", len(paths), seen, ", ".join(prefixes))

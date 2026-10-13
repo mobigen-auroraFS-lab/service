@@ -1,4 +1,4 @@
-"""원본 파일을 읽는 계층 — 다운로드 · 원문 · 묶음 · 기동 점검이 모두 여기를 거친다.
+"""원본 파일을 읽는 계층 — 다운로드 · 묶음 · 기동 점검이 모두 여기를 거친다.
 
 ``PORTAL_ORIGIN_BACKEND`` 로 구현을 고른다.
   · ``local``(기본) — DB 의 ``fs_path`` 를 마운트 경로로 직접 연다(로컬 시험 · 마운트가 있는 서버).
@@ -27,8 +27,6 @@ class OriginFile(Protocol):
 
     def read_range(self, start: int, end: int, *, window: int = 1) -> Iterator[bytes]:
         """``start``~``end``(둘 다 포함) 구간을 조각내어 내준다. 파일이 도중에 짧아지면 거기서 멈춘다. ``window`` > 1 이면 조각 여러 개를 동시에 읽는다(지연이 큰 저장소용)."""
-
-    def read_head(self, n: int) -> bytes: ...
 
     def close(self) -> None: ...
 
@@ -71,10 +69,6 @@ class LocalFile:
                 b = pending.pop(0).result()
                 if b:
                     yield b
-
-    def read_head(self, n: int) -> bytes:
-        self._fh.seek(0)
-        return self._fh.read(n)
 
     def close(self) -> None:
         self._fh.close()

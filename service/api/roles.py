@@ -1,6 +1,6 @@
 """프로세스 역할 — ``PORTAL_ROLE`` 이 이 프로세스가 열 창구를 정한다.
 
-  all(기본) 전부 · api 파일 창구를 뺀 나머지 · files 파일 창구(원본 · 원문 · 묶음 · 링크 · 썸네일) + 헬스 · 내 정보.
+  all(기본) 전부 · api 파일 창구를 뺀 나머지 · files 파일 창구(원본 · 묶음 · 링크) + 헬스 · 내 정보.
 파일 창구는 CPU(압축)와 대역폭을 많이 써서 별도 프로세스로 띄울 수 있다. 앞단(인그레스)도 ``is_file_path`` 와 같은 규칙으로 나눠 보낸다.
 라우트 코드는 옮기지 않고 등록할 때 거른다. 역할은 기동 시 환경변수로만 정한다.
 """
@@ -15,8 +15,8 @@ from fastapi import APIRouter
 ROLE_ENV = "PORTAL_ROLE"
 ROLES = ("all", "api", "files")
 
-# 파일을 내주는 경로 — 단건 원본 · 원문 · 관계 묶음 · 고른 자산 묶음 · 개체 묶음 · 카드 묶음 · 썸네일
-_FILE_PATH = re.compile(r"^/(assets/(\{[^/]+\}/(download|download-link|content|bundle|thumbnail)|bundle)|mm-meta/(bundle|\{[^/]+\}/\{[^/]+\}/bundle))$")
+# 파일을 내주는 경로 — 단건 원본(+ 링크) · 관계 묶음 · 고른 자산 묶음 · 개체 묶음 · 카드 묶음
+_FILE_PATH = re.compile(r"^/(assets/(\{[^/]+\}/(download|download-link|bundle)|bundle)|mm-meta/(bundle|\{[^/]+\}/\{[^/]+\}/bundle))$")
 
 
 def role() -> str:

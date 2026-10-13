@@ -1,6 +1,6 @@
-"""사용자용 자산 라우트 — 상세 조회 · 원본 내려받기 · 원문 · 묶음 · 주제 탐색 · 자산이 속한 개체.
+"""사용자용 자산 라우트 — 상세 조회 · 원본 내려받기 · 묶음 · 주제 탐색 · 자산이 속한 개체.
 
-원본은 DB 에 적힌 경로(``fs_path``)에 있다고 보고 읽는다(없으면 410). 썸네일은 ``routes/files.py`` 에 자리만 있다(501).
+원본은 DB 에 적힌 경로(``fs_path``)에 있다고 보고 읽는다(없으면 410). 원문 · 썸네일 창구는 두지 않는다(2026-10-13 · 화면에서도 뺐다).
 
 ⚠️ 라우트 선언 순서가 동작을 가른다. ``/assets/unclassified`` 같은 고정 경로를 ``/assets/{asset_id}`` 보다 먼저 선언해야 한다.
 """
@@ -19,8 +19,7 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from service.api import params
-from service.api.bundle_response import make_plan, zip_response
-from service.portal.asset.content import build_content
+from service.api.bundle_response import bundle_headers, make_plan, zip_response
 from service.portal.asset.download import (
     if_range_matches,
     make_etag,
@@ -29,7 +28,6 @@ from service.portal.asset.download import (
     parse_range_header,
 )
 from service.portal.asset.origin import OriginFile
-from service.portal.asset.selection import MAX_SELECTION, MAX_SELECTION_BYTES
 from service.portal.auth import Principal, get_download_principal, require_principal
 from service.portal.common.db_manager import DbManager
 from service.portal.history.access_log import record_access_many
@@ -45,7 +43,6 @@ _LOG = logging.getLogger("meta_extract.portal_api")
 
 _DOWNLOAD_404 = "다운로드 대상을 찾을 수 없거나 노출 대상이 아님"
 _FILE_GONE_410 = "원본 파일이 존재하지 않거나 접근할 수 없음"
-_CONTENT_404 = "자산을 찾을 수 없거나 노출 대상이 아님"
 
 
 @router.get("/assets/unclassified")
@@ -270,26 +267,6 @@ def _serve_download(asset_id: str, request: Request, *, head: bool) -> Response:
     )
 
 
-@router.get("/assets/{asset_id}/content")
-def asset_content(asset_id: str) -> dict[str, Any]:
-    """자산의 글자 내용을 돌려준다 — 상세 화면의 원문 영역용.
-
-    문서는 원본 파일에서, 소리 · 영상은 받아쓰기(``ext_meta.stt``)에서. 글자가 없으면 404(「이 자산에는 읽을 수 있는 원문이 없습니다」 — 없는 자산과 문구가 다르다), 원본이 사라졌으면 410.
-    """
-    params.uuid_or_404(asset_id, detail=_CONTENT_404)
-    source = DbManager.read(lambda repo: repo.content.source_of(asset_id))
-    if source is None:
-        raise HTTPException(status_code=404, detail=_CONTENT_404)
-    try:
-        # 파일 읽기는 **DB 트랜잭션 밖**에서 한다 — 느린 디스크가 커넥션을 붙잡지 않게.
-        body = build_content(source)
-    except OSError as exc:
-        raise HTTPException(status_code=410, detail=_FILE_GONE_410) from exc
-    if body is None:
-        raise HTTPException(status_code=404, detail="이 자산에는 읽을 수 있는 원문이 없습니다")
-    return body
-
-
 @router.get("/assets/{asset_id}/bundle")
 def bundle(asset_id: str) -> StreamingResponse:
     """기준 자산과 직접 연결된 이웃을 한 zip 으로 흘려 보낸다. 기준 자산이 노출 대상이 아니면 404.
@@ -303,8 +280,7 @@ def bundle(asset_id: str) -> StreamingResponse:
     plan = make_plan(targets)       # 응답을 시작하기 전에 존재 · 크기를 확인한다(파일 읽기는 DB 트랜잭션 밖)
     return zip_response(
         plan, content_disposition=_content_disposition(f"bundle_{asset_id}.zip"),
-        headers={"X-Bundle-Count": str(len(plan.packed)), "X-Bundle-Missing": str(len(plan.unreadable)),
-                 "X-Bundle-Bytes": str(plan.total_bytes)},
+        headers=bundle_headers(plan),
     )
 
 
@@ -322,28 +298,17 @@ def selection_bundle(
 ) -> StreamingResponse:
     """고른 자산들을 한 zip 으로 흘려 보낸다(목록 화면의 일괄 내려받기). 노출되지 않는 자산은 빠지고 ``_manifest.json`` 에 남는다.
 
-    감사는 담긴 자산마다 ``bundle`` 한 행. 빈 목록 · 형식 오류 · 건수 초과 400 · 용량 초과 413 · 내려받을 자산이 하나도 없으면 409.
+    감사는 담긴 자산마다 ``bundle`` 한 행. 빈 목록 · 형식 오류 400 · 내려받을 자산이 하나도 없으면 409. 건수 · 용량 상한은 두지 않는다(요청 본문 상한 · 동시 묶음 수 제한만 걸린다).
     """
     asset_ids = params.uuid_list_or_400(payload.asset_ids, field="asset_ids")
     if not asset_ids:
         raise HTTPException(status_code=400, detail="asset_ids 가 비어 있습니다 — 내려받을 자산을 고르십시오")
-    if len(asset_ids) > MAX_SELECTION:
-        raise HTTPException(
-            status_code=400,
-            detail=f"한 번에 {MAX_SELECTION}건까지 묶을 수 있습니다(요청 {len(asset_ids)}건)")
 
     picked = DbManager.read(lambda repo: repo.selection.targets(asset_ids))
     targets = picked["targets"]
     if not targets:
         raise HTTPException(status_code=409, detail="내려받을 수 있는 자산이 없습니다 — 모두 노출 대상이 아닙니다")
-    mb, cap = 1024 * 1024, MAX_SELECTION_BYTES // (1024 * 1024)
-    if picked["total_bytes"] > MAX_SELECTION_BYTES:
-        raise HTTPException(
-            status_code=413, detail=f"용량이 상한을 넘습니다({picked['total_bytes'] // mb}MB > {cap}MB) — 고른 자산을 줄이십시오")
     plan = make_plan(targets)
-    if plan.total_bytes > MAX_SELECTION_BYTES:
-        raise HTTPException(
-            status_code=413, detail=f"용량이 상한을 넘습니다({plan.total_bytes // mb}MB > {cap}MB) — 고른 자산을 줄이십시오")
 
     packed_ids = [t["asset_id"] for t in plan.packed]
 
@@ -359,11 +324,7 @@ def selection_bundle(
 
     return zip_response(
         plan, content_disposition=_content_disposition(f"selection_{len(targets)}.zip"),
-        headers={
-            # 🔴 zip 은 스트리밍이라 실패가 본문 도중에 드러난다 — 몇 건이 담기고 몇 건이 빠지는지 헤더로 먼저 알려,
-            #    화면이 받은 zip 이 온전한지 스스로 맞춰 볼 수 있게 한다. 빠진 수 = 노출 대상이 아니라 뺀 것 + 원본이 없는 것.
-            "X-Bundle-Files": str(len(plan.packed)),
-            "X-Bundle-Missing": str(len(picked["missing"]) + len(plan.unreadable)),
-            "X-Bundle-Bytes": str(plan.total_bytes),
-        },
+        # 🔴 zip 은 스트리밍이라 실패가 본문 도중에 드러난다 — 몇 건이 담기고 몇 건이 빠지는지 헤더로 먼저 알려,
+        #    화면이 받은 zip 이 온전한지 스스로 맞춰 볼 수 있게 한다. 빠진 수 = 노출 대상이 아니라 뺀 것 + 원본이 없는 것.
+        headers=bundle_headers(plan, missing=len(picked["missing"]) + len(plan.unreadable)),
     )

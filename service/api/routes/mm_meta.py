@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from service.api import params
-from service.api.bundle_response import make_plan, zip_response
+from service.api.bundle_response import bundle_headers, make_plan, zip_response
 from service.portal import mm_meta
 from service.portal.auth import require_principal
 from service.portal.common.db_manager import DbManager
@@ -256,8 +256,7 @@ def download_entities_bundle(
     return zip_response(
         plan,
         content_disposition=f'attachment; filename="{mm_meta.ascii_zip_name([entity_type or "all", *picked], fallback="meta", count=len(plan.packed))}"',
-        headers={"X-Bundle-Count": str(len(plan.packed)), "X-Bundle-Missing": str(len(plan.unreadable)),
-                 "X-Bundle-Bytes": str(plan.total_bytes)},
+        headers=bundle_headers(plan),
     )
 
 
@@ -272,8 +271,7 @@ def download_card_bundle(entity_type: str, entity_uid: str) -> StreamingResponse
     if not targets:
         raise HTTPException(status_code=409, detail="내려받을 파일이 없다(구성 자산 없음 또는 경로 미상)")
     plan = make_plan(targets)
-    headers = {"X-Bundle-Count": str(len(plan.packed)), "X-Bundle-Missing": str(len(plan.unreadable)),
-               "X-Bundle-Bytes": str(plan.total_bytes)}
+    headers = bundle_headers(plan)
     if truncated:
         headers["X-Bundle-Truncated"] = str(mm_meta.CARD_BUNDLE_MAX_ASSETS)
     return zip_response(

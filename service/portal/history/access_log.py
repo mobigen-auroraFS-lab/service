@@ -66,7 +66,7 @@ def derive_access_action(method: str, path: str) -> tuple[str, str | None] | Non
     """요청 경로를 보고 감사에 남길 동작 이름과 대상 자산 ``(action, asset_id)`` 을 정한다(순수). GET 이 아니거나 감사 대상이 아니면 ``None``.
 
     ⚠ 데이터 라우트를 추가하면 이 함수도 같이 고친다(누락은 조용히 미기록). ``/assets/`` 뒤 첫 세그먼트는 UUID 일 때만 자산 단건으로 본다(컬렉션 경로를 자산 id 로 오인하면 INSERT 가 매번 실패한다).
-    고른 자산 묶음은 POST 라 라우트가 담긴 자산마다 ``bundle`` 로 남기고, 개체 묶음 · 썸네일은 기록하지 않는다.
+    고른 자산 묶음은 POST 라 라우트가 담긴 자산마다 ``bundle`` 로 남기고, 개체 묶음은 기록하지 않는다.
     """
     if method.upper() != "GET":
         return None
@@ -84,9 +84,6 @@ def derive_access_action(method: str, path: str) -> tuple[str, str | None] | Non
             return ("download", asset_id)
         if len(parts) == 2 and parts[1] == "bundle":
             return ("bundle", asset_id)
-        if len(parts) == 2 and parts[1] == "content":
-            # 원문 열람은 상세(asset_view)와 구분한다 — 본문 글자를 가져가는 접근이다.
-            return ("content", asset_id)
     return None
 
 

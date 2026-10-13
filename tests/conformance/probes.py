@@ -82,7 +82,7 @@ def ensure_image() -> Path:
 
 
 _DETAIL_SQL = r"LEFT JOIN asset_metadata m ON m\.asset_id = a\.asset_id\s+WHERE a\.asset_id = %s"
-# 원본 다운로드(IF-ASSET-03)의 대상 질의 · 원문(IF-ASSET-11)의 질의 — 2026-10-01 다시 구현했다.
+# 원본 다운로드(IF-ASSET-03)의 대상 질의.
 _TARGET_SQL = (r"SELECT asset_id, fs_path, fs_uri, file_size, modality, domain_label, status"
                r"\s+FROM asset\s+WHERE asset_id = %s")
 
@@ -93,11 +93,8 @@ def _target_row(path: Path) -> list[dict[str, Any]]:
              "status": "registered"}]
 
 
-# [2026-09-21 신설 창구] 원문 · 태그 · 추천은 각자 다른 질의를 쓴다.
-#   ⚠️ 원문 질의는 상세 질의와 같은 조인 문구를 써서 ``_DETAIL_SQL`` 에도 걸린다 — **먼저** 둬야
-#      제 픽스처를 만난다(FakeConn 은 첫 일치를 쓴다).
-_CONTENT_SQL = r"SELECT a\.asset_id, a\.modality, a\.status, a\.fs_path, m\.ext_meta"
-_SELECTION_SQL = r"SELECT asset_id, fs_path, file_size\s+FROM asset\s+WHERE asset_id = ANY"
+# 선택 묶음 · 태그 · 추천은 각자 다른 질의를 쓴다.
+_SELECTION_SQL = r"SELECT asset_id, fs_path\s+FROM asset\s+WHERE asset_id = ANY"
 _TAGS_SQL = r"jsonb_array_elements_text\(COALESCE\(m\.ext_meta->'keywords'"
 _SUGGEST_SQL = r"SELECT t\.topic_ko AS value, 'topic' AS kind"
 
@@ -106,10 +103,7 @@ def found() -> list[Fixture]:
     """행도 있고 파일도 있다 — 정상 200·400·422 유발용."""
     img = ensure_image()
     return [
-        # 원문 — 받아쓰기가 있는 소리 자산(파일을 읽지 않고도 200 이 난다).
-        fixture(_CONTENT_SQL, [{"asset_id": ASSET_ID, "modality": "audio", "status": "registered",
-                                "fs_path": str(img), "ext_meta": {"stt": "받아쓴 글자"}}]),
-        fixture(_SELECTION_SQL, [{"asset_id": ASSET_ID, "fs_path": str(img), "file_size": 512}]),
+        fixture(_SELECTION_SQL, [{"asset_id": ASSET_ID, "fs_path": str(img)}]),
         fixture(_TARGET_SQL, _target_row(img)),
         fixture(_TAGS_SQL, [{"tag": "한옥", "count": 3}]),
         fixture(_SUGGEST_SQL, [{"value": "역사·문화유산", "kind": "topic", "count": 5}]),
@@ -146,20 +140,6 @@ def entity_assets_pathless() -> list[Fixture]:
                       "file_size": 10}])]
 
 
-def selection_huge() -> list[Fixture]:
-    """고른 자산의 크기 합이 **상한을 넘는다** → 413(건수만으로는 못 막는 자리)."""
-    return [fixture(_SELECTION_SQL,
-                    [{"asset_id": ASSET_ID, "fs_path": "/tmp/huge.bin",
-                      "file_size": 600 * 1024 * 1024}])]
-
-
-def gone_content() -> list[Fixture]:
-    """원문을 읽을 문서인데 **원본 파일이 사라졌다** → 410(404 와 가른다)."""
-    return [fixture(_CONTENT_SQL, [{"asset_id": ASSET_ID, "modality": "text",
-                                    "status": "registered", "fs_path": str(MISSING_PATH),
-                                    "ext_meta": {}}])]
-
-
 def gone() -> list[Fixture]:
     """행은 있고 디스크 파일이 없다 → 410."""
     return [fixture(_TARGET_SQL, _target_row(MISSING_PATH))]
@@ -183,7 +163,7 @@ HAPPY_BODY = {"/auth/token": {"user_id": "conformance"},
               "/admin/relations/revise": {"edge_id": "e1", "to_status": "active"}}
 
 # (설명, 픽스처 종류, query, body, headers) — 하나라도 선언 코드를 내면 재현으로 본다.
-# 픽스처 종류: "found" | "none" | "gone"(다운로드 원본 없음) | "gone_content"(원문 원본 없음)
+# 픽스처 종류: "found" | "none" | "gone"(다운로드 원본 없음)
 ERROR_PROBES: dict[str, list[tuple[str, str, dict, dict | None, dict]]] = {
     "IF-ASSET-06": [("mode 오타", "found", {"q": "x", "mode": "bogus"}, None, {}),
                     ("modality 오타", "found", {"q": "x", "modalities": "bogus"}, None, {}),
@@ -217,18 +197,15 @@ ERROR_PROBES: dict[str, list[tuple[str, str, dict, dict | None, dict]]] = {
     "IF-ADMIN-17": [("status 오타", "found", {"status": "bogus"}, None, {})],
     # 개체 묶음·카드 — 좁힌 결과가 비면 404, 용량 상한 초과면 413, 경로를 아는 파일이 없으면 409
     "IF-ENTITY-05": [("개체 없음", "none", {}, None, {})],
-    # 원본 다운로드 · 원문 · 묶음 네 창구(2026-10-01 다시 구현 — 묶음은 임시 파일 없이 만들면서 흘려 보낸다). 썸네일(IF-ASSET-04)만 자리만(501)이라 표본이 없다.
+    # 원본 다운로드 · 묶음 네 창구(묶음은 임시 파일 없이 만들면서 흘려 보낸다).
     "IF-ASSET-03": [("행 없음", "none", {}, None, {}),
                     ("파일 없음", "gone", {}, None, {}),
                     ("Range 위반", "found", {}, None, {"Range": "bytes=99999-"})],
     "IF-ASSET-15": [("행 없음", "none", {}, None, {})],
-    "IF-ASSET-11": [("행 없음", "none", {}, None, {}),
-                    ("원본 파일 없음", "gone_content", {}, None, {})],
     "IF-ASSET-05": [("seed 없음", "none", {}, None, {})],
     "IF-ASSET-12": [("빈 asset_ids", "found", {}, {"asset_ids": []}, {}),
                     ("UUID 아님", "found", {}, {"asset_ids": ["nope"]}, {}),
-                    ("전부 노출 대상 아님", "none", {}, {"asset_ids": [ASSET_ID]}, {}),
-                    ("용량 상한 초과", "selection_huge", {}, {"asset_ids": [ASSET_ID]}, {})],
+                    ("전부 노출 대상 아님", "none", {}, {"asset_ids": [ASSET_ID]}, {})],
     "IF-ENTITY-04": [("좁힌 결과 없음", "none", {}, None, {}),
                      ("용량 상한 초과", "entity_huge", {}, None, {}),
                      ("전부 경로 미상", "entity_pathless", {}, None, {})],
@@ -291,9 +268,9 @@ UNREACHABLE = {
 
 
 def fixtures_for(kind: str) -> list[Fixture]:
-    return {"found": found(), "none": NONE, "gone": gone(), "gone_content": gone_content(),
+    return {"found": found(), "none": NONE, "gone": gone(),
             "entity_huge": entity_assets_huge(), "entity_pathless": entity_assets_pathless(),
-            "entity_card_empty": entity_card_empty(), "selection_huge": selection_huge()}[kind]
+            "entity_card_empty": entity_card_empty()}[kind]
 
 
 def fill_path(url: str) -> str:

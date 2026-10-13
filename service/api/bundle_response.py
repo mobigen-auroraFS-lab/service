@@ -1,7 +1,7 @@
 """묶음(zip) 응답 만들기 — 네 묶음 창구가 함께 쓴다.
 
 시작 전에 계획(``plan_bundle``)으로 건수 · 용량 헤더를 정하고, ZIP 은 임시 파일 없이 흘려 보낸다. 동시에 만드는 묶음 수는 프로세스당 제한한다.
-헤더: X-Bundle-Count(또는 X-Bundle-Files) 담길 수 · X-Bundle-Missing 빠진 수(이름은 ZIP 끝 _manifest.json) · X-Bundle-Bytes 원본 합계 · X-Bundle-Truncated 카드가 200건에서 잘렸을 때.
+헤더: X-Bundle-Count 와 X-Bundle-Files(같은 값 — 창구마다 달랐던 이름을 둘 다 준다) 담길 수 · X-Bundle-Missing 빠진 수(이름은 ZIP 끝 _manifest.json) · X-Bundle-Bytes 원본 합계 · X-Bundle-Truncated 카드가 200건에서 잘렸을 때.
 """
 
 from __future__ import annotations
@@ -24,6 +24,13 @@ _LOG = logging.getLogger("meta_extract.portal_api")
 # 요청이 스레드를 잡고 줄을 서면 다른 요청이 굶는다.
 BUNDLE_MAX_ENV = "PORTAL_BUNDLE_MAX_CONCURRENT"
 RETRY_AFTER_SECONDS = 5
+
+
+def bundle_headers(plan: BundlePlan, *, missing: int | None = None) -> dict[str, str]:
+    """묶음 응답 헤더 — 담길 수(``X-Bundle-Count`` = ``X-Bundle-Files``) · 빠진 수 · 원본 합계. ``missing`` 은 계획 밖에서 뺀 것이 있을 때 합산해 넘긴다."""
+    packed = str(len(plan.packed))
+    return {"X-Bundle-Count": packed, "X-Bundle-Files": packed,
+            "X-Bundle-Missing": str(len(plan.unreadable) if missing is None else missing), "X-Bundle-Bytes": str(plan.total_bytes)}
 
 
 def bundle_max_concurrent() -> int:

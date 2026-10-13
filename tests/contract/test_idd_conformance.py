@@ -113,23 +113,12 @@ def implemented() -> list[tuple[str, dict]]:
             and s["gubun"] != PLACEHOLDER_GUBUN]
 
 
-class TestPlaceholders(unittest.TestCase):
-    """⑤ 자리만 있는 창구 — 경로 · 메서드가 등록돼 있고, 불렀을 때 501 공용 봉투인가."""
+class TestNoPlaceholders(unittest.TestCase):
+    """자리만 있는 창구(501)는 없다 — 원문 · 썸네일 창구를 지웠다(2026-10-13). 다시 생기면 이 시험이 알린다."""
 
-    def test_placeholders_answer_501(self) -> None:
-        from service.api.routes.files import NOT_READY_DETAIL
-        held = [(api, s) for api, s in sorted(CONTRACT.items()) if s["gubun"] == PLACEHOLDER_GUBUN]
-        self.assertEqual(1, len(held), "자리만 있는 창구는 썸네일 하나다(원본 다운로드 · 원문 · 묶음 4 는 구현했다)")
-        client = TestClient(app)
-        for api, spec in held:
-            with self.subTest(api=api):
-                self.assertIn(spec["method"].lower(), PATHS.get(spec["url"], {}), f"{api} 경로가 등록돼 있지 않다")
-                url = (spec["url"].replace("{asset_id}", probes.ASSET_ID)
-                       .replace("{entity_type}", "person").replace("{entity_uid}", "u1"))
-                body = {"asset_ids": [probes.ASSET_ID]} if spec["method"] == "POST" else None
-                r = client.request(spec["method"], url, json=body)
-                self.assertEqual(501, r.status_code, r.text)
-                self.assertEqual(NOT_READY_DETAIL, r.json()["detail"])
+    def test_no_placeholders(self) -> None:
+        held = [api for api, s in sorted(CONTRACT.items()) if s["gubun"] == PLACEHOLDER_GUBUN]
+        self.assertEqual([], held)
 
 
 class TestContractFreshness(unittest.TestCase):

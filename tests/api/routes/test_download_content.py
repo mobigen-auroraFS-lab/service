@@ -1,4 +1,4 @@
-"""``GET /assets/{id}/download`` · ``GET /assets/{id}/content`` — 실제 임시 파일로 응답을 확인한다.
+"""``GET /assets/{id}/download`` — 실제 임시 파일로 응답을 확인한다.
 
 원본은 **DB 에 적힌 경로에 있다고 본다**(2026-10-01): 없으면 410 봉투. 구간(Range) · 이어받기 기준값(ETag · If-Range) · 416 ·
 파일명 헤더(한글 · 위조 방지) · 노출 게이트(404) · 다 읽은 뒤 핸들이 닫히는지.
@@ -202,51 +202,3 @@ class TestDownload(_Base):
         with mock.patch.dict(os.environ, {"PORTAL_AUTH_DISABLED": "0", "PORTAL_JWT_SECRET": "x" * 40}):
             r = TestClient(app).get(f"/assets/{AID}/download")
         self.assertEqual(401, r.status_code)
-
-
-class _Content:
-    def __init__(self, source): self._s = source
-    def source_of(self, asset_id): return self._s
-
-
-class _ContentRepo:
-    def __init__(self, source): self.content = _Content(source)
-
-
-class TestContent(_Base):
-    def _content(self, source):
-        with mock.patch.object(routes_assets.DbManager, "read", side_effect=lambda fn: fn(_ContentRepo(source))):
-            return self.client.get(f"/assets/{AID}/content")
-
-    def test_문서는_원본_파일_글자(self) -> None:
-        Path(self.path).write_text("안녕하세요\n두 번째 줄", encoding="utf-8")
-        r = self._content({"asset_id": AID, "modality": "text", "fs_path": self.path, "stt": None})
-        self.assertEqual(200, r.status_code)
-        body = r.json()
-        self.assertEqual(("file", "안녕하세요\n두 번째 줄", False), (body["source"], body["text"], body["truncated"]))
-
-    def test_소리는_받아쓰기(self) -> None:
-        r = self._content({"asset_id": AID, "modality": "audio", "fs_path": "/없어도/상관없다", "stt": "받아쓴 글"})
-        self.assertEqual(("stt", "받아쓴 글"), (r.json()["source"], r.json()["text"]))
-
-    def test_글자가_없는_종류는_404_문구가_다르다(self) -> None:
-        r = self._content({"asset_id": AID, "modality": "image", "fs_path": self.path, "stt": None})
-        self.assertEqual((404, "이 자산에는 읽을 수 있는 원문이 없습니다"), (r.status_code, r.json()["detail"]))
-
-    def test_노출_대상이_아니면_404(self) -> None:
-        r = self._content(None)
-        self.assertEqual((404, "자산을 찾을 수 없거나 노출 대상이 아님"), (r.status_code, r.json()["detail"]))
-
-    def test_문서인데_원본이_없으면_410_봉투(self) -> None:
-        r = self._content({"asset_id": AID, "modality": "text", "fs_path": "/no/such.txt", "stt": None})
-        self.assertEqual((410, {"detail": "원본 파일이 존재하지 않거나 접근할 수 없음"}), (r.status_code, r.json()))
-
-    def test_상한을_넘으면_잘라서_알린다(self) -> None:
-        Path(self.path).write_text("가" * 600_000, encoding="utf-8")         # 한글 3바이트 × 60만 = 180만 바이트
-        body = self._content({"asset_id": AID, "modality": "text", "fs_path": self.path, "stt": None}).json()
-        self.assertTrue(body["truncated"])
-        self.assertLessEqual(len(body["text"].encode("utf-8")), body["byte_cap"] + 3)
-
-
-if __name__ == "__main__":
-    unittest.main()
