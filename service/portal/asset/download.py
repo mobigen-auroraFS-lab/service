@@ -20,7 +20,6 @@ from src.config.filename_util import (
     display_file_name,
 )
 from src.domain.status_vocab import AssetStatus
-from src.relations.graph_query import fetch_active_relations_for_asset
 
 logger = logging.getLogger(__name__)
 
@@ -160,41 +159,23 @@ def collect_bundle_assets(
     conn: Connection[Any],
     *,
     seed_asset_id: str,
-    max_neighbors: int = 50,
-    min_confidence: float = 0.0,
+    max_neighbors: int | None = None,
 ) -> list[dict[str, Any]]:
-    """기준 자산과 직접 연결된 이웃을 묶음 대상으로 모은다 — 기준 자산 먼저, 이웃은 (confidence 내림차순, asset_id) 로 정렬해 ``max_neighbors`` 로 자른다.
+    """기준 자산과 직접 연결된 이웃을 묶음 대상으로 모은다 — 기준 자산 먼저, 이웃은 **상세의 관련 자료와 같은 집합 · 같은 순서**(등급 → 신뢰도 → 자산 id).
 
-    self-loop 와 ``min_confidence`` 미만은 뺀다. 경로를 모르는 항목도 뺀다.
+    확인 전(`proposed`) 관계도 담는다 — 상세가 보여 주는 것을 받는다(``active`` 만 담으면 승인이 0건인 동안 기준 파일 하나만 든다).
+    경로를 모르는 항목은 뺀다. 이웃 수 상한은 두지 않는다(``max_neighbors`` 를 줄 때만 자른다).
     """
+    from service.portal.asset.detail import related_assets  # 늦게 불러온다(상세 모듈이 무겁다)
+
     seed_id = str(seed_asset_id)
-    # 확인된(active) 관계만 담는다 — 틀린 파일이 담긴 zip 은 회수할 수 없다.
-    neighbors = fetch_active_relations_for_asset(conn, asset_id=seed_id)
-
-    # 이웃 dedup: 같은 자산이 여러 엣지로 와도 한 번만(최고 confidence 보존). None → 0.0 정화.
-    best_conf: dict[str, float] = {}
-    for n in neighbors:
-        nid = str(n["asset_id"])
-        if nid == seed_id:
-            continue  # self-loop 방어
-        conf = n.get("confidence")
-        conf = float(conf) if conf is not None else 0.0
-        if conf < min_confidence:
-            continue
-        if nid not in best_conf or conf > best_conf[nid]:
-            best_conf[nid] = conf
-
-    # 결정적 정렬: confidence desc, asset_id asc.
-    ordered = sorted(best_conf.items(), key=lambda kv: (-kv[1], kv[0]))
-    if len(ordered) > max_neighbors:
-        logger.warning(
-            "묶음 이웃 %d개가 max_neighbors=%d 초과 — confidence 상위 %d개로 절단(seed=%s)",
-            len(ordered), max_neighbors, max_neighbors, seed_id,
-        )
+    ordered = [str(n["asset_id"]) for n in related_assets(conn, seed_id) if str(n["asset_id"]) != seed_id]   # self-loop 방어
+    if max_neighbors is not None and len(ordered) > max_neighbors:
+        logger.warning("묶음 이웃 %d개가 max_neighbors=%d 초과 — 상위 %d개로 절단(seed=%s)", len(ordered), max_neighbors, max_neighbors, seed_id)
         ordered = ordered[:max_neighbors]
 
     # 최종 순서: seed 먼저 → 이웃(위 정렬). 경로 일괄 조회 후 enrich.
-    ordered_ids = [seed_id] + [nid for nid, _ in ordered]
+    ordered_ids = [seed_id, *ordered]
     path_map = fetch_asset_paths(conn, ordered_ids)
 
     targets: list[dict[str, Any]] = []
