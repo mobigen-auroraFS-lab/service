@@ -105,6 +105,7 @@ zip 맨 끝 `_manifest.json` 에 적으며, 건수는 `X-Bundle-*` 응답 머리
 | `GET /assets/{id}/bundle` | 이 자산과 관계된 자산을 zip 하나로 |
 | `POST /assets/bundle` | 고른 자산 여러 개를 zip 하나로(JSON 본문 · 헤더 인증) |
 | `POST /assets/bundle/download` | 같은 일을 **폼 제출**로(묶음 링크로 인증 — 큰 묶음을 브라우저가 직접 받는다) |
+| `GET /topics/{topic}/bundle` | 한 분류(주제 · 하위주제)의 등록 완료 자산 전부를 zip 하나로 — 상세의 「분류 묶음」(`?subtopic=` · `exclude_video`) |
 | `POST /bundle-links` | 묶음(zip)을 헤더 없이 받는 짧은 수명의 주소를 준다 |
 | `GET /mm-meta/bundle` · `/mm-meta/{type}/{uid}/bundle` | 개체들 · 개체 카드의 구성 자산을 zip 하나로 |
 
@@ -324,7 +325,7 @@ PORTAL_ROLE=api   uvicorn service.api:app --port 8000   # 검색 · 상세 · �
 PORTAL_ROLE=files uvicorn service.api:app --port 8100   # 원본 · 묶음 zip
 ```
 
-앞단(인그레스)이 `/assets/{id}/download` · `/assets/{id}/download-link` · `/assets/{id}/bundle` · `POST /assets/bundle` · `POST /assets/bundle/download` · `/bundle-links` · `/mm-meta/bundle` · `/mm-meta/{type}/{uid}/bundle` 만 files 로 보내고 나머지는 api 로 보냅니다.
+앞단(인그레스)이 `/assets/{id}/download` · `/assets/{id}/download-link` · `/assets/{id}/bundle` · `POST /assets/bundle` · `POST /assets/bundle/download` · `/bundle-links` · `/topics/{topic}/bundle` · `/mm-meta/bundle` · `/mm-meta/{type}/{uid}/bundle` 만 files 로 보내고 나머지는 api 로 보냅니다.
 웹은 바뀌지 않습니다. 두 프로세스는 JWT 서명 키 · CORS 설정을 같게 가져야 하고, DB 풀 합이 PostgreSQL `max_connections` 안이어야 합니다. files 의 DB 풀을 줄이면 묶음 처리량이 줄어드니 기본값으로 두고 CPU 상한은 파드의 limit 으로 겁니다.
 측정 근거와 방식 비교는 `experiments/RESULTS.md` 입니다. 파드 CPU 한도에서의 효과는 아직 재지 못했습니다.
 
@@ -390,7 +391,7 @@ psycopg 는 LGPL 입니다. 파이썬에서 불러 쓰는 것은 이 소프트�
 
 묶음 창구도 링크로 받을 수 있습니다. 링크는 **그 요청 대상(메서드 + 경로 + 조건)에만** 통해서, 다른 묶음이나 조건을 바꾼 요청에는 안 통합니다(예: `areas` 를 바꾸면 새 링크가 필요합니다).
 
-1. 로그인한 헤더로 `POST /bundle-links` 에 `{"method": "GET", "url": "/mm-meta/bundle?entity_type=작품&areas=문화유산·역사"}` 를 보내면 `{"url": "…?…&link=…", "method": "GET", "expires_in": 300}` 가 옵니다. 받을 수 있는 대상은 `GET /assets/{id}/bundle` · `GET /mm-meta/bundle` · `GET /mm-meta/{type}/{uid}/bundle` · `POST /assets/bundle/download` 입니다(그 밖은 400).
+1. 로그인한 헤더로 `POST /bundle-links` 에 `{"method": "GET", "url": "/mm-meta/bundle?entity_type=작품&areas=문화유산·역사"}` 를 보내면 `{"url": "…?…&link=…", "method": "GET", "expires_in": 300}` 가 옵니다. 받을 수 있는 대상은 `GET /assets/{id}/bundle` · `GET /mm-meta/bundle` · `GET /mm-meta/{type}/{uid}/bundle` · `GET /topics/{topic}/bundle` · `POST /assets/bundle/download` 입니다(그 밖은 400).
 2. **GET 묶음**: 받은 `url` 을 `<a href>` · `window.location` 으로 엽니다. 열기 전에 `HEAD` 로 같은 주소를 부르면 `404`(대상 없음) · `409`(담을 파일 없음) · 담길 수(`X-Bundle-Count`)를 먼저 확인할 수 있습니다(`HEAD` 는 동시 묶음 자리 · 접근 기록을 쓰지 않습니다).
 3. **선택 묶음**(고른 자산 id 목록): `method` 를 `POST`, `url` 을 `/assets/bundle/download` 로 링크를 받고, 그 `url` 로 **숨은 폼을 제출**합니다 — `method=POST`, `action=<url>`, 자산마다 `<input name="asset_ids" value="<id>">`. 목록은 링크에 묶이지 않고 매번 서버가 노출 기준으로 다시 거릅니다.
 

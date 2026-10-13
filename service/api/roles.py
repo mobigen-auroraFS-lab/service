@@ -15,8 +15,8 @@ from fastapi import APIRouter
 ROLE_ENV = "PORTAL_ROLE"
 ROLES = ("all", "api", "files")
 
-# 파일을 내주는 경로 — 단건 원본(+ 링크) · 관계 묶음 · 고른 자산 묶음(+ 폼) · 개체 묶음 · 카드 묶음 · 묶음 링크 발급
-_FILE_PATH = re.compile(r"^/(assets/(\{[^/]+\}/(download|download-link|bundle)|bundle|bundle/download)|bundle-links|mm-meta/(bundle|\{[^/]+\}/\{[^/]+\}/bundle))$")
+# 파일을 내주는 경로 — 단건 원본(+ 링크) · 관계 묶음 · 고른 자산 묶음(+ 폼) · 개체 묶음 · 카드 묶음 · 분류 묶음 · 묶음 링크 발급
+_FILE_PATH = re.compile(r"^/(assets/(\{[^/]+\}/(download|download-link|bundle)|bundle|bundle/download)|bundle-links|topics/\{[^/]+\}/bundle|mm-meta/(bundle|\{[^/]+\}/\{[^/]+\}/bundle))$")
 
 
 def role() -> str:

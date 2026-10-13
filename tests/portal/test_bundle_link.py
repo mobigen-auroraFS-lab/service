@@ -113,8 +113,13 @@ class _Routes(unittest.TestCase):
                 outer.card_kw = kw
                 return (outer.targets, "카드")
 
+        class _AssetWithTopic(_Asset):
+            def topic_bundle_targets(self, *, topic, subtopic, exclude_video):
+                outer.topic_kw = {"topic": topic, "subtopic": subtopic, "exclude_video": exclude_video}
+                return [] if topic == "없는주제" else [{**t, "file_name": t["file_name"]} for t in outer.targets]
+
         class _Repo:
-            asset = _Asset()
+            asset = _AssetWithTopic()
             selection = _Selection()
             entity = _Entity()
             conn = object()
@@ -220,6 +225,36 @@ class TestEntityBundleLink(_Routes):
         self.assertEqual(200, self.client.head(url).status_code)
         link = url.split("link=")[1]
         self.assertEqual(401, self.client.get(f"/mm-meta/작품/다른개체/bundle?link={link}").status_code)
+
+
+class TestTopicBundleLink(_Routes):
+    def test_분류_묶음을_링크로_받는다(self) -> None:
+        url = self.mint("/topics/역사·문화유산/bundle?subtopic=유적·유물&exclude_video=true").json()["url"]
+        r = self.client.get(url)                                           # 헤더 없음
+        self.assertEqual(200, r.status_code)
+        self.assertEqual(["a.txt", "b.txt"], self.names(r))
+        self.assertEqual({"topic": "역사·문화유산", "subtopic": "유적·유물", "exclude_video": True}, self.topic_kw)
+        self.assertEqual(("2", "2"), (r.headers["x-bundle-count"], r.headers["x-bundle-files"]))
+        self.assertIn("filename*=UTF-8", r.headers["content-disposition"])
+        self.assertEqual(200, self.client.head(url).status_code)
+
+    def test_주제_전체는_하위주제_없이(self) -> None:
+        self.assertEqual(200, self.client.get("/topics/역사/bundle", headers=self.bearer).status_code)
+        self.assertEqual({"topic": "역사", "subtopic": None, "exclude_video": False}, self.topic_kw)
+
+    def test_조건을_바꾸면_링크가_통하지_않는다(self) -> None:
+        link = self.mint("/topics/역사/bundle?subtopic=가").json()["url"].split("link=")[1]
+        self.assertEqual(401, self.client.get(f"/topics/역사/bundle?subtopic=나&link={link}").status_code)
+        self.assertEqual(401, self.client.get(f"/topics/다른/bundle?subtopic=가&link={link}").status_code)
+        self.assertEqual(401, self.client.get("/topics/역사/bundle?subtopic=가").status_code)
+
+    def test_분류가_없으면_404(self) -> None:
+        self.assertEqual(404, self.client.get("/topics/없는주제/bundle", headers=self.bearer).status_code)
+
+    def test_경로가_없는_자료만이면_409(self) -> None:
+        for t in self.targets:
+            t["fs_path"] = None
+        self.assertEqual(409, self.client.get("/topics/역사/bundle", headers=self.bearer).status_code)
 
 
 class TestSelectionFormLink(_Routes):
