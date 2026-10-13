@@ -56,8 +56,15 @@ def _warm_search() -> str:
     return "검색"
 
 
+def _warm_modalities() -> str:
+    """개체별 보유 자료 유형 캐시를 채운다(첫 자료 유형 좁히기가 2초쯤 걸리는 읽기를 치르지 않게)."""
+    n = DbManager.read(lambda repo: repo.entity.facets(
+        entity_type=None, areas=[], min_bundle_size=0, modalities=[]))
+    return f"자료 유형 캐시({len(n['modalities'])}축)"
+
+
 # 단계 이름 · 함수 — 앞에서부터 차례로 하고, 한 단계의 실패가 다음 단계를 막지 않는다.
-STEPS: tuple[tuple[str, Callable[[], str]], ...] = (("태그", _warm_tags), ("검색", _warm_search))
+STEPS: tuple[tuple[str, Callable[[], str]], ...] = (("태그", _warm_tags), ("검색", _warm_search), ("자료 유형", _warm_modalities))
 
 
 def warm_once() -> None:

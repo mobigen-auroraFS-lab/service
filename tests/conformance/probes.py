@@ -196,6 +196,7 @@ ERROR_PROBES: dict[str, list[tuple[str, str, dict, dict | None, dict]]] = {
                     ("날짜 형식 오류", "found", {"from": "notadate"}, None, {})],
     "IF-ADMIN-17": [("status 오타", "found", {"status": "bogus"}, None, {})],
     # 개체 묶음·카드 — 좁힌 결과가 비면 404, 용량 상한 초과면 413, 경로를 아는 파일이 없으면 409
+    "IF-ENTITY-02": [("modalities 오타", "found", {"modalities": "pdf"}, None, {})],
     "IF-ENTITY-05": [("개체 없음", "none", {}, None, {})],
     # 원본 다운로드 · 묶음 네 창구(묶음은 임시 파일 없이 만들면서 흘려 보낸다).
     "IF-ASSET-03": [("행 없음", "none", {}, None, {}),

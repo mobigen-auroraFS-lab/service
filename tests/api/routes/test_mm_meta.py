@@ -264,7 +264,7 @@ class TestSetJudgement(unittest.TestCase):
 class TestFacetsShaping(unittest.TestCase):
     """좁히기 칩 — 축마다 세는 범위가 다르고 0건도 싣는다."""
 
-    def _run(self, *, entity_type=None, areas=None):
+    def _run(self, *, entity_type=None, areas=None, modalities=None):
         conn = MagicMock()
         cur = MagicMock()
         cur.fetchone.return_value = {
@@ -275,7 +275,12 @@ class TestFacetsShaping(unittest.TestCase):
         cur.__enter__.return_value = cur
         cur.__exit__.return_value = False
         conn.cursor.return_value = cur
+        have = {("장소", "a"): frozenset({"image", "video"}), ("장소", "b"): frozenset({"image"}),
+                ("인물", "c"): frozenset({"text", "image", "video", "audio"})}
         with (
+            patch.object(mm_meta, "entity_modality_map", return_value=have),
+            patch.object(mm_meta, "count_entities",
+                         side_effect=lambda _c, **kw: len(kw["uid_allow"]) if kw["uid_allow"] is not None else -1),
             patch.object(mm_meta, "count_entities_by_type", return_value={"장소": 40}) as m_type,
             patch.object(mm_meta, "count_entities_by_area", return_value=[
                 {"name": "여행·명소", "skill": "장소", "skill_code": "place_heritage", "count": 12},
@@ -283,7 +288,7 @@ class TestFacetsShaping(unittest.TestCase):
             ]) as m_area,
         ):
             out = mm_meta.fetch_facets(conn, entity_type=entity_type, areas=areas,
-                                       min_bundle_size=3)
+                                       min_bundle_size=3, modalities=modalities)
         return out, m_type, m_area
 
     def test_type_axis_gets_no_conditions(self) -> None:
@@ -311,8 +316,19 @@ class TestFacetsShaping(unittest.TestCase):
 
     def test_scope_and_threshold_are_reported(self) -> None:
         out, _t, _a = self._run(entity_type="장소", areas=["여행·명소"])
-        self.assertEqual(out["scoped_by"], {"entity_type": "장소", "areas": ["여행·명소"]})
+        self.assertEqual(out["scoped_by"], {"entity_type": "장소", "areas": ["여행·명소"], "modalities": []})
         self.assertEqual(out["min_members"], 3)
+
+    def test_자료_유형_칩은_네_축을_모두_싣고_누르면_나오는_수를_센다(self) -> None:
+        out, _t, _a = self._run()
+        self.assertEqual(out["modalities"], [{"name": "text", "entities": 1}, {"name": "image", "entities": 3},
+                                             {"name": "video", "entities": 2}, {"name": "audio", "entities": 1}])
+        # 이미지를 고르면 — 다른 칩은 "이미지 + 이 칩"을 모두 가진 개체 수, 고른 칩은 지금 결과 수와 같다.
+        out, _t, _a = self._run(modalities=["image"])
+        self.assertEqual({m["name"]: m["entities"] for m in out["modalities"]}, {"text": 1, "image": 3, "video": 2, "audio": 1})
+        out, _t, _a = self._run(modalities=["image", "video"])
+        self.assertEqual({m["name"]: m["entities"] for m in out["modalities"]}, {"text": 1, "image": 2, "video": 2, "audio": 1})
+        self.assertEqual(out["scoped_by"]["modalities"], ["image", "video"])
 
     def test_missing_vocab_row_gives_empty_not_preset(self) -> None:
         conn = MagicMock()
@@ -438,6 +454,124 @@ class TestRouteReadScope(unittest.TestCase):
         seen, body = self._call(refine="숭례문", limit=3)
         self.assertEqual(seen["uid_allow"], {("장소", "숭례문")})
         self.assertEqual(body["refine"], "숭례문")
+
+
+class TestModalityFilter(unittest.TestCase):
+    """자료 유형(modalities) 좁히기 — 모두 가진 개체만(AND) · 검색 집합과 교집합 · 알 수 없는 값은 422 · 캐시."""
+
+    HAVE = {("장소", "a"): frozenset({"image", "video"}), ("장소", "b"): frozenset({"image"}),
+            ("인물", "c"): frozenset({"text", "image", "video", "audio"})}
+
+    def test_파싱은_중복을_없애고_알_수_없는_값은_거절한다(self) -> None:
+        self.assertEqual(mm_meta.parse_modalities(" Video, image ,image"), ["image", "video"])
+        self.assertEqual(mm_meta.parse_modalities(None), [])
+        self.assertEqual(mm_meta.parse_modalities(""), [])
+        with self.assertRaises(ValueError) as cm:
+            mm_meta.parse_modalities("image,pdf")
+        self.assertIn("pdf", str(cm.exception))
+
+    def test_모두_가진_개체만_허용_목록이_된다(self) -> None:
+        with patch.object(mm_meta, "entity_modality_map", return_value=self.HAVE):
+            self.assertEqual(mm_meta.modality_allow(object(), ["image", "video"]), {("장소", "a"), ("인물", "c")})
+            self.assertEqual(mm_meta.modality_allow(object(), ["audio"]), {("인물", "c")})
+            self.assertEqual(mm_meta.modality_allow(object(), ["text", "video", "audio", "image"]), {("인물", "c")})
+            self.assertIsNone(mm_meta.modality_allow(object(), []), "고른 것이 없으면 필터 없음(None) — 빈 집합(0건)과 다르다")
+            self.assertEqual(mm_meta.modality_allow(object(), ["audio", "video", "text"]) & {("장소", "b")}, set())
+
+    def test_교집합은_None_을_필터_없음으로_본다(self) -> None:
+        a = {("장소", "a")}
+        self.assertEqual(mm_meta.intersect_allow(None, a), a)
+        self.assertEqual(mm_meta.intersect_allow(a, None), a)
+        self.assertIsNone(mm_meta.intersect_allow(None, None))
+        self.assertEqual(mm_meta.intersect_allow(a, set()), set(), "빈 집합은 0건 — None 으로 접히지 않는다")
+        self.assertEqual(mm_meta.intersect_allow(a, {("장소", "b")}), set())
+
+    def test_커서_지문은_고른_자료_유형이_바뀌면_달라진다(self) -> None:
+        base = {"q": None, "refine": None, "entity_type": None, "areas": [], "min_bundle_size": 3}
+        plain = mm_meta.entity_cursor_scope(**base)
+        self.assertEqual(plain, mm_meta.entity_cursor_scope(**base, modalities=[]), "고른 것이 없으면 종전 지문 그대로")
+        self.assertNotEqual(plain, mm_meta.entity_cursor_scope(**base, modalities=["image"]))
+        self.assertEqual(mm_meta.entity_cursor_scope(**base, modalities=["video", "image"]),
+                         mm_meta.entity_cursor_scope(**base, modalities=["image", "video"]))
+
+    def _call(self, **params):
+        from service.api.routes import mm_meta as mod
+        seen: dict[str, object] = {}
+
+        def fake_fetch(_conn, **kw):
+            seen["page"] = kw.get("uid_allow")
+            return []
+
+        totals: list = []
+
+        def fake_total(_conn, **kw):
+            totals.append(kw.get("uid_allow"))
+            return 0
+
+        args = {"q": None, "entity_type": None, "areas": None, "modalities": None, "refine": None,
+                "cursor": None, "limit": 200, **params}
+        with (
+            patch.object(api_db, "run_in_db", lambda fn: fn(object())),
+            patch.object(mod.mm_meta, "entity_modality_map", return_value=self.HAVE),
+            patch.object(mod.mm_meta, "fetch_list", fake_fetch),
+            patch.object(mod.mm_meta, "fetch_total", fake_total),
+            patch.object(mod.mm_meta, "search_and_refine",
+                         lambda **kw: mm_meta.EntityScope(
+                             uid_allow={("장소", "a"), ("장소", "b")} if (kw["q"] or kw["refine"]) else None,
+                             scope_allow={("장소", "a"), ("장소", "b")} if kw["q"] else None,
+                             refined=bool(kw["refine"]))),
+        ):
+            body = mod.list_mm_meta(**args)
+        return seen, totals, body
+
+    def test_자료_유형만_주면_허용_목록이_그것이다(self) -> None:
+        seen, totals, _ = self._call(modalities="image,video")
+        self.assertEqual(seen["page"], {("장소", "a"), ("인물", "c")})
+        self.assertEqual(totals, [{("장소", "a"), ("인물", "c")}])
+
+    def test_검색어와_함께면_교집합이다(self) -> None:
+        seen, _totals, _ = self._call(q="가", modalities="video")
+        self.assertEqual(seen["page"], {("장소", "a")})        # 검색 {a, b} ∩ 영상 보유 {a, c}
+
+    def test_좁히기_이전_모수에도_걸린다(self) -> None:
+        _seen, totals, _ = self._call(q="가", refine="나", modalities="video")
+        self.assertEqual(totals, [{("장소", "a")}, {("장소", "a")}])   # [이후 모수, 이전 모수]
+
+    def test_안_걸면_필터가_없다(self) -> None:
+        seen, totals, _ = self._call()
+        self.assertIsNone(seen["page"])
+        self.assertEqual(totals, [None])
+
+    def test_알_수_없는_값은_422(self) -> None:
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as cm:
+            self._call(modalities="image,pdf")
+        self.assertEqual(cm.exception.status_code, 422)
+
+    def test_캐시는_수명_안에서_한_번만_읽는다(self) -> None:
+        reads: list = []
+
+        class _Cur:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def execute(self, *a, **k): reads.append(1)
+            def fetchall(self): return [{"entity_type": "장소", "entity_uid": "a", "modalities": ["image", "video"]}]
+
+        class _Conn:
+            def cursor(self, **k): return _Cur()
+
+        mm_meta.reset_modality_cache()
+        try:
+            with patch.dict(os.environ, {mm_meta.MODALITY_CACHE_ENV: "60"}):
+                self.assertEqual(mm_meta.modality_allow(_Conn(), ["video"]), {("장소", "a")})
+                mm_meta.modality_allow(_Conn(), ["image"])
+                self.assertEqual(len(reads), 1)
+            with patch.dict(os.environ, {mm_meta.MODALITY_CACHE_ENV: "0"}):
+                mm_meta.modality_allow(_Conn(), ["image"])
+                mm_meta.modality_allow(_Conn(), ["image"])
+                self.assertEqual(len(reads), 3, "0 이면 캐시하지 않는다")
+        finally:
+            mm_meta.reset_modality_cache()
 
 
 if __name__ == "__main__":
