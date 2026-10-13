@@ -238,6 +238,12 @@ class TestTopicBundleLink(_Routes):
         self.assertIn("filename*=UTF-8", r.headers["content-disposition"])
         self.assertEqual(200, self.client.head(url).status_code)
 
+    def test_하위주제_빈_값은_하위주제가_없는_자산만(self) -> None:
+        url = self.mint("/topics/가족/bundle?subtopic=").json()["url"]
+        self.assertEqual(200, self.client.get(url).status_code)
+        self.assertEqual({"topic": "가족", "subtopic": "", "exclude_video": False}, self.topic_kw)
+        self.assertEqual(401, self.client.get("/topics/가족/bundle?link=" + url.split("link=")[1]).status_code, "빈 값과 안 줌은 다른 요청 대상이다")
+
     def test_주제_전체는_하위주제_없이(self) -> None:
         self.assertEqual(200, self.client.get("/topics/역사/bundle", headers=self.bearer).status_code)
         self.assertEqual({"topic": "역사", "subtopic": None, "exclude_video": False}, self.topic_kw)

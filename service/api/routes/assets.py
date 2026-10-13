@@ -308,14 +308,14 @@ def bundle_head(asset_id: str) -> Response:
 
 
 def _topic_bundle(topic: str, subtopic: str | None, exclude_video: bool, *, head: bool) -> Response:
-    rows = DbManager.read(lambda repo: repo.asset.topic_bundle_targets(topic=topic, subtopic=subtopic or None, exclude_video=exclude_video))
+    rows = DbManager.read(lambda repo: repo.asset.topic_bundle_targets(topic=topic, subtopic=subtopic, exclude_video=exclude_video))
     if not rows:
         raise HTTPException(status_code=404, detail="이 분류에 해당하는 자료가 없습니다")
     targets = [r for r in rows if r["fs_path"]]
     if not targets:
         raise HTTPException(status_code=409, detail="내려받을 파일 경로가 없다")
     plan = make_plan(targets)
-    disposition = _content_disposition("_".join(["분류", topic, *([subtopic] if subtopic else [])]) + ".zip")
+    disposition = _content_disposition("_".join(["분류", topic, *([subtopic] if subtopic else [])]) + ".zip")      # subtopic 이 빈 값(하위주제 없음)이면 이름에 넣지 않는다
     if head:
         return zip_head_response(content_disposition=disposition, headers=bundle_headers(plan))
     return zip_response(plan, content_disposition=disposition, headers=bundle_headers(plan))
@@ -324,13 +324,13 @@ def _topic_bundle(topic: str, subtopic: str | None, exclude_video: bool, *, head
 @bundle_router.get("/topics/{topic}/bundle")
 def topic_bundle(
     topic: str,
-    subtopic: Annotated[str | None, Query(description="하위주제. 없으면 주제 전체(그 주제의 모든 하위주제)")] = None,
+    subtopic: Annotated[str | None, Query(description="하위주제. 안 주면 주제 전체(모든 하위주제) · **빈 값(`subtopic=`)이면 하위주제가 없는 자산만**")] = None,
     exclude_video: Annotated[bool, Query(description="영상 제외(용량이 크게 준다)")] = False,
     link: Annotated[str | None, Query(description=_LINK_DESC)] = None,
 ) -> Response:
     """한 분류(주제 · 하위주제)에 속한 등록 완료 자산 전부를 한 zip 으로 흘려 보낸다 — 상세의 「분류 묶음」.
 
-    파일의 분류는 상세의 ``topics`` 가 준다(``topic_ko`` · ``subtopic_ko``). 분류에 자산이 없으면 404 · 경로를 아는 파일이 하나도 없으면 409.
+    파일의 분류는 상세의 ``topics`` 가 준다(``topic_ko`` · ``subtopic_ko``) — 하위주제가 없는 파일은 ``subtopic=`` (빈 값)으로 보내야 상세가 보이는 같은 분류(하위주제 없음)만 담긴다. 분류에 자산이 없으면 404 · 경로를 아는 파일이 하나도 없으면 409.
     건수 · 용량 상한은 두지 않는다(큰 분류는 수천 건 · 수 GB 가 될 수 있다 — ``exclude_video`` 로 줄일 수 있다). 헤더 대신 묶음 링크(``link``)로도 받는다. 접근 기록은 남기지 않는다(개체 묶음과 같다).
     """
     return _topic_bundle(topic, subtopic, exclude_video, head=False)
