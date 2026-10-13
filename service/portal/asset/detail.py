@@ -167,6 +167,18 @@ def _merge_relations_by_asset(neighbor_edges: list[dict[str, Any]]) -> list[dict
     return merged
 
 
+
+def related_assets(conn: Connection[Any], asset_id: str, *, min_conf_similarity: float | None = None) -> list[dict[str, Any]]:
+    """이 자산과 이어진 이웃을 **화면(상세)이 보이는 기준 그대로** 이웃 자산 단위로 돌려준다 — 상세의 관련 자료와 「연관 데이터 묶음」이 같은 집합이다.
+
+    확인 전(`proposed`)도 함께 읽는다(등급 ``tier`` 로 구분). ``active`` 만 읽으면 승인이 0건인 동안 관계가 통째로 비어 상세도 묶음도 빈다.
+    노출 하한은 영속화 게이트와 같은 값을 설정에서 읽는다(``None`` 이면). 정렬은 등급 → 신뢰도 → 자산 id.
+    """
+    min_conf = (min_conf_similarity if min_conf_similarity is not None
+                else get_current_settings().relations.persist_min_conf_similarity)
+    return _merge_relations_by_asset(
+        fetch_relations_for_asset(conn, asset_id=asset_id, include_weak=True, min_conf_similarity=min_conf))
+
 def fetch_asset_detail(
     conn: Connection[Any],
     *,
@@ -216,11 +228,7 @@ def fetch_asset_detail(
     #
     # 노출 하한은 **영속화 게이트와 같은 값**을 써야 한다 — 다르면 "행은 만들어지는데 화면엔
     # 없는" 유령 구간이 생기고 그건 조용히 생긴다. 그래서 상수를 새로 두지 않고 설정에서 읽는다.
-    min_conf = (min_conf_similarity if min_conf_similarity is not None
-                else get_current_settings().relations.persist_min_conf_similarity)
-    relations = _merge_relations_by_asset(
-        fetch_relations_for_asset(
-            conn, asset_id=asset_id, include_weak=True, min_conf_similarity=min_conf))
+    relations = related_assets(conn, asset_id, min_conf_similarity=min_conf_similarity)
 
     ext_meta = row["ext_meta"]
     if clearance is not None:

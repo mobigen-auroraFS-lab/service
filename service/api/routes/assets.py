@@ -296,7 +296,7 @@ def _relation_bundle(asset_id: str, *, head: bool) -> Response:
 def bundle(asset_id: str, link: Annotated[str | None, Query(description=_LINK_DESC)] = None) -> Response:
     """기준 자산과 직접 연결된 이웃을 한 zip 으로 흘려 보낸다. 기준 자산이 노출 대상이 아니면 404.
 
-    확인된(active) 관계의 등록 완료 자산만 담고, 원본이 없는 항목은 ZIP 끝의 ``_manifest.json`` 에 남긴다. 헤더 대신 묶음 링크(``link``)로도 받는다.
+    상세의 관련 자료와 같은 이웃(확인 전 포함)의 등록 완료 자산을 담고, 원본이 없는 항목은 ZIP 끝의 ``_manifest.json`` 에 남긴다. 헤더 대신 묶음 링크(``link``)로도 받는다.
     """
     return _relation_bundle(asset_id, head=False)
 
