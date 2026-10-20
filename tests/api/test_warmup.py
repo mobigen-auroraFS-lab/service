@@ -50,6 +50,20 @@ class TestWarmup(unittest.TestCase):
             self.assertEqual("태그 1건", warmup._warm_tags())
         self.assertEqual({"topics": [], "subtopics": [], "q": None, "limit": 50}, calls)
 
+    def test_자료_유형_예열은_캐시만_채우고_칩_건수는_세지_않는다(self) -> None:
+        class _Entity:
+            def modality_map(self):
+                return {("장소", "a"): frozenset({"image"}), ("인물", "b"): frozenset({"text"})}
+
+            def facets(self, **kw):
+                raise AssertionError("예열이 칩 건수 전체를 돌렸다")
+
+        class _Repo:
+            entity = _Entity()
+
+        with mock.patch.object(warmup.DbManager, "read", side_effect=lambda fn: fn(_Repo())):
+            self.assertEqual("자료 유형 캐시(2개체)", warmup._warm_modalities())
+
     def test_검색_예열은_임베딩_뒤_검색_엔진에_한_건을_보낸다(self) -> None:
         from service.api.routes import file_search as route
 

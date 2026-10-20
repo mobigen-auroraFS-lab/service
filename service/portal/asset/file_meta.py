@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
+from uuid import UUID
 
 from psycopg import Connection
 from psycopg.rows import dict_row
@@ -25,15 +26,41 @@ from psycopg.rows import dict_row
 from src.domain.status_vocab import AssetStatus
 
 # 노출 기준은 다운로드·묶음과 같다(``status='registered'``) — 비노출 자산의 크기가 표에 새지 않게.
+# 🔴 [2026-10-20] 열은 UUID 그대로 두고 값 쪽을 ``uuid[]`` 로 바꾼다 — 열을 ``::text`` 로 바꾸면 기본키 인덱스를 못 타
+#    한 페이지를 물을 때마다 자산 표 전체(약 1.7만 행)를 훑었다. 맞는 id 는 종전과 같다 — 아래 ``_canonical_ids`` 참고.
 _FILE_META_SQL = f"""
 SELECT asset_id::text AS asset_id,
        COALESCE(file_size, 0) AS file_size,
        updated_at,
        created_at
   FROM asset
- WHERE asset_id::text = ANY(%(ids)s)
+ WHERE asset_id = ANY(%(ids)s::uuid[])
    AND status = '{AssetStatus.REGISTERED}'
 """
+
+
+def _canonical_ids(asset_ids: Sequence[Any]) -> list[str]:
+    """UUID 표준 표기(소문자 · 하이픈)인 id 만 남긴다.
+
+    종전 비교(``asset_id::text = ANY(...)``)는 표준 표기 문자열에만 맞았다. 대문자 · 하이픈 없음 · 중괄호처럼
+    ``uuid`` 형으로는 읽히지만 표기가 다른 값까지 새로 맞추지 않도록, 그런 값과 UUID 가 아닌 값은 여기서 뺀다
+    (빼지 않으면 ``uuid[]`` 변환에서 오류가 난다).
+
+    Args:
+        asset_ids: 호출부가 준 자산 id 들.
+
+    Returns:
+        표준 표기 id 목록(입력 순서 유지).
+    """
+    out: list[str] = []
+    for raw in asset_ids:
+        value = str(raw)
+        try:
+            if str(UUID(value)) == value:
+                out.append(value)
+        except ValueError:
+            continue
+    return out
 
 
 def _iso(value: Any) -> str | None:
@@ -55,13 +82,13 @@ def fetch_file_meta(
 
     Args:
         conn: DB 커넥션.
-        asset_ids: 화면에 보일 자산 id 목록. 빈 목록이면 DB 를 건드리지 않는다.
+        asset_ids: 화면에 보일 자산 id 목록. 표준 표기 id 가 하나도 없으면(빈 목록 포함) DB 를 건드리지 않는다.
 
     Returns:
         ``{asset_id: {"file_size": int, "updated_at": str|None, "created_at": str|None}}``.
         등록 상태가 아니거나 없는 자산은 키가 없다 — 호출부는 그 행을 빈칸으로 그린다.
     """
-    ids = [str(a) for a in asset_ids if str(a)]
+    ids = _canonical_ids(asset_ids)
     if not ids:
         return {}
     with conn.cursor(row_factory=dict_row) as cur:
