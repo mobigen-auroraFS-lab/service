@@ -573,6 +573,11 @@ class TestModalityFilter(unittest.TestCase):
         finally:
             mm_meta.reset_modality_cache()
 
+    def test_캐시_질의는_개체_기본키로_묶는다(self) -> None:
+        # 종류 · 표기(한글 텍스트)로 묶으면 DB 콜레이션 정렬 비용으로 수 초가 든다(2026-10-20 실측) — 텍스트 묶음으로 되돌리지 않는다.
+        group_by = [ln.strip() for ln in mm_meta._ENTITY_MODALITIES_SQL.splitlines() if ln.strip().startswith("GROUP BY")]
+        self.assertEqual(group_by, ["GROUP BY n.node_id"])
+
 
 if __name__ == "__main__":
     unittest.main()
