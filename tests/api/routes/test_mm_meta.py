@@ -79,8 +79,7 @@ class TestWiring(unittest.TestCase):
         self.assertIs(mm_meta.label_names_of_assets, core_label_names)
         self.assertIs(mm_meta.list_entities, gq.list_entities)
         self.assertIs(mm_meta.count_entities, gq.count_entities)
-        self.assertIs(mm_meta.count_entities_by_type, gq.count_entities_by_type)
-        self.assertIs(mm_meta.count_entities_by_area, gq.count_entities_by_area)
+        self.assertIs(mm_meta.count_entity_facets, gq.count_entity_facets)
         self.assertIs(mm_meta.mm_meta_bundle, gq.mm_meta_bundle)
         # DB 조회는 저장소로 옮겼다 — 코어 함수를 그대로 쓰는지는 그 자리에서 본다.
         self.assertIs(asset_repo.mm_meta_of_asset, gq.mm_meta_of_asset)
@@ -277,37 +276,50 @@ class TestFacetsShaping(unittest.TestCase):
         conn.cursor.return_value = cur
         have = {("장소", "a"): frozenset({"image", "video"}), ("장소", "b"): frozenset({"image"}),
                 ("인물", "c"): frozenset({"text", "image", "video", "audio"})}
+
+        def fake_core(_conn, **kw):
+            """코어 ``count_entity_facets`` 대역 — 자료 유형 m 은 "고른 유형 ∪ {m}" 을 모두 가진 개체 수(코어 spec 107 의 뜻)."""
+            picked = set(kw["modalities"] or [])
+            return {
+                "types": {"장소": 40},
+                "areas": [
+                    {"name": "여행·명소", "skill": "장소", "skill_code": "place_heritage", "count": 12},
+                    {"name": "음료", "skill": "음식", "skill_code": "food_content", "count": 0},
+                ],
+                # 코어가 주는 순서는 화면 순서와 다를 수 있다 — 응답은 MODALITY_CODES 순서여야 한다.
+                "modalities": {m: sum(1 for h in have.values() if picked | {m} <= h)
+                               for m in reversed(kw["modality_codes"])},
+            }
+
         with (
-            patch.object(mm_meta, "entity_modality_map", return_value=have),
-            patch.object(mm_meta, "count_entities",
-                         side_effect=lambda _c, **kw: len(kw["uid_allow"]) if kw["uid_allow"] is not None else -1),
-            patch.object(mm_meta, "count_entities_by_type", return_value={"장소": 40}) as m_type,
-            patch.object(mm_meta, "count_entities_by_area", return_value=[
-                {"name": "여행·명소", "skill": "장소", "skill_code": "place_heritage", "count": 12},
-                {"name": "음료", "skill": "음식", "skill_code": "food_content", "count": 0},
-            ]) as m_area,
+            patch.object(mm_meta, "entity_modality_map", side_effect=AssertionError("칩은 자료 유형 캐시를 쓰지 않는다")),
+            patch.object(mm_meta, "count_entity_facets", side_effect=fake_core) as m_core,
         ):
             out = mm_meta.fetch_facets(conn, entity_type=entity_type, areas=areas,
                                        min_bundle_size=3, modalities=modalities)
-        return out, m_type, m_area
+        return out, m_core
 
-    def test_type_axis_gets_no_conditions(self) -> None:
-        # 종류는 갈아타는 축 — 갈래를 고른 상태에서도 조건 없이 센다(안 그러면 갈아탈 칩이 사라진다).
-        _out, m_type, _m_area = self._run(entity_type="음식", areas=["한식"])
-        self.assertEqual(m_type.call_args.kwargs, {"min_bundle_size": 3})
+    def test_코어_칩_함수를_한_번_부르고_조건을_그대로_넘긴다(self) -> None:
+        # 종류 칩은 조건 없이 · 갈래 칩은 종류 + 고른 갈래로 · 자료 유형 칩은 셋 다 — 축마다 세는 범위는 코어가 정한다(spec 107).
+        _out, m_core = self._run(entity_type="음식", areas=["한식", " "], modalities=["image"])
+        m_core.assert_called_once()
+        self.assertEqual(m_core.call_args.kwargs, {
+            "entity_type": "음식", "area_names": ["한식"], "modalities": ["image"],
+            "min_bundle_size": 3, "modality_codes": list(mm_meta.MODALITY_CODES),
+        })
 
-    def test_area_axis_applies_type_and_picked(self) -> None:
-        _out, _m_type, m_area = self._run(entity_type="음식", areas=["한식"])
-        self.assertEqual(m_area.call_args.kwargs["entity_type"], "음식")
-        self.assertEqual(m_area.call_args.kwargs["area_names"], ["한식"])
+    def test_고른_것이_없으면_None_으로_넘긴다(self) -> None:
+        _out, m_core = self._run()
+        self.assertIsNone(m_core.call_args.kwargs["area_names"])
+        self.assertIsNone(m_core.call_args.kwargs["modalities"])
 
     def test_zero_count_area_is_kept(self) -> None:
-        out, _t, _a = self._run()
+        out, _c = self._run()
         self.assertEqual(out["areas"][1], {"name": "음료", "skill": "음식",
                                            "skill_code": "food_content", "entities": 0})
 
     def test_types_follow_vocab_order_and_zero_fill(self) -> None:
-        out, _t, _a = self._run()
+        out, _c = self._run()
         self.assertEqual([t["name"] for t in out["types"]], ["장소", "인물"])  # 어휘 순서
         self.assertEqual(out["types"][0]["entities"], 40)
         self.assertEqual(out["types"][1]["entities"], 0)  # 개체 없는 종류도 0 으로
@@ -315,18 +327,18 @@ class TestFacetsShaping(unittest.TestCase):
         self.assertEqual(out["vocab"], {"name": "기본 어휘", "version": 3})
 
     def test_scope_and_threshold_are_reported(self) -> None:
-        out, _t, _a = self._run(entity_type="장소", areas=["여행·명소"])
+        out, _c = self._run(entity_type="장소", areas=["여행·명소"])
         self.assertEqual(out["scoped_by"], {"entity_type": "장소", "areas": ["여행·명소"], "modalities": []})
         self.assertEqual(out["min_members"], 3)
 
     def test_자료_유형_칩은_네_축을_모두_싣고_누르면_나오는_수를_센다(self) -> None:
-        out, _t, _a = self._run()
+        out, _c = self._run()
         self.assertEqual(out["modalities"], [{"name": "text", "entities": 1}, {"name": "image", "entities": 3},
                                              {"name": "video", "entities": 2}, {"name": "audio", "entities": 1}])
         # 이미지를 고르면 — 다른 칩은 "이미지 + 이 칩"을 모두 가진 개체 수, 고른 칩은 지금 결과 수와 같다.
-        out, _t, _a = self._run(modalities=["image"])
+        out, _c = self._run(modalities=["image"])
         self.assertEqual({m["name"]: m["entities"] for m in out["modalities"]}, {"text": 1, "image": 3, "video": 2, "audio": 1})
-        out, _t, _a = self._run(modalities=["image", "video"])
+        out, _c = self._run(modalities=["image", "video"])
         self.assertEqual({m["name"]: m["entities"] for m in out["modalities"]}, {"text": 1, "image": 2, "video": 2, "audio": 1})
         self.assertEqual(out["scoped_by"]["modalities"], ["image", "video"])
 
@@ -337,10 +349,8 @@ class TestFacetsShaping(unittest.TestCase):
         cur.__enter__.return_value = cur
         cur.__exit__.return_value = False
         conn.cursor.return_value = cur
-        with (
-            patch.object(mm_meta, "count_entities_by_type", return_value={}),
-            patch.object(mm_meta, "count_entities_by_area", return_value=[]),
-        ):
+        empty = {"types": {}, "areas": [], "modalities": dict.fromkeys(mm_meta.MODALITY_CODES, 0)}
+        with patch.object(mm_meta, "count_entity_facets", return_value=empty):
             out = mm_meta.fetch_facets(conn, entity_type=None, areas=None, min_bundle_size=3)
         self.assertIsNone(out["vocab"])
         self.assertEqual(out["types"], [])

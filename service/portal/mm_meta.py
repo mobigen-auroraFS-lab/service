@@ -33,8 +33,7 @@ from src.mm_meta.entity_search import REASON_SEMANTIC, REASON_TEXT_MATCH
 from src.relations.graph_query import (
     assets_of_entities,
     count_entities,
-    count_entities_by_area,
-    count_entities_by_type,
+    count_entity_facets,
     list_entities,
     mm_meta_bundle,
 )
@@ -105,11 +104,11 @@ MODALITY_CACHE_DEFAULT = 300.0
 
 # 개체마다 구성 자산의 자료 유형 집합 — 코어 목록의 ``modalities``(ARRAY_AGG(DISTINCT a.modality))와 **같은 엣지 · 같은 상태**로 모은다.
 # 노출 임계 · 종류 · 갈래는 걸지 않는다(그것은 코어 목록 · 개수 질의가 허용 목록과 함께 적용한다). 결과는 수명 동안 캐시한다.
+# 목록 · 모수(자료 유형을 고른 요청)가 쓴다. 칩 건수는 이 캐시를 쓰지 않는다 — 코어 ``count_entity_facets`` 가 직접 센다(아래 ``fetch_facets``).
 # 🔴 [2026-10-20] 묶는 열쇠는 ``node_id`` 다 — 종류 · 표기(한글 텍스트)로 묶으면 DB 기본 콜레이션(``en_US.utf8``) 정렬 비용 때문에
 #    개체 약 9천 개에서 3초쯤 걸렸다(사내 k8s 2.8초 → 0.2초 · 공용 DB 1.1초 → 0.07초). 개체마다 ``node_id`` 가 하나라(``uq_node_entity``)
 #    묶음이 같고, 기본키라 SELECT 의 종류 · 표기를 그대로 꺼낼 수 있다(함수 종속). 근거: 같은 스냅샷 구·신 대조 동일(8,691행 · 자료 유형 15조합).
 #    ⚠️ 표기가 NULL 인 개체가 여럿이면 종전 묶음과 갈린다 — 코어 적재가 빈 표기를 거절해 지금은 0건이다.
-# ⚠️ 코어가 허용 목록(``uid_allow``)에 이 조건을 직접 받게 되면 이 질의와 캐시는 없앤다(체크리스트 「코어」).
 _ENTITY_MODALITIES_SQL = """
 SELECT n.entity_type, n.entity_uid, ARRAY_AGG(DISTINCT a.modality) AS modalities
   FROM node n
@@ -564,23 +563,25 @@ def fetch_facets(
 
     종류 칩(단일 선택)은 조건을 적용하지 않고 센다(갈아타는 축이라 "이 종류로 갈아타면 몇 개"가 필요하다). 갈래 칩(다중 · AND)은 고른 종류와 갈래를 적용한 뒤 센다(누르면 나올 수).
     자료 유형 칩(다중 · AND)은 고른 종류 · 갈래 · 이미 고른 자료 유형을 적용한 뒤 "이 칩을 더 누르면 몇 개"를 센다(이미 고른 칩은 지금 결과 수와 같다). 네 유형을 모두 싣고 0건도 담는다.
-    ⚠️ 갈래 칩 건수는 자료 유형 조건을 적용하지 않는다 — 코어의 갈래 개수 질의가 허용 목록을 받지 않는다(체크리스트 「코어」).
+    ⚠️ 갈래 칩 건수는 자료 유형 조건을 적용하지 않는다 — 코어의 갈래 개수가 자료 유형 조건을 받지 않는다.
     ``min_bundle_size`` 는 목록과 같은 값을 준다. ``{vocab, types, areas, modalities, min_members, scoped_by}`` — ``types`` 는 어휘 순서 그대로이고 개체가 없는 종류도 0 으로 담으며, 0건 갈래도 담는다(커버리지 갭 신호).
+
+    세 축의 건수는 코어 ``count_entity_facets`` **한 번**으로 받는다(2026-10-20 · 코어 spec 107). 종전에는 종류 1 · 갈래 1 · 자료 유형 4 로
+    코어를 여섯 번 불러 매번 노출 개체 집합을 다시 만들었다. 어휘 머리는 화면용 단순 조회라 따로 읽는다.
+    ⚠️ 자료 유형 칩은 코어가 DB 에서 바로 세고, 목록 · 모수는 자료 유형 캐시(``entity_modality_map``)를 쓴다 — 파이프라인이 새로 적재한
+    직후 캐시 수명 동안은 칩 숫자와 눌렀을 때의 결과 수가 다를 수 있다(데이터가 그대로면 같다).
     """
     picked = [str(a) for a in (areas or []) if str(a).strip()]
-    head = _fetch_type_vocab_head(conn)
-    type_counts = count_entities_by_type(conn, min_bundle_size=min_bundle_size)
-    area_rows = count_entities_by_area(
-        conn, entity_type=entity_type, area_names=picked or None,
-        min_bundle_size=min_bundle_size,
-    )
     picked_mods = list(modalities or [])
-    modality_counts = [
-        {"name": m, "entities": count_entities(
-            conn, entity_type=entity_type, area_names=picked or None, min_bundle_size=min_bundle_size,
-            uid_allow=modality_allow(conn, sorted({*picked_mods, m})))}
-        for m in MODALITY_CODES
-    ]
+    head = _fetch_type_vocab_head(conn)
+    counts = count_entity_facets(
+        conn, entity_type=entity_type, area_names=picked or None, modalities=picked_mods or None,
+        min_bundle_size=min_bundle_size, modality_codes=list(MODALITY_CODES),
+    )
+    type_counts = counts["types"]
+    area_rows = counts["areas"]
+    # 칩 순서는 화면 정책(``MODALITY_CODES``)이다. 코어가 어느 유형을 빠뜨리면 0 으로 메우지 않고 KeyError 로 드러낸다.
+    modality_counts = [{"name": m, "entities": counts["modalities"][m]} for m in MODALITY_CODES]
     return {
         "vocab": head["vocab"],
         "types": [
