@@ -324,7 +324,10 @@ def search(
     # 권한 투영과 주제 패싯을 **한 트랜잭션에서** 끝낸다 — 연결을 두 번 잡지 않기 위해서다.
     def _project_and_facet(repo: Any) -> tuple[dict[str, list[dict[str, Any]]], list[dict[str, Any]]]:
         """권한별 필드 가리기와 주제 패싯 계산을 **한 번의 조회**로 끝낸다(연결을 두 번 잡지 않게)."""
-        projected = repo.search.project_grouped(grouped_raw, clearance=principal.clearance)
+        # [임시] 권한 없이도 데이터를 보이게 한다(협의 결과, 2026-10-20). **3년차에 권한 복구 예정** — 권한별 가리기 원본은 지우지 말고
+        # 아래 주석으로 남겨 둔다. 복구할 때 주석을 되살리고 임시 줄(가리지 않고 복사만)을 지운다.
+        # projected = repo.search.project_grouped(grouped_raw, clearance=principal.clearance)
+        projected = {modality: [dict(r) for r in rows] for modality, rows in grouped_raw.items()}
         facet = _search_topic_facet(projected)
         return projected, facet
 

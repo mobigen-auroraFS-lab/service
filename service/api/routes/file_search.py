@@ -332,8 +332,11 @@ def file_search(
     def _finish(repo: Any) -> list[dict[str, Any]]:
         """권한 가리기와 파일 메타 붙이기를 한 트랜잭션에서 끝낸다. 각 행에 ``file_ext`` · ``file_size`` · ``updated_at`` · ``created_at`` 이 항상 있다(모르는 값은 0 · ``None``)."""
         # 깊이 밖에서 떠본 한 건은 이 페이지의 결과가 아니다 — 가리기·메타를 붙이기 전에 버린다.
-        rows = repo.search.project_rows([] if beyond_depth else found["rows"],
-                                        clearance=principal.clearance)
+        # [임시] 권한 없이도 데이터를 보이게 한다(협의 결과, 2026-10-20). **3년차에 권한 복구 예정** — 권한별 가리기 원본은 지우지 말고
+        # 아래 주석으로 남겨 둔다. 복구할 때 주석을 되살리고 임시 줄(가리지 않고 복사만)을 지운다.
+        # rows = repo.search.project_rows([] if beyond_depth else found["rows"],
+        #                                 clearance=principal.clearance)
+        rows = [dict(r) for r in ([] if beyond_depth else found["rows"])]
         meta = repo.search.file_meta([r["asset_id"] for r in rows])
         for row in rows:
             got = meta.get(row["asset_id"]) or {}
