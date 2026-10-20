@@ -97,6 +97,16 @@ def _target_row(path: Path) -> list[dict[str, Any]]:
 _SELECTION_SQL = r"SELECT asset_id, fs_path\s+FROM asset\s+WHERE asset_id = ANY"
 _TAGS_SQL = r"jsonb_array_elements_text\(COALESCE\(m\.ext_meta->'keywords'"
 _SUGGEST_SQL = r"SELECT t\.topic_ko AS value, 'topic' AS kind"
+# 개체 칩(IF-ENTITY-02)의 코어 ``count_entity_facets`` 질의 — 실제 DB 에서는 자료 유형 코드마다 한 행을 낸다
+#   (``unnest(codes)``). 빈 결과면 칩 키가 하나도 없어 응답을 못 만든다(실제로는 일어나지 않는 모양).
+_ENTITY_FACETS_SQL = r"SELECT 'modality', c\.code"
+
+
+def _entity_facet_rows() -> list[dict[str, Any]]:
+    from service.portal.mm_meta import MODALITY_CODES
+
+    return [{"axis": "modality", "name": m, "skill": None, "skill_code": None, "n": 0, "ord": i}
+            for i, m in enumerate(MODALITY_CODES, 1)]
 
 
 def found() -> list[Fixture]:
@@ -108,6 +118,7 @@ def found() -> list[Fixture]:
         fixture(_TARGET_SQL, _target_row(img)),
         fixture(_TAGS_SQL, [{"tag": "한옥", "count": 3}]),
         fixture(_SUGGEST_SQL, [{"value": "역사·문화유산", "kind": "topic", "count": 5}]),
+        fixture(_ENTITY_FACETS_SQL, _entity_facet_rows()),
         fixture(_DETAIL_SQL, [{"asset_id": ASSET_ID, "modality": "image",
                                "domain_label": "general", "status": "registered",
                                "fs_path": str(img), "core_meta": {}, "ext_meta": {}, "tags": []}]),
