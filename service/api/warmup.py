@@ -57,10 +57,12 @@ def _warm_search() -> str:
 
 
 def _warm_modalities() -> str:
-    """개체별 보유 자료 유형 캐시를 채운다(첫 자료 유형 좁히기가 2초쯤 걸리는 읽기를 치르지 않게)."""
-    n = DbManager.read(lambda repo: repo.entity.facets(
-        entity_type=None, areas=[], min_bundle_size=0, modalities=[]))
-    return f"자료 유형 캐시({len(n['modalities'])}축)"
+    """개체별 보유 자료 유형 캐시를 채운다(첫 자료 유형 좁히기가 캐시 읽기를 치르지 않게).
+
+    캐시 함수만 부른다 — 종전에는 칩 건수 전체(어휘 · 종류 · 갈래 · 자료 유형 4회)를 돌렸는데, 남는 것은 이 캐시뿐이었다.
+    """
+    mapping = DbManager.read(lambda repo: repo.entity.modality_map())
+    return f"자료 유형 캐시({len(mapping)}개체)"
 
 
 # 단계 이름 · 함수 — 앞에서부터 차례로 하고, 한 단계의 실패가 다음 단계를 막지 않는다.
