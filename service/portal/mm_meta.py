@@ -104,7 +104,11 @@ MODALITY_CACHE_ENV = "PORTAL_MODALITY_CACHE_SECONDS"
 MODALITY_CACHE_DEFAULT = 300.0
 
 # 개체마다 구성 자산의 자료 유형 집합 — 코어 목록의 ``modalities``(ARRAY_AGG(DISTINCT a.modality))와 **같은 엣지 · 같은 상태**로 모은다.
-# 노출 임계 · 종류 · 갈래는 걸지 않는다(그것은 코어 목록 · 개수 질의가 허용 목록과 함께 적용한다). 개체 약 2천 개에서 2초쯤 걸려 캐시한다.
+# 노출 임계 · 종류 · 갈래는 걸지 않는다(그것은 코어 목록 · 개수 질의가 허용 목록과 함께 적용한다). 결과는 수명 동안 캐시한다.
+# 🔴 [2026-10-20] 묶는 열쇠는 ``node_id`` 다 — 종류 · 표기(한글 텍스트)로 묶으면 DB 기본 콜레이션(``en_US.utf8``) 정렬 비용 때문에
+#    개체 약 9천 개에서 3초쯤 걸렸다(사내 k8s 2.8초 → 0.2초 · 공용 DB 1.1초 → 0.07초). 개체마다 ``node_id`` 가 하나라(``uq_node_entity``)
+#    묶음이 같고, 기본키라 SELECT 의 종류 · 표기를 그대로 꺼낼 수 있다(함수 종속). 근거: 같은 스냅샷 구·신 대조 동일(8,691행 · 자료 유형 15조합).
+#    ⚠️ 표기가 NULL 인 개체가 여럿이면 종전 묶음과 갈린다 — 코어 적재가 빈 표기를 거절해 지금은 0건이다.
 # ⚠️ 코어가 허용 목록(``uid_allow``)에 이 조건을 직접 받게 되면 이 질의와 캐시는 없앤다(체크리스트 「코어」).
 _ENTITY_MODALITIES_SQL = """
 SELECT n.entity_type, n.entity_uid, ARRAY_AGG(DISTINCT a.modality) AS modalities
@@ -114,7 +118,7 @@ SELECT n.entity_type, n.entity_uid, ARRAY_AGG(DISTINCT a.modality) AS modalities
   JOIN node sn          ON sn.node_id = ge.src_node
   JOIN asset a          ON a.asset_id = sn.asset_id
  WHERE n.node_kind = 'entity' AND rk.kind_code = %(kind)s AND ge.status = ANY(%(statuses)s)
- GROUP BY n.entity_type, n.entity_uid
+ GROUP BY n.node_id
 """
 
 # 구성 엣지 상태 — 코어 목록의 기본값(active + proposed)과 같아야 ``modalities`` 배열과 어긋나지 않는다(코어의 밑줄 이름은 가져오지 않는다).
