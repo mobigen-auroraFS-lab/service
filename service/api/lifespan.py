@@ -59,3 +59,5 @@ async def lifespan(_app: FastAPI):
     await audit.drain_pending()
     # 그다음에 DB 풀을 닫는다 — **순서가 중요하다**. 먼저 닫으면 아직 쓰는 중인 감사 작업이 실패한다.
     db.close_db()
+    # 다시 쓰던 검색 엔진 클라이언트의 연결도 닫는다(요청이 모두 끝난 뒤).
+    search_health.close_client()
