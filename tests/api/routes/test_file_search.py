@@ -236,6 +236,7 @@ class TestFileSearchRoute(unittest.TestCase):
         resp = client.get("/file-search", params={"q": "김치"})
         self.assertEqual(resp.status_code, 500)
 
+    @unittest.skip("[임시] 권한 없이도 데이터를 보이게 함(2026-10-20 협의) — 3년차 권한 복구 시 이 skip 을 제거한다")
     @patch("service.api.routes.file_search.embed_query_for_media_search")
     @patch("service.api.routes.file_search.search_files")
     def test_권한이_못_보는_요약은_키가_빠진다(self, mock_find, mock_embed) -> None:
@@ -443,6 +444,7 @@ class TestFileSearchCursor(unittest.TestCase):
         self.client.get("/file-search", params={"cursor": "abc", "sort": "created_desc"})
         self.assertNotIn("axes", mock_browse.call_args.kwargs)     # 기본은 종전과 같다(코어 기본 축 전부)
 
+    @unittest.skip("[임시] 권한 없이도 데이터를 보이게 함(2026-10-20 협의) — 3년차 권한 복구 시 이 skip 을 제거한다")
     @patch("service.portal.repositories.search_repo.project_rows")
     @patch("service.api.routes.file_search.browse_files")
     def test_커서_경로에도_권한_가리기가_걸린다(self, mock_browse, mock_project) -> None:

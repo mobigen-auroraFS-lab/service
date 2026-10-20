@@ -84,8 +84,13 @@ def asset_detail(
     """
     params.uuid_or_404(asset_id, detail="자산을 찾을 수 없거나 노출 대상이 아님")
 
+    # [임시] 권한 없이도 데이터를 보이게 한다(협의 결과, 2026-10-20). **3년차에 권한 복구 예정** — 권한별 가리기 원본은 지우지 말고
+    # 아래 주석으로 남겨 둔다. 복구할 때 주석을 되살리고 임시 줄(clearance=None)을 지운다.
+    # (clearance=None 이면 ``fetch_asset_detail`` 이 ext_meta 를 가리지 않고 원본 그대로 싣는다.)
+    # detail = DbManager.read(
+    #     lambda repo: repo.asset.detail(asset_id=asset_id, clearance=principal.clearance))
     detail = DbManager.read(
-        lambda repo: repo.asset.detail(asset_id=asset_id, clearance=principal.clearance))
+        lambda repo: repo.asset.detail(asset_id=asset_id, clearance=None))
     if detail is None:
         raise HTTPException(status_code=404, detail="자산을 찾을 수 없거나 노출 대상이 아님")
     return detail
