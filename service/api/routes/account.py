@@ -26,7 +26,12 @@ from pydantic import BaseModel, Field
 
 from service.portal.auth.deps import SUSPENDED_DETAIL
 from service.portal.auth.dev_issuer import token_response
-from service.portal.auth.passwords import hash_password, needs_rehash, verify_password
+from service.portal.auth.passwords import (
+    dummy_password_hash,
+    hash_password,
+    needs_rehash,
+    verify_password,
+)
 from service.portal.common.db_manager import DbManager
 from src.database.ids import uuid7
 
@@ -105,7 +110,8 @@ def login(payload: LoginRequest) -> dict[str, Any]:
     login_id = payload.login_id.strip()
     row = DbManager.read(lambda repo: repo.account.find_by_login_id(login_id))
     # 🔴 아이디가 없어도 **해시 대조를 건너뛰지 않는다** — 응답 시간 차이로 존재 여부가 드러난다.
-    encoded = str(row["password_hash"]) if row else hash_password("not-a-real-password")
+    #    더미 해시는 미리 만든 것을 쓴다 — 요청마다 만들면 없는 아이디만 해시 생성이 더해져 오히려 느려진다.
+    encoded = str(row["password_hash"]) if row else dummy_password_hash()
     ok = verify_password(payload.password, encoded)
     if not row or not ok:
         raise HTTPException(status_code=401, detail=_LOGIN_FAIL)

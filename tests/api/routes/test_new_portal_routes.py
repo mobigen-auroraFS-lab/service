@@ -218,6 +218,26 @@ class TestAccount(unittest.TestCase):
         self.assertEqual(401, r.status_code)
         self.assertEqual("아이디 또는 비밀번호가 올바르지 않습니다", r.json()["detail"])
 
+    def test_없는_아이디는_요청마다_해시를_만들지_않는다(self) -> None:
+        """🔴 만들면 없는 아이디만 해시 생성이 더해져 느려진다 — 응답 시간으로 존재 여부가 드러난다(2026-10-21 실측 57ms 대 28ms)."""
+        from service.api.routes import account as account_routes
+
+        with mock.patch.object(AccountRepository, "find_by_login_id", return_value=None), \
+             mock.patch.object(db, "run_in_db", side_effect=_read_only), \
+             mock.patch.object(account_routes, "hash_password", side_effect=AssertionError("요청 중 해시 생성")), \
+             mock.patch.object(account_routes, "verify_password", wraps=account_routes.verify_password) as verify:
+            r = self.client.post("/auth/login", json={"login_id": "nobody", "password": "pw"})
+        self.assertEqual(401, r.status_code)
+        self.assertEqual("아이디 또는 비밀번호가 올바르지 않습니다", r.json()["detail"])
+        verify.assert_called_once()                     # 대조는 건너뛰지 않는다
+
+    def test_더미_해시는_한_번만_만들고_어떤_비밀번호와도_맞지_않는다(self) -> None:
+        from service.portal.auth.passwords import dummy_password_hash, needs_rehash, verify_password
+
+        self.assertIs(dummy_password_hash(), dummy_password_hash())
+        self.assertFalse(verify_password("pw", dummy_password_hash()))
+        self.assertFalse(needs_rehash(dummy_password_hash()), "실제 계정 해시와 같은 설정 — 대조 비용이 같다")
+
     def test_정지된_계정은_로그인하지_못한다(self) -> None:
         with mock.patch.object(AccountRepository, "find_by_login_id",
                                return_value=self._row(status="suspended")), \

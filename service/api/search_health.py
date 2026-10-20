@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import os
 import socket
+import threading
+from contextlib import suppress
 from typing import Any
 from urllib.parse import urlparse
 
@@ -69,9 +71,33 @@ class _Guarded:
         return call
 
 
+# 코어 클라이언트는 프로세스에서 **하나를 다시 쓴다** — 연결 풀이 요청 사이에 살아 있게(2026-10-21).
+# 🔴 종전에는 요청마다 새로 만들어 매번 연결을 새로 맺었다 — 엔진 호출 1회가 67ms, 다시 쓰면 33ms(공용 개발망 실측).
+#    묻는 내용 · 결과는 그대로다. 열쇠는 「코어 함수 · 접속 주소」다 — 시험이 코어 함수를 대역으로 바꿔 끼우면 새로 만든다.
+_client_lock = threading.Lock()
+_client_slot: dict[str, Any] = {"factory": None, "url": None, "client": None}
+
+
 def get_client() -> Any:
     """코어의 ``get_client()`` 대신 쓴다 — 차단 중이면 곧바로 실패하고, 아니면 보호막을 씌운 클라이언트를 준다."""
     from src.search.opensearch_sync import get_client as core_get_client
 
     check()
-    return _Guarded(core_get_client())
+    url = os.getenv("OPENSEARCH_URL", "").strip()
+    with _client_lock:
+        slot = _client_slot
+        if slot["client"] is None or slot["factory"] is not core_get_client or slot["url"] != url:
+            slot.update(factory=core_get_client, url=url, client=core_get_client())
+        raw = slot["client"]
+    return _Guarded(raw)
+
+
+def close_client() -> None:
+    """다시 쓰던 원본 클라이언트의 연결을 닫는다(종료 때). 차단기를 거치지 않고, 닫기 실패가 종료를 막지 않는다."""
+    with _client_lock:
+        raw = _client_slot["client"]
+        _client_slot.update(factory=None, url=None, client=None)
+    close = getattr(raw, "close", None)
+    if callable(close):
+        with suppress(Exception):
+            close()

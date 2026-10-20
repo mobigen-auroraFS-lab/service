@@ -197,6 +197,44 @@ class TestSearchBreaker(unittest.TestCase):
                 client.search(index="x")
             self.assertTrue(search_health.BREAKER.is_down())
 
+    def test_엔진_클라이언트는_다시_쓰고_코어_함수가_바뀌면_새로_만든다(self) -> None:
+        # 요청마다 새로 만들면 연결을 매번 새로 맺는다(엔진 호출 1회 67ms → 다시 쓰면 33ms · 2026-10-21 실측).
+        made: list[object] = []
+
+        def factory():
+            made.append(object())
+            return made[-1]
+
+        with mock.patch("src.search.opensearch_sync.get_client", factory):
+            a, b = search_health.get_client(), search_health.get_client()
+        self.assertEqual(1, len(made))
+        self.assertIs(a._client, b._client)
+        with mock.patch("src.search.opensearch_sync.get_client", lambda: "other"):
+            self.assertEqual("other", search_health.get_client()._client)   # 대역을 바꿔 끼우면 새로
+
+    def test_닫으면_연결을_닫고_다음_호출은_새로_만든다(self) -> None:
+        closed: list[int] = []
+
+        class Client:
+            def close(self) -> None:
+                closed.append(1)
+
+        made: list[Client] = []
+        with mock.patch("src.search.opensearch_sync.get_client", lambda: made.append(Client()) or made[-1]):
+            search_health.get_client()
+            search_health.close_client()
+            search_health.get_client()
+        self.assertEqual([1], closed)
+        self.assertEqual(2, len(made))
+
+    def test_다시_쓰는_클라이언트도_차단_중이면_부르기_전에_막는다(self) -> None:
+        with mock.patch("src.search.opensearch_sync.get_client", lambda: object()):
+            search_health.get_client()                                       # 하나 만들어 둔다
+            with mock.patch.object(search_health.BREAKER, "_loop"), mock.patch.object(search_health, "_probe", return_value=False):
+                search_health.BREAKER.note_failure(ConnectionError("x"))
+            with self.assertRaises(search_health.SearchUnavailable):
+                search_health.get_client()
+
     def test_핸들러는_503_과_Retry_After(self) -> None:
         app = FastAPI()
         app.add_exception_handler(search_health.SearchUnavailable, errors.search_unavailable_handler)

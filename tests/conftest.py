@@ -30,7 +30,9 @@ def _isolate_breakers():
     bundle_response.GATE.active = 0
     db_health.reset()
     search_health.BREAKER.reset()
+    search_health.close_client()           # 다시 쓰는 엔진 클라이언트도 시험마다 비운다(앞 시험의 대역이 남지 않게)
     with mock.patch.object(db_health, "_probe", return_value=True), mock.patch.object(search_health, "_probe", return_value=True):
         yield
     db_health.reset()
     search_health.BREAKER.reset()
+    search_health.close_client()

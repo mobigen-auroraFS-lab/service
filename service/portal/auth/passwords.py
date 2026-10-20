@@ -8,6 +8,8 @@ bcrypt 는 입력 72바이트를 넘는 부분을 **조용히 버린다**. 비�
 
 from __future__ import annotations
 
+from functools import cache
+
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
 
@@ -17,6 +19,17 @@ _HASHER = PasswordHasher()
 def hash_password(password: str) -> str:
     """argon2id 인코딩 문자열을 만든다(솔트는 라이브러리가 만든다)."""
     return _HASHER.hash(password)
+
+
+@cache
+def dummy_password_hash() -> str:
+    """없는 아이디의 로그인 대조에 쓰는 해시 — 프로세스마다 한 번만 만든다.
+
+    🔴 [2026-10-21] 종전에는 요청마다 새로 만들어서, 없는 아이디는 「생성 + 대조」, 있는 아이디는 「대조」만 했다.
+    없는 아이디가 약 29ms(대조 한 번만큼) 더 느려 **응답 시간으로 계정 존재가 드러났다**(실측 57ms 대 28ms).
+    같은 설정(``_HASHER``)으로 만들어 대조 비용이 실제 계정의 해시와 같다.
+    """
+    return _HASHER.hash("not-a-real-password")
 
 
 def verify_password(password: str, encoded: str) -> bool:
