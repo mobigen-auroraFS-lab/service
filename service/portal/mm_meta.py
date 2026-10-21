@@ -681,6 +681,16 @@ def entities_zip_rows(
     ]
 
 
+def zip_display_name(parts: Sequence[str]) -> str:
+    """묶음 zip 의 보일 이름(한글 그대로 · ``Content-Disposition`` 의 ``filename*``) — ``<부분>_<부분>.zip``.
+
+    빈 부분은 뺀다. 경로 구분자 · 제어문자 · 파일 이름에 못 쓰는 글자는 ``_`` 로 바꾼다(풀 때 폴더 밖 이름이 되지 않게).
+    """
+    joined = "_".join(str(p).strip() for p in parts if str(p or "").strip())
+    safe = "".join(c if c.isprintable() and c not in '/\\:*?"<>|' else "_" for c in joined).strip().strip(".")
+    return f"{safe or 'mm_meta'}.zip"
+
+
 def ascii_zip_name(parts: Sequence[str], *, fallback: str, count: int) -> str:
     """zip 파일명을 ASCII 로만 만든다(한글은 헤더에서 깨진다). ``<이름>_<N>files.zip`` — 남는 글자가 없으면 ``fallback``."""
     safe = "".join(c for c in "_".join(parts) if c.isascii() and c.isalnum())

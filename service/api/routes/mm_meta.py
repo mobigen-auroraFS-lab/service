@@ -16,6 +16,7 @@ from service.api import params
 from service.api.bundle_response import (
     BundleSlot,
     bundle_headers,
+    content_disposition,
     make_plan,
     zip_head_response,
     zip_response,
@@ -275,7 +276,10 @@ def _entities_bundle(entity_type: str | None, areas: str | None, labels: str | N
         if not targets:
             raise HTTPException(status_code=409, detail=_NOTHING_TO_ZIP)
         plan = make_plan(targets)
-        disposition = f'attachment; filename="{mm_meta.ascii_zip_name([entity_type or "all", *picked], fallback="meta", count=len(plan.packed))}"'
+        # 한글 이름은 filename* 로 싣는다(웹 점검 #41 — 어느 묶음이든 「mmmeta_N files.zip」 꼴이라 받은 파일끼리 구별이 안 됐다). ASCII 이름은 옛 브라우저용.
+        disposition = content_disposition(
+            mm_meta.zip_display_name(["개체", entity_type or "전체", *picked]),
+            ascii_name=mm_meta.ascii_zip_name([entity_type or "all", *picked], fallback="meta", count=len(plan.packed)))
         if head:
             return zip_head_response(content_disposition=disposition, headers=bundle_headers(plan))
         return zip_response(plan, content_disposition=disposition, headers=bundle_headers(plan), slot=slot)
@@ -319,7 +323,10 @@ def _card_bundle(entity_type: str, entity_uid: str, *, head: bool) -> Response:
         if not targets:
             raise HTTPException(status_code=409, detail=_NOTHING_TO_ZIP)
         plan = make_plan(targets)
-        disposition = f'attachment; filename="{mm_meta.ascii_zip_name([f"mm_meta_{entity_type}", name], fallback="mm_meta", count=len(plan.packed))}"'
+        # 「작품_기생충.zip」처럼 한글 이름은 filename* 로 싣는다(웹 점검 #41). ASCII 이름은 옛 브라우저용.
+        disposition = content_disposition(
+            mm_meta.zip_display_name([entity_type, name]),
+            ascii_name=mm_meta.ascii_zip_name([f"mm_meta_{entity_type}", name], fallback="mm_meta", count=len(plan.packed)))
         if head:
             return zip_head_response(content_disposition=disposition, headers=bundle_headers(plan))
         return zip_response(plan, content_disposition=disposition, headers=bundle_headers(plan), slot=slot)

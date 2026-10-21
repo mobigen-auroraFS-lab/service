@@ -10,6 +10,7 @@ import unittest
 import zipfile
 from pathlib import Path
 from unittest import mock
+from urllib.parse import quote
 
 from fastapi.testclient import TestClient
 
@@ -167,7 +168,9 @@ class TestEntityBundles(_Base):
         self.assertEqual(("2", "0", "30"), (r.headers["x-bundle-count"], r.headers["x-bundle-missing"], r.headers["x-bundle-bytes"]))
         self.assertEqual(r.headers["x-bundle-count"], r.headers["x-bundle-files"])       # 창구마다 달랐던 두 이름이 같은 값
         self.assertIn("person", r.headers["content-disposition"])
-        self.assertTrue(r.headers["content-disposition"].isascii())           # 한글 이름은 헤더에서 깨지므로 ASCII 만
+        self.assertTrue(r.headers["content-disposition"].isascii())           # 헤더 자체는 ASCII(한글은 filename* 에 퍼센트 인코딩)
+        # 웹 점검 #41 — 한글 이름을 filename* 로 함께 싣는다(받은 파일끼리 구별된다).
+        self.assertIn("filename*=UTF-8''" + quote("개체_person_배우.zip"), r.headers["content-disposition"])
 
     def test_좁힌_결과가_비면_404_경로가_없으면_409_용량_상한은_없다(self) -> None:
         def run(rows):
@@ -212,6 +215,15 @@ class TestEntityBundles(_Base):
         self.assertEqual("1", r.headers["x-bundle-files"])
         self.assertNotIn("x-bundle-truncated", r.headers, "건수 상한을 없앴다(2026-10-13) — 잘림 헤더도 없다")
         self.assertTrue(r.headers["content-disposition"].isascii())
+        self.assertIn('filename="mmmetaperson_1files.zip"', r.headers["content-disposition"])     # 옛 브라우저용 ASCII 이름은 그대로
+        self.assertIn("filename*=UTF-8''" + quote("person_이순신.zip"), r.headers["content-disposition"])
+
+    def test_보일_이름은_파일_이름에_못_쓰는_글자를_바꾼다(self) -> None:
+        from service.portal.mm_meta import zip_display_name
+        self.assertEqual("작품_기생충.zip", zip_display_name(["작품", "기생충"]))
+        self.assertEqual("작품_AC_DC.zip", zip_display_name(["작품", "AC/DC"]))
+        self.assertEqual("개체_전체.zip", zip_display_name(["개체", "전체", ""]))
+        self.assertEqual("mm_meta.zip", zip_display_name(["", "..", "  "]))
 
     def test_카드_묶음은_200건을_넘어도_자르지_않는다(self) -> None:
         many = [{"asset_id": f"018f0000-0000-7000-8000-{i:012d}", "fs_path": self.make(f"f{i}.txt", b"x"), "file_name": f"f{i}.txt"}

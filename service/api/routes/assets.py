@@ -24,6 +24,7 @@ from service.api import params
 from service.api.bundle_response import (
     BundleSlot,
     bundle_headers,
+    content_disposition,
     make_plan,
     zip_head_response,
     zip_response,
@@ -177,12 +178,6 @@ def _guess_content_type(file_name: str, modality: str | None) -> str:
     return fallback.get(modality or "", "application/octet-stream")
 
 
-def _content_disposition(file_name: str) -> str:
-    """RFC 6266 attachment 헤더(ASCII filename + UTF-8 filename* 병기). ASCII 쪽에서 큰따옴표 · 개행 · 비-ASCII 를 제거해 헤더 위조를 막는다."""
-    ascii_safe = "".join(c for c in file_name if c.isascii() and c.isprintable() and c != '"')
-    return f'attachment; filename="{ascii_safe}"; filename*=UTF-8\'\'{quote(file_name)}'
-
-
 def _file_iterator(src: OriginFile, start: int, end: int) -> Iterator[bytes]:
     """열린 원본의 ``start``~``end``(둘 다 포함) 구간을 흘려 보낸다. 끝나거나 끊기면 닫는다."""
     try:
@@ -248,7 +243,7 @@ def _serve_download(asset_id: str, request: Request, *, head: bool) -> Response:
     etag, last_modified = make_etag(file_size, src.mtime_ns), make_last_modified(src.mtime_ns)
     headers = {
         "Accept-Ranges": "bytes",
-        "Content-Disposition": _content_disposition(file_name),
+        "Content-Disposition": content_disposition(file_name),
         "ETag": etag,
         "Last-Modified": last_modified,
         "Cache-Control": "private, no-cache",       # 인증이 걸린 응답이라 공유 캐시에 남기지 않는다
@@ -301,7 +296,7 @@ def _relation_bundle(asset_id: str, *, head: bool) -> Response:
         if targets is None:
             raise HTTPException(status_code=404, detail=_NOT_FOUND)
         plan = make_plan(targets)       # 응답을 시작하기 전에 존재 · 크기를 확인한다(파일 읽기는 DB 트랜잭션 밖)
-        disposition = _content_disposition(f"bundle_{asset_id}.zip")
+        disposition = content_disposition(f"bundle_{asset_id}.zip")
         if head:
             return zip_head_response(content_disposition=disposition, headers=bundle_headers(plan))
         return zip_response(plan, content_disposition=disposition, headers=bundle_headers(plan), slot=slot)
@@ -331,7 +326,7 @@ def _topic_bundle(topic: str, subtopic: str | None, exclude_video: bool, *, head
         if not targets:
             raise HTTPException(status_code=409, detail=_NOTHING_TO_ZIP)
         plan = make_plan(targets)
-        disposition = _content_disposition("_".join(["분류", topic, *([subtopic] if subtopic else [])]) + ".zip")      # subtopic 이 빈 값(하위주제 없음)이면 이름에 넣지 않는다
+        disposition = content_disposition("_".join(["분류", topic, *([subtopic] if subtopic else [])]) + ".zip")      # subtopic 이 빈 값(하위주제 없음)이면 이름에 넣지 않는다
         if head:
             return zip_head_response(content_disposition=disposition, headers=bundle_headers(plan))
         return zip_response(plan, content_disposition=disposition, headers=bundle_headers(plan), slot=slot)
@@ -391,7 +386,7 @@ def _selection_zip(raw_ids: list[str], user_id: str) -> StreamingResponse:
             _LOG.warning("선택 묶음 감사 기록 실패(무시): %d건", len(packed_ids))
 
         return zip_response(
-            plan, content_disposition=_content_disposition(f"selection_{len(targets)}.zip"),
+            plan, content_disposition=content_disposition(f"selection_{len(targets)}.zip"),
             # 🔴 zip 은 스트리밍이라 실패가 본문 도중에 드러난다 — 몇 건이 담기고 몇 건이 빠지는지 헤더로 먼저 알려,
             #    화면이 받은 zip 이 온전한지 스스로 맞춰 볼 수 있게 한다. 빠진 수 = 노출 대상이 아니라 뺀 것 + 원본이 없는 것.
             headers=bundle_headers(plan, missing=len(picked["missing"]) + len(plan.unreadable)),

@@ -13,6 +13,7 @@ import os
 import threading
 import weakref
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import HTTPException
 from fastapi.responses import Response, StreamingResponse
@@ -26,6 +27,16 @@ _LOG = logging.getLogger("meta_extract.portal_api")
 # 요청이 스레드를 잡고 줄을 서면 다른 요청이 굶는다.
 BUNDLE_MAX_ENV = "PORTAL_BUNDLE_MAX_CONCURRENT"
 RETRY_AFTER_SECONDS = 5
+
+
+def content_disposition(file_name: str, *, ascii_name: str | None = None) -> str:
+    """RFC 6266 attachment 헤더 — ASCII ``filename`` + UTF-8 ``filename*`` 병기(한글 이름은 ``filename*`` 로 간다).
+
+    ASCII 쪽은 ``ascii_name``(안 주면 ``file_name``)에서 큰따옴표 · 개행 · 비-ASCII 를 제거해 헤더 위조를 막는다(옛 브라우저용).
+    """
+    ascii_safe = "".join(c for c in (file_name if ascii_name is None else ascii_name)
+                         if c.isascii() and c.isprintable() and c != '"')
+    return f'attachment; filename="{ascii_safe}"; filename*=UTF-8\'\'{quote(file_name)}'
 
 
 def bundle_headers(plan: BundlePlan, *, missing: int | None = None) -> dict[str, str]:
