@@ -333,7 +333,9 @@ PORTAL_ROLE=files uvicorn service.api:app --port 8100   # 원본 · 묶음 zip
 
 ## 기타
 
-- **테스트** — `python -m unittest discover -s tests` 와 `ruff check service tests`.
+- **테스트** — `pip install -e ".[dev]"` 뒤 `python -m pytest tests` 와 `ruff check service tests`. 기준 실행기는 **pytest** 입니다 —
+  시험 준비(캐시 끄기 · 기동 예열 · 접속 시험 끄기 · 시험마다 차단기 초기화)가 pytest 만 읽는 `tests/conftest.py` 에 있어,
+  `python -m unittest discover` 로 돌리면 앞 시험의 차단기 · 캐시가 뒤 시험으로 넘어가 실패가 납니다.
 - **core 와의 경계** — 검색 순위를 정하는 방식처럼 pipeline 과 이 레포가 같은 답을 내야
   하는 것은 core 에 둡니다. 화면이 바뀌면 함께 바뀌는 것은 이 레포에 둡니다.
 

@@ -22,6 +22,12 @@ dependencies = [
     "pydantic>=2.7.0",        # service/api/* (요청/응답 모델 — fastapi 전이지만 직접 import 라 명시)
 ]
 
+[project.optional-dependencies]
+# 개발 · 시험용(pip install -e ".[dev]"). 시험의 기준 실행기는 pytest 다 — 시험 준비(tests/conftest.py)를 pytest 만 읽는다.
+dev = [
+    "pytest>=9",
+]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["service*"]
