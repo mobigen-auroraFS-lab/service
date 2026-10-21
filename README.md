@@ -189,13 +189,15 @@ TEXT_EMBED_NORMALIZE=true
 | `PORTAL_THREAD_LIMIT` | 동시에 처리할 요청 수. 없으면 기동할 때 DB 연결 풀 크기에 맞춥니다 |
 | `PORTAL_MAX_BODY_BYTES` | 요청 본문 상한. 기본 1MiB, 넘으면 413 |
 | `PORTAL_TAGS_CACHE_SECONDS` | `/tags` 와 검색어 제안이 쓰는 태그 목록을 들고 있을 시간. 기본 300초, `0` 이면 끕니다 |
+| `PORTAL_QUERY_EMBED_CACHE_SECONDS` | 파일 검색 목록과 추가 칩이 같은 질의 벡터를 함께 쓰도록 들고 있을 시간. 기본 60초, `0` 이면 끕니다. 계산 중인 같은 질의는 기다렸다 받습니다. 프로세스(워커)마다 따로 듭니다 |
 | `PORTAL_ZIP_LEVEL` | 묶음 zip 의 압축 수준 1~9. 기본 6. 낮추면 서버 CPU 가 줄고 파일이 커집니다(텍스트에서 1 은 CPU 1/3 · 크기 +45%) |
 | `PORTAL_ORIGIN_BACKEND` | 원본 파일을 읽는 방식. `local`(기본 · DB 경로를 마운트 경로로 직접 열기)만 있다. `storage_api`(스토리지 스트리밍 API)는 사양이 정해진 뒤 구현하며, 지금 지정하면 기동이 멈춘다. 잘못된 값도 기동 때 멈춘다 |
 | `PORTAL_ZIP_READ_WINDOW` · `PORTAL_ZIP_FILES_AHEAD` | 저장소 읽기 지연이 클 때만 켭니다. 큰 파일 한 개를 조각 N 개로 동시에 읽기 · 다음 파일 N 개를 미리 읽기. 기본은 둘 다 꺼짐 |
 | `PORTAL_ROLE` | `all`(기본) · `api`(파일 창구 뺀 나머지) · `files`(원본 · 묶음 zip만). 파일 창구를 별도 프로세스로 띄울 때 씁니다 — 아래 「파일 창구를 따로 띄우기」 |
 | `PORTAL_DB_STATEMENT_TIMEOUT_MS` | DB 질의 한 건의 시간 제한. 기본 30000(30초), `0` 이면 제한 없음. 넘으면 DB 가 질의를 취소하고 요청은 503 입니다 |
 | `PORTAL_MODALITY_CACHE_SECONDS` | 개체별 보유 자료 유형(`modalities` 좁히기 · 칩 건수)의 캐시 수명. 기본 300초, `0` 이면 캐시하지 않는다(읽기가 2초쯤 걸린다). 파이프라인이 새로 적재하면 최대 이 시간 동안 건수가 늦게 반영된다 |
-| `PORTAL_BUNDLE_MAX_CONCURRENT` | 프로세스당 동시에 만드는 묶음(zip) 수. 기본은 코어 수의 절반(2~8), `0` 이면 제한 없음. 넘으면 기다리지 않고 503 + `Retry-After` |
+| `PORTAL_BUNDLE_MAX_CONCURRENT` | 프로세스당 동시에 만드는 묶음(zip) 수. 기본은 코어 수의 절반(2~8), `0` 이면 제한 없음. 넘으면 기다리지 않고 503 + `Retry-After`. 자리는 대상 조회 · 파일 확인부터 잡습니다(`HEAD` 포함) |
+| `PORTAL_BUNDLE_PLAN_WORKERS` | 묶음을 시작하기 전 파일 존재 · 크기 확인을 동시에 몇 개 할지. 기본 16(1~64), `1` 이면 차례로. 확인 결과(순서 포함)는 같습니다 |
 | `PORTAL_DOWNLOAD_LINK_TTL_SECONDS` | 다운로드 링크(`POST /assets/{id}/download-link`)의 수명. 기본 300초(30~3600) |
 | `PORTAL_ALLOWED_CLIENT_CIDRS` | 접속을 허용할 네트워크(쉼표로 나열, 예: `172.16.0.0/24`). 비우면 제한 없음, 이 장비(루프백)는 늘 허용. **인증을 끈 개발 서버를 사내망에 열어 둘 때** 씁니다. 프록시 뒤에서는 쓰지 못합니다 |
 | `PORTAL_DB_WAIT_SECONDS` | DB 풀에서 연결을 기다릴 시간. 기본 5초(코어 기본 30초) — 짧을수록 DB 가 죽었을 때 빨리 포기합니다 |

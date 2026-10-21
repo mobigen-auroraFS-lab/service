@@ -24,6 +24,7 @@ from service.portal.search.extra_facets import (
     size_keys,
     size_ranges,
 )
+from service.portal.search.query_vector import embed_once
 from src.config.search_modalities import VALID_SEARCH_MODALITIES
 from src.config.settings import active_embed_channel, get_current_settings
 from src.search.cursor import CursorError
@@ -308,7 +309,8 @@ def file_search(
     if not browsing:
         try:
             with stage("embed"):
-                query_vector = embed_query_for_media_search(q, channel=active_embed_channel())
+                # 화면이 목록과 추가 칩을 동시에 부른다 — 같은 질의 벡터는 한 번만 만든다(``query_vector`` · 웹 점검 #46).
+                query_vector = embed_once(embed_query_for_media_search, q, channel=active_embed_channel())
         except (RuntimeError, ValueError) as exc:
             _LOG.warning("질의 임베딩 실패: %s", exc, exc_info=_LOG.isEnabledFor(logging.DEBUG))
             raise HTTPException(status_code=503, detail="임베딩 서버에 연결할 수 없습니다") from exc
@@ -504,7 +506,8 @@ def file_search_facet_extra(
     if query:
         try:
             with stage("embed"):
-                query_vector = embed_query_for_media_search(query, channel=active_embed_channel())
+                # 목록(/file-search)과 같은 질의면 그쪽이 만든(또는 만드는 중인) 벡터를 받는다.
+                query_vector = embed_once(embed_query_for_media_search, query, channel=active_embed_channel())
         except Exception as exc:  # noqa: BLE001 — 임베딩 서버 장애를 빈 결과로 감추지 않는다
             _LOG.warning("추가 칩 — 질의 임베딩 실패: %s", exc, exc_info=_LOG.isEnabledFor(logging.DEBUG))
             raise HTTPException(status_code=503, detail="임베딩 서버에 연결할 수 없습니다") from exc

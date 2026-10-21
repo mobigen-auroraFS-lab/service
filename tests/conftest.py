@@ -14,6 +14,9 @@ os.environ.setdefault("PORTAL_ACCESS_TIER_CACHE_SECONDS", "0")
 # 기동 예열(``warmup``)은 건너뛴다 — 시험이 DB 를 부르지 않게.
 os.environ.setdefault("PORTAL_WARMUP", "0")
 
+# 질의 임베딩 재사용(``query_vector``)도 끈다 — 시험마다 다른 벡터 · 실패를 대역으로 주는데 앞 시험의 벡터가 나오면 안 된다.
+os.environ.setdefault("PORTAL_QUERY_EMBED_CACHE_SECONDS", "0")
+
 # 기동 시 접속 시험(``lifespan._start_dependency_checks``)도 건너뛴다 — 시험이 실제 DB · 검색 엔진에 붙지 않게.
 os.environ.setdefault("PORTAL_STARTUP_CHECK", "0")
 
