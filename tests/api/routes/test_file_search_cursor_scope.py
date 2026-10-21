@@ -186,6 +186,13 @@ class 조건이_바뀐_커서는_거부(_Case):
         self.assertEqual(self._status(token, sort="created_desc", topic="여행·명소"), 400)
 
 
+    def test_크기_구간만_바뀌어도_400(self) -> None:
+        """크기 필터(코어 spec 111)도 집합을 바꾼다 — 지문에 빠지면 조용히 통과해 자료가 빠지거나 겹친다."""
+        token = self._first_cursor(sort="created_desc", size_bucket="under1")
+        self.assertEqual(self._status(token, sort="created_desc", size_bucket="over10"), 400)
+        self.assertEqual(self._status(token, sort="created_desc"), 400)
+
+
 class 같은_집합이면_이어_읽는다(_Case):
     """🔴 과잉 거부 방지 — 결과 집합이 같은 요청은 끊기면 안 된다."""
 
@@ -239,6 +246,12 @@ class 지문_재료(_Case):
         scope = self._scope_of(q="한복", refine="배추", sort="created_desc")
         self.assertIn("한복", scope)
         self.assertIn("배추", scope)
+
+    def test_크기를_고르지_않으면_지문_재료가_종전과_같다(self) -> None:
+        """크기 키는 고른 것이 있을 때만 들어간다 — 배포 전에 받은 커서가 배포 뒤에도 이어진다."""
+        scope = self._scope_of(sort="created_desc")
+        self.assertNotIn("file_size", scope)
+        self.assertIn("file_size", self._scope_of(sort="created_desc", size_bucket="1to10"))
 
     def test_쪽_크기는_지문_재료가_아니다(self) -> None:
         self.client.get("/file-search", params={"limit": 1, "sort": "created_desc"})

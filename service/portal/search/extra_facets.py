@@ -6,8 +6,9 @@
 🔴 칩은 **자기 조건을 뺀 채** 센다(형식 칩은 형식 필터를, 기간 칩은 기간 필터를 빼고) — 빼지 않으면
    지금 고른 값만 남아 칩이 하나로 접힌다. 코어 ``FACET_SELF_FILTERS`` 와 같은 규칙이다.
 
-TODO: 크기 구간은 **세기만** 한다 — 코어 ``SearchFilters`` 에 크기 축이 없어 눌러서 좁힐 수 없다
-      (코어에 `file_size_min`·`file_size_max` 요청 · `TODO.md`). 그 전까지 화면은 숫자만 보이거나 칩을 감춘다.
+🔴 크기 구간은 눌러서 좁힐 수 있다(2026-10-21 · 코어 spec 111 ``file_size_ranges``). 구간 이름 → 바이트 범위
+   변환은 ``SIZE_BUCKETS`` 한 곳에서만 한다(``size_ranges``) — 칩의 range 집계와 필터가 같은 경계(이상 · 미만)를
+   써야 칩 숫자 = 누른 결과 수다. 크기를 모르는 파일은 어느 구간에도 들지 않는다(집계도 세지 않는다).
 """
 
 from __future__ import annotations
@@ -42,6 +43,34 @@ SIZE_BUCKETS: tuple[tuple[str, int | None, int | None], ...] = (
     ("over10", 10 * MB, None),
 )
 
+SIZE_BUCKET_KEYS: tuple[str, ...] = tuple(k for k, _, _ in SIZE_BUCKETS)
+
+
+def size_ranges(keys: list[str] | None) -> list[tuple[int | None, int | None]]:
+    """구간 이름들을 코어 ``file_size_ranges`` 인자(바이트 ``(이상, 미만)``)로 바꾼다 — 칩과 필터가 같은 경계를 쓴다.
+
+    Args:
+        keys: 고른 구간 이름(``under1`` · ``1to10`` · ``over10``). 여럿이면 「또는」. ``None`` · 빈 목록이면 조건 없음.
+
+    Returns:
+        범위 목록(입력 순서 · 중복은 코어가 없앤다).
+
+    Raises:
+        ValueError: 모르는 구간 이름.
+    """
+    bounds = {k: (lo, hi) for k, lo, hi in SIZE_BUCKETS}
+    unknown = [k for k in (keys or []) if k not in bounds]
+    if unknown:
+        raise ValueError(f"알 수 없는 크기 구간: {unknown}")
+    return [bounds[k] for k in (keys or [])]
+
+
+def size_keys(ranges: tuple[tuple[int | None, int | None], ...] | None) -> list[str]:
+    """적용된 바이트 범위를 구간 이름으로 되돌린다(응답 ``filters.size_bucket`` · ``SIZE_BUCKETS`` 순서)."""
+    picked = set(ranges or ())
+    return [k for k, lo, hi in SIZE_BUCKETS if (lo, hi) in picked]
+
+
 # 기간 프리셋(일) — 화면의 '최근 7·30·90일'.
 DATE_PRESETS: tuple[int, ...] = (7, 30, 90)
 
@@ -49,13 +78,16 @@ DATE_PRESETS: tuple[int, ...] = (7, 30, 90)
 EXT_FACET_SIZE = 20
 
 
-def _clauses(filters: SearchFilters | None, *, axis: str, refine: str | None) -> list[dict[str, Any]]:
-    """축을 셀 때 쓸 filter 절 — **그 축의 조건은 빼고** 만든다."""
+def _clauses(filters: SearchFilters | None, *, axis: str | None, refine: str | None) -> list[dict[str, Any]]:
+    """축을 셀 때 쓸 filter 절 — **그 축의 조건은 빼고** 만든다(``axis`` 가 ``None`` 이면 하나도 빼지 않는다)."""
     trimmed = filters
     if filters is not None and axis == "file_ext":
         trimmed = replace(filters, file_exts=())
     elif filters is not None and axis == "date_preset":
         trimmed = replace(filters, created_from=None, created_to=None)
+    elif filters is not None and axis == "file_size":
+        # 크기 칩은 크기 조건만 뺀다 — 빼지 않으면 「1MB 미만」을 고른 순간 다른 구간이 모두 0 이 되어 갈아탈 수 없다.
+        trimmed = replace(filters, file_size_ranges=())
     clauses = list(filters_to_opensearch_bool(trimmed))
     clause = refine_clause(refine)
     if clause is not None:
@@ -113,6 +145,26 @@ def build_axis_body(
             filters=_clauses(filters, axis=axis, refine=refine),
             operator=operator, about_branch=about_branch),
         "aggs": aggs,
+    }
+
+
+def build_total_body(
+    *,
+    query: str,
+    semantic_ids: list[str],
+    filters: SearchFilters | None,
+    refine: str | None,
+    operator: str = WORD_OPERATOR_DEFAULT,
+    about_branch: bool = ABOUT_BRANCH_DEFAULT,
+) -> dict[str, Any]:
+    """조건을 하나도 빼지 않은 집합의 크기만 세는 본문(= ``/file-search`` 의 ``total``) — 집계 없음."""
+    return {
+        "size": 0,
+        "track_total_hits": True,
+        "query": browse_scope_clause(
+            query, semantic_ids,
+            filters=_clauses(filters, axis=None, refine=refine),
+            operator=operator, about_branch=about_branch),
     }
 
 
@@ -200,11 +252,10 @@ def extra_facets(
     # 🔴 total 은 **조건을 하나도 빼지 않은** 집합의 크기다(= /file-search 의 total). 형식·기간 축은
     #    자기 조건을 빼고 세므로 그 응답의 건수는 전체와 다르다 — 종전에는 마지막 축의 건수를 total 로
     #    써서, 기간을 건 상태면 기간을 뺀 수가 나갔다(2026-09-23 대조). 조건을 빼지 않은 본문을 고르고,
-    #    없으면 같은 왕복에 하나 더 싣는다(크기 축은 뺄 조건이 없어 전체 집합을 센다).
+    #    없으면 같은 왕복에 집계 없는 본문을 하나 더 싣는다(크기 조건도 이제 빠지는 조건이다).
     total_at = next((i for i, axis in enumerate(picked) if not _trims(axis, filters)), None)
     if total_at is None:
-        bodies.append(build_axis_body("file_size", query=query, semantic_ids=ids, filters=filters,
-                                      refine=refine, now=at))
+        bodies.append(build_total_body(query=query, semantic_ids=ids, filters=filters, refine=refine))
         total_at = len(bodies) - 1
     responses = run_axis_queries(client, index, bodies)
     out: dict[str, Any] = {"axes": {}, "total": 0, "as_of": at.isoformat()}
@@ -222,4 +273,6 @@ def _trims(axis: str, filters: SearchFilters | None) -> bool:
         return bool(filters.file_exts)
     if axis == "date_preset":
         return filters.created_from is not None or filters.created_to is not None
+    if axis == "file_size":
+        return bool(filters.file_size_ranges)
     return False

@@ -18,7 +18,12 @@ from service.portal.auth import Principal, require_principal
 from service.portal.common.db_manager import DbManager
 from service.portal.common.stage_timer import stage
 from service.portal.search.extra_facets import AXES as EXTRA_AXES
-from service.portal.search.extra_facets import SIZE_BUCKETS, extra_facets
+from service.portal.search.extra_facets import (
+    SIZE_BUCKET_KEYS,
+    extra_facets,
+    size_keys,
+    size_ranges,
+)
 from src.config.search_modalities import VALID_SEARCH_MODALITIES
 from src.config.settings import active_embed_channel, get_current_settings
 from src.search.cursor import CursorError
@@ -45,9 +50,6 @@ router = APIRouter(tags=["search"])
 
 _LOG = logging.getLogger("meta_extract.portal_api")
 
-# 크기 구간 이름 — 칩(``facet-extra``)과 **같은 이름**을 쓴다(화면이 두 벌로 외우지 않게).
-SIZE_BUCKET_KEYS = tuple(k for k, _, _ in SIZE_BUCKETS)
-
 # 질의 길이 상한 — 검색 엔진이 낱말마다 절을 만들고 1024개에서 거절한다. 너무 긴 질의는 사용자가 고칠 문제라 422 로 앞에서 끊는다.
 _QUERY_MAX_LEN = 300
 
@@ -70,7 +72,7 @@ def _cursor_scope(
 ) -> str:
     """이번 결과 집합을 정의하는 조건 전부를 문자열 하나로 모은다(커서 조건 지문 재료). 코어는 이 문자열의 해시만 커서에 찍어 두었다가 다음 쪽에서 같은지 본다.
 
-    넣은 것: ``q`` · ``refine`` · 칩 필터 5종 · 기간(원문이 아니라 실제 적용값). 모두 결과 집합을 바꾼다.
+    넣은 것: ``q`` · ``refine`` · 칩 필터 5종 · 기간(원문이 아니라 실제 적용값) · 크기 범위(고른 것이 있을 때만). 모두 결과 집합을 바꾼다.
     뺀 것: ``sort``(코어 커서가 따로 대조한다) · ``limit``/``offset``(집합을 바꾸지 않는다 — 넣으면 쪽 크기를 바꾼 순회가 끊긴다) · 사용자 등급(가리기는 응답 직전에 걸린다. 엔진 조건으로 내려가면 넣어야 한다).
     ⚠️ 필터를 늘리면 여기도 늘린다 — 빠뜨리면 그 조건만 바뀐 커서가 조용히 통과해 자료가 빠진다.
 
@@ -91,7 +93,28 @@ def _cursor_scope(
         "created_from": applied_dates[0],
         "created_to": applied_dates[1],
     }
+    # 크기는 고른 것이 있을 때만 넣는다 — 크기 없는 요청의 지문이 종전과 같아야 배포 전에 받은 커서가 끊기지 않는다.
+    # 코어가 범위를 정렬 · 중복 제거해 두므로 같은 조건이면 같은 모양이다(열린 끝 None 은 JSON null).
+    sizes = [list(r) for r in (getattr(filters, "file_size_ranges", None) or ())]
+    if sizes:
+        material["file_size"] = sizes
     return json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _size_ranges_or_422(size_bucket: list[str] | None) -> list[tuple[int | None, int | None]]:
+    """고른 크기 구간을 코어 범위 인자로 바꾼다 — 모르는 구간 · 개수 초과는 422(두 창구가 같은 규칙)."""
+    if size_bucket is not None and len(size_bucket) > _REPEAT_MAX:
+        raise HTTPException(
+            status_code=422,
+            detail=f"size_bucket 은(는) 한 번에 {_REPEAT_MAX}개까지만 받습니다(요청 {len(size_bucket)}개)",
+        )
+    try:
+        return size_ranges(size_bucket)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"알 수 없는 크기 구간입니다 (가능: {', '.join(SIZE_BUCKET_KEYS)})",
+        ) from exc
 
 
 def _ext_of(file_name: str) -> str:
@@ -144,10 +167,13 @@ def file_search(
             " 099 G7 부터 **서버가 강제한다**(조건이 바뀐 커서는 400)"
         ),
     ),
-    size_bucket: str | None = Query(
+    size_bucket: list[str] | None = Query(
         None,
-        description=("파일 크기 구간: under1 | 1to10 | over10. ⚠️ **아직 거르지 못한다**(501) — "
-                     "건수는 /file-search/facet-extra 가 준다"),
+        description=(
+            "파일 크기 구간(반복 가능): under1(1MB 미만) | 1to10(1MB 이상 10MB 미만) | over10(10MB 이상)."
+            " 여럿이면 그중 하나라도 맞으면 남는다. 경계는 이상 · 미만이라 /file-search/facet-extra 의 file_size 칩"
+            " 숫자와 누른 결과 수가 같다. 크기를 모르는 파일은 어느 구간에도 들지 않는다"
+        ),
     ),
     sort: str = Query(
         SORT_DEFAULT,
@@ -189,7 +215,7 @@ def file_search(
         ``facets`` 는 ``{축: [{key, label, count}]}`` — ``key`` 를 되보내면 그 수만큼 나온다.
 
     Raises:
-        HTTPException: 형식 · 어휘 · 개수 위반 422 · 자리 모순 · 깊이 초과 · 깨진 커서 400 · 엔진 미도달 503.
+        HTTPException: 형식 · 어휘 · 개수 위반(모르는 크기 구간 포함) 422 · 자리 모순 · 깊이 초과 · 깨진 커서 400 · 엔진 미도달 503.
     """
     # 집합 = 세 갈래의 합집합 중 조건에 맞는 것 — ① 검색어의 모든 형태소가 든 파일 ② 뜻이 가까운 파일(코사인 하한 이상) ③ 개체(about)가 질의 낱말과 같은 파일.
     # 셋 다 검색 엔진이 판정해 개수와 칩을 정확히 센다. 같은 칸에서 여럿 고르면 「또는」, 다른 칸끼리는 「그리고」.
@@ -229,16 +255,8 @@ def file_search(
                 status_code=422,
                 detail=f"{name} 은(는) 한 번에 {_REPEAT_MAX}개까지만 받습니다(요청 {len(values)}개)",
             )
-    # TODO(코어): 크기로 거르는 것은 엔진 필터에 크기 축이 없어 아직 못 한다 — 자리만 열고 501 로 막는다(조용히 무시하면 잘못된 목록을 보여 준다).
-    if size_bucket is not None:
-        if size_bucket not in SIZE_BUCKET_KEYS:
-            raise HTTPException(
-                status_code=422,
-                detail=f"알 수 없는 크기 구간입니다: {size_bucket!r} (가능: {', '.join(SIZE_BUCKET_KEYS)})")
-        raise HTTPException(
-            status_code=501,
-            detail=("크기 구간으로 거르기는 아직 제공하지 않습니다 — 건수는 "
-                    "/file-search/facet-extra?axis=file_size 가 줍니다"))
+    # 크기 구간 → 바이트 범위(코어 spec 111). 변환은 칩과 같은 표(``SIZE_BUCKETS``) 한 곳에서 한다.
+    file_size_ranges = _size_ranges_or_422(size_bucket)
     if sort not in SORT_OPTIONS:
         raise HTTPException(
             status_code=422,
@@ -263,6 +281,7 @@ def file_search(
             subtopic=subtopic,
             modality=modality,
             tag=tag,
+            file_size_ranges=file_size_ranges,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=f"필터 파라미터 형식 오류: {exc}") from exc
@@ -391,6 +410,8 @@ def file_search(
             "modality": list(filters.modalities) if filters else [],
             "tag": list(filters.tags) if filters else [],
             "file_ext": list(filters.file_exts) if filters else [],
+            # 크기는 구간 이름으로 되돌린다(요청에 쓴 이름 그대로 · ``SIZE_BUCKETS`` 순서).
+            "size_bucket": size_keys(filters.file_size_ranges) if filters else [],
             # 되돌리는 값은 실제 적용값이다 — 원문을 되돌리면 안 걸린 조건이 걸린 것처럼 보인다.
             "created_from": applied_dates[0],
             "created_to": applied_dates[1],
@@ -447,12 +468,14 @@ def file_search_facet_extra(
     file_ext: list[str] | None = Query(None),
     created_from: str | None = Query(None),
     created_to: str | None = Query(None),
+    size_bucket: list[str] | None = Query(
+        None, description="크기 구간(반복 가능 · /file-search 와 같은 값). file_size 칩은 이 조건만 빼고 센다"),
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
     """목록 화면의 **형식·크기·기간 칩 건수** — 코어 칩 네 축(주제·하위주제·태그·종류) 밖.
 
-    파라미터는 ``/file-search`` 와 같은 이름·같은 뜻이고 세는 집합도 같다. 칩은 자기 조건을 뺀 채 센다.
-    ``file_size`` 축은 **세기만** 한다(좁히기는 코어 확장 대기 — ``extra_facets`` 의 TODO).
+    파라미터는 ``/file-search`` 와 같은 이름·같은 뜻이고 세는 집합도 같다. 칩은 자기 조건을 뺀 채 센다
+    (크기 칩은 크기 조건만 빼고, 형식 · 기간 칩은 고른 크기 안에서 센다).
 
     Raises:
         HTTPException: 모르는 축·필터 형식 오류는 422 · 검색 엔진에 닿지 못하면 503.
@@ -467,10 +490,12 @@ def file_search_facet_extra(
         raise HTTPException(
             status_code=422,
             detail=f"알 수 없는 종류입니다: {unknown_mods} (가능: {', '.join(VALID_SEARCH_MODALITIES)})")
+    file_size_ranges = _size_ranges_or_422(size_bucket)
     try:
         filters = parse_search_filters(
             file_ext=file_ext, created_from=created_from, created_to=created_to,
-            topic=topic, subtopic=subtopic, modality=modality, tag=tag)
+            topic=topic, subtopic=subtopic, modality=modality, tag=tag,
+            file_size_ranges=file_size_ranges)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=f"필터 파라미터 형식 오류: {exc}") from exc
 

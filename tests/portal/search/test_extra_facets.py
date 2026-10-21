@@ -19,6 +19,8 @@ from service.portal.search.extra_facets import (
     _items,
     build_axis_body,
     extra_facets,
+    size_keys,
+    size_ranges,
 )
 from src.search.search_filters import parse_search_filters
 
@@ -55,6 +57,34 @@ class TestAxisBody(unittest.TestCase):
     def test_크기_축은_세_구간이다(self) -> None:
         ranges = _body("file_size")["aggs"]["file_size"]["range"]["ranges"]
         self.assertEqual([k for k, _, _ in SIZE_BUCKETS], [r["key"] for r in ranges])
+
+    def test_크기_축은_크기_조건만_뺀다(self) -> None:
+        """🔴 빼지 않으면 「1MB 미만」을 고른 순간 다른 구간이 모두 0 이 되어 갈아탈 수 없다."""
+        filters = parse_search_filters(file_ext=["mp4"], file_size_ranges=size_ranges(["over10"]))
+        dumped = str(_body("file_size", filters=filters)["query"])
+        self.assertNotIn("'file_size'", dumped)
+        self.assertIn("mp4", dumped)
+
+    def test_형식_기간_축은_고른_크기_안에서_센다(self) -> None:
+        filters = parse_search_filters(file_ext=["mp4"], created_from="2026-01-01",
+                                       file_size_ranges=size_ranges(["under1"]))
+        for axis in ("file_ext", "date_preset"):
+            with self.subTest(axis=axis):
+                self.assertIn("'file_size'", str(_body(axis, filters=filters)["query"]))
+
+    def test_크기_필터_경계가_칩_집계_경계와_같다(self) -> None:
+        """칩 range 집계(from 포함 · to 미포함)와 코어 필터(gte · lt)가 같은 바이트를 쓴다."""
+        ranges = {r["key"]: (r.get("from"), r.get("to"))
+                  for r in _body("file_size")["aggs"]["file_size"]["range"]["ranges"]}
+        for key in ranges:
+            with self.subTest(key=key):
+                self.assertEqual([ranges[key]], size_ranges([key]))
+
+    def test_구간_이름과_범위는_서로_되돌릴_수_있다(self) -> None:
+        keys = [k for k, _, _ in SIZE_BUCKETS]
+        self.assertEqual(keys, size_keys(tuple(size_ranges(list(reversed(keys))))))
+        with self.assertRaises(ValueError):
+            size_ranges(["huge"])
 
     def test_기간_축은_프리셋_수만큼_구간을_만든다(self) -> None:
         ranges = _body("date_preset")["aggs"]["date_preset"]["date_range"]["ranges"]
@@ -227,6 +257,16 @@ class TestTotalIsWholeSet(unittest.TestCase):
         self.assertEqual(["date_preset"], list(out["axes"]))   # 덧붙인 본문은 축으로 내보내지 않는다
         self.assertEqual(2, len(client.bodies))
         self.assertEqual(["msearch"], client.calls)            # 그래도 왕복은 한 번
+
+    def test_크기를_건_채_크기_축만_물어도_전체_건수다(self) -> None:
+        """크기 조건도 이제 빠지는 조건이다 — 크기 축의 건수를 total 로 쓰면 크기를 뺀 수가 나간다."""
+        filters = parse_search_filters(file_size_ranges=size_ranges(["under1"]))
+        client = _ByFilterClient()
+        out = extra_facets(client, "assets", query="", query_vector=[], filters=filters,
+                           refine=None, axes=["file_size"], now=NOW)
+        self.assertEqual(2, len(client.bodies))
+        self.assertEqual(90, out["total"])                    # 크기 절 하나가 걸린 본문의 건수
+        self.assertNotIn("aggs", client.bodies[-1])            # 덧붙인 본문은 세기만 한다
 
     def test_빠지는_조건이_없으면_더_싣지_않는다(self) -> None:
         client = _ByFilterClient()

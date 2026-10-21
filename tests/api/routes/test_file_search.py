@@ -199,6 +199,47 @@ class TestFileSearchRoute(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(mock_browse.call_args.kwargs["query"], "   ")
 
+    @patch("service.api.routes.file_search.embed_query_for_media_search")
+    @patch("service.api.routes.file_search.search_files")
+    def test_크기_구간을_바이트_범위로_넘기고_되돌려_준다(self, mock_find, mock_embed) -> None:
+        """코어 spec 111 — 501 을 풀었다. 구간 이름은 칩(``facet-extra``)과 같은 표에서 바뀐다(이상 · 미만)."""
+        mock_find.return_value = _found()
+        mock_embed.return_value = [0.0]
+        mb = 1024 * 1024
+        for key, ranges in (("under1", ((None, mb),)), ("1to10", ((mb, 10 * mb),)),
+                            ("over10", ((10 * mb, None),))):
+            with self.subTest(key=key):
+                resp = self.client.get("/file-search", params={"q": "김치", "size_bucket": key})
+                self.assertEqual(resp.status_code, 200, resp.text)
+                self.assertEqual(mock_find.call_args.kwargs["filters"].file_size_ranges, ranges)
+                self.assertEqual(resp.json()["filters"]["size_bucket"], [key])
+
+    @patch("service.api.routes.file_search.embed_query_for_media_search")
+    @patch("service.api.routes.file_search.search_files")
+    def test_크기_구간을_여럿_고르면_또는이고_구간_순서로_되돌린다(self, mock_find, mock_embed) -> None:
+        mock_find.return_value = _found()
+        mock_embed.return_value = [0.0]
+        body = self.client.get("/file-search", params=[
+            ("q", "김치"), ("size_bucket", "over10"), ("size_bucket", "under1"),
+            ("size_bucket", "over10")]).json()
+        self.assertEqual(len(mock_find.call_args.kwargs["filters"].file_size_ranges), 2)
+        self.assertEqual(body["filters"]["size_bucket"], ["under1", "over10"])
+
+    def test_모르는_크기_구간은_422(self) -> None:
+        resp = self.client.get("/file-search", params={"q": "김치", "size_bucket": "huge"})
+        self.assertEqual(resp.status_code, 422)
+        self.assertIn("under1", resp.json()["detail"])
+
+    @patch("service.api.routes.file_search.embed_query_for_media_search")
+    @patch("service.api.routes.file_search.search_files")
+    def test_크기를_안_주면_조건이_없다(self, mock_find, mock_embed) -> None:
+        """하위 호환 — 크기 없는 요청은 크기 절이 없다(되돌림은 빈 목록)."""
+        mock_find.return_value = _found()
+        mock_embed.return_value = [0.0]
+        body = self.client.get("/file-search", params={"q": "김치"}).json()
+        self.assertIsNone(mock_find.call_args.kwargs["filters"])
+        self.assertEqual(body["filters"]["size_bucket"], [])
+
     def test_반복_파라미터_개수_상한(self) -> None:
         many = [f"주제{i}" for i in range(routes_file_search._REPEAT_MAX + 1)]
         resp = self.client.get("/file-search", params={"q": "김치", "topic": many})
