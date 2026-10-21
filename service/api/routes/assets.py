@@ -46,6 +46,7 @@ from service.portal.auth import (
 from service.portal.common.db_manager import DbManager
 from service.portal.history.access_log import record_access_many
 from src.config.filename_util import display_file_name
+from src.mm_meta.rules import MIN_BUNDLE_SIZE
 
 # 경로가 ``/assets`` 와 ``/topics`` 로 갈려 공통 접두사를 둘 수 없다 — 인증만 라우터에 건다.
 router = APIRouter(tags=["assets"], dependencies=[Depends(require_principal)])
@@ -152,21 +153,24 @@ def asset_mm_meta(
 ) -> dict[str, Any]:
     """자산 상세의 "이 파일이 속한 개체" 블록 — 코어 seam 위임.
 
-    ⚠️ **묶음 크기 1 도 그대로 싣는다.** 목록 창구는 1 인 개체를 감추지만(자산 하나짜리는 "묶음"이
-    아니다), 자산 쪽에서 보면 "이 파일이 그 개체에 속한다"는 것은 사실이다. 감출지는 화면이 정한다.
+    ⚠️ **묶음 크기 1 도 그대로 싣는다.** 목록 창구는 노출 임계 미만 개체를 감추지만(자산 하나짜리는 "묶음"이
+    아니다), 자산 쪽에서 보면 "이 파일이 그 개체에 속한다"는 것은 사실이다. 감출지는 화면이 정한다 — 그 판단 재료로
+    ``listed``(멀티모달 목록에 보이는 개체인가 · 2026-10-21 웹 점검 #32)를 싣는다. 임계값을 화면이 따로 들고 있지 않게 한다.
 
     Args:
         asset_id: 자산 UUID(문자열).
 
     Returns:
-        ``{"items": [{entity_type, entity_uid, name, bundle_size, edge_id, status, reason}]}`` —
-        종류·표기 키 오름차순. 소속이 없으면 빈 목록이다.
+        ``{"items": [{entity_type, entity_uid, name, bundle_size, listed, edge_id, status, reason}]}`` —
+        종류·표기 키 오름차순. 소속이 없으면 빈 목록이다. ``listed`` 는 ``bundle_size`` 가 목록 노출 임계(코어
+        ``MIN_BUNDLE_SIZE`` · 지금 3) 이상인지다.
     """
     # 형식이 아닌 id 는 **없는 자산과 같게** 본다 — 이 창구는 미존재를 200·빈 목록으로 답한다.
     if not params.is_uuid(asset_id):
         return {"items": []}
     items = DbManager.read(lambda repo: repo.asset.entities_of(asset_id=asset_id))
-    return {"items": items}
+    # 목록 · 칩과 같은 임계(코어 값 하나)로 판정한다 — 화면이 상수를 따로 두면 임계를 바꿀 때 두 곳을 고쳐야 한다.
+    return {"items": [{**i, "listed": int(i.get("bundle_size") or 0) >= MIN_BUNDLE_SIZE} for i in items]}
 
 
 def _guess_content_type(file_name: str, modality: str | None) -> str:
