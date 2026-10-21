@@ -41,8 +41,9 @@ _REGISTERED_ROW = {
     "status": "registered",
     "fs_path": "/data/raw/보고서.pdf",
     "core_meta": {"title": "보고서"},
-    "ext_meta": {"pages": 12},
-    "tags": ["report", "2026"],
+    "ext_meta": {"pages": 12, "keywords": ["report", "", "2026"]},
+    # 비어 있는 옛 열 — 응답 ``tags`` 의 출처가 아니다(웹 점검 #29).
+    "tags": [],
 }
 
 # 관계 노출 하한을 **명시 주입**한다.
@@ -104,8 +105,28 @@ class TestFetchAssetDetail(unittest.TestCase):
         self.assertEqual(out["domain_label"], "general")
         self.assertEqual(out["status"], "registered")
         self.assertEqual(out["core_meta"], {"title": "보고서"})
-        self.assertEqual(out["ext_meta"], {"pages": 12})
+        self.assertEqual(out["ext_meta"], {"pages": 12, "keywords": ["report", "", "2026"]})
+        # 목록 행과 같은 출처 · 규칙(``ext_meta.keywords`` · 빈 값 제외 · 순서 그대로).
         self.assertEqual(out["tags"], ["report", "2026"])
+
+    @patch("service.portal.asset.detail.fetch_relations_for_asset")
+    def test_태그는_권한으로_가린_키워드를_따른다(self, mock_rel) -> None:
+        """등급이 ``keywords`` 를 못 보면 ``tags`` 도 빈다 — 다른 칸으로 같은 값이 새지 않게."""
+        mock_rel.return_value = []
+        conn, _ = _conn_for_detail(dict(_REGISTERED_ROW), [])
+        from service.portal.asset import detail as mod
+
+        with (patch.object(mod, "fetch_access_tiers", lambda *_a, **_k: {}),
+              patch.object(mod, "project_ext_meta", lambda meta, *_a, **_k: {"pages": meta["pages"]})):
+            out = mod.fetch_asset_detail(conn, asset_id="A1", clearance="anonymous",
+                                         min_conf_similarity=_TEST_MIN_CONF)
+        self.assertEqual(out["tags"], [])
+
+    def test_키워드가_없거나_모양이_다르면_빈_목록(self) -> None:
+        from service.portal.asset.detail import _tags_of
+        for meta in (None, {}, {"keywords": None}, {"keywords": "불국사"}, []):
+            with self.subTest(meta=meta):
+                self.assertEqual(_tags_of(meta), [])
 
     @patch("service.portal.asset.detail.fetch_relations_for_asset")
     def test_top_level_file_name_from_fs_path_basename(self, mock_rel) -> None:

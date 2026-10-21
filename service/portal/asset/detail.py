@@ -42,13 +42,16 @@ from src.relations.graph_query import fetch_relations_for_asset
 # 🔴 [2026-09-21] ``file_size``·``created_at``·``updated_at`` 을 함께 읽는다 — 화면의 상세가
 #    크기·등록일을 보여 주는데 목록을 거치지 않고 링크로 바로 열면 그 값을 얻을 데가 없었다.
 #
+# 🔴 [2026-10-21] ``asset_metadata.tags`` 열은 읽지 않는다 — 비어 있어 상세 ``tags`` 가 늘 빈 배열이었다(웹 점검 #29).
+#    응답 ``tags`` 는 목록 · 태그 필터와 같은 출처(``ext_meta.keywords``)에서 만든다(``_tags_of``).
+#
 # 🔴 [2026-10-01] 임베딩 채널 개수를 **같은 질의에** 얹었다(``embedding_channels`` 칸) — 종전에는 질의가 둘이라 DB 왕복이
 #    한 번 더 들었다(왕복 한 번 = 28ms 실측). 채널별 **개수만** 센다(벡터 자체는 응답에 쓸모가 없다 · 원시 벡터를 읽지 않는다).
 #    정렬을 채널 이름으로 고정해 순서를 안정시킨다. 채널이 없으면 빈 목록이다.
 _FETCH_ASSET_SQL = """
 SELECT a.asset_id, a.modality, a.domain_label, a.status, a.fs_path,
        a.file_size, a.created_at, a.updated_at,
-       m.core_meta, m.ext_meta, m.tags,
+       m.core_meta, m.ext_meta,
        COALESCE((
          SELECT jsonb_agg(jsonb_build_object('channel', c.channel, 'chunk_count', c.chunk_count) ORDER BY c.channel)
          FROM (
@@ -168,6 +171,18 @@ def _merge_relations_by_asset(neighbor_edges: list[dict[str, Any]]) -> list[dict
 
 
 
+def _tags_of(ext_meta: Any) -> list[str]:
+    """상세 ``tags`` — 목록 행 ``tags`` 와 **같은 출처 · 같은 규칙**(``ext_meta.keywords`` · 빈 값 제외 · 순서 그대로).
+
+    코어 파일 검색 행(``src.search.file_search._row``)이 색인의 ``keywords``(= ``ext_meta.keywords``)를 같은 식으로 옮긴다.
+    권한으로 가린 뒤의 ``ext_meta`` 를 받으므로, 등급이 ``keywords`` 를 못 보면 ``tags`` 도 빈다(키 존재가 새지 않게).
+    """
+    keywords = ext_meta.get("keywords") if isinstance(ext_meta, dict) else None
+    if not isinstance(keywords, list):
+        return []
+    return [str(k) for k in keywords if k]
+
+
 def related_assets(conn: Connection[Any], asset_id: str, *, min_conf_similarity: float | None = None) -> list[dict[str, Any]]:
     """이 자산과 이어진 이웃을 **화면(상세)이 보이는 기준 그대로** 이웃 자산 단위로 돌려준다 — 상세의 관련 자료와 「연관 데이터 묶음」이 같은 집합이다.
 
@@ -260,7 +275,8 @@ def fetch_asset_detail(
         "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
         "core_meta": row["core_meta"],
         "ext_meta": ext_meta,
-        "tags": row["tags"],
+        # 목록 행 · 태그 목록(``/tags``) · 태그 필터와 같은 출처 — 같은 파일이면 목록과 같은 값이다.
+        "tags": _tags_of(ext_meta),
         "embedding_channels": embedding_channels,
         "relations": relations,
     }
