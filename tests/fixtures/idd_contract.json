@@ -1894,9 +1894,8 @@
     },
     "IF-ASSET-09": {
       "errors": {
-        "400": "offset·cursor 동시 지정 / 관련도 정렬 + cursor / 깨진 커서 · 정렬이 다른 커서 · 조건이 바뀐 커서(조건 지문 불일치 · 2026-09-18) / 훑기(q 없음)에서 offset 지정(2026-09-21)\n🔴 [2026-09-21] size_bucket 을 주면 501(아직 거르지 못한다 — 조용히 무시하지 않는다).",
-        "422": "닫힌 어휘(modality) 위반 · 날짜 형식 오류 · 범위 검증(limit 1~200 · 반복 파라미터 50개 상한) · [2026-09-21] q·refine 300자 초과",
-        "501": "size_bucket 으로 거르기 — 아직 제공하지 않는다(검색 엔진 필터에 크기 축이 없다). 건수는 IF-ASSET-14 의 file_size 축이 준다",
+        "400": "offset·cursor 동시 지정 / 관련도 정렬 + cursor / 깨진 커서 · 정렬이 다른 커서 · 조건이 바뀐 커서(조건 지문 불일치 · 2026-09-18) / 훑기(q 없음)에서 offset 지정(2026-09-21)\n🔴 [2026-10-21] 크기 구간(size_bucket)만 바뀐 커서도 조건이 바뀐 커서다(400). size_bucket 501 은 없어졌다.",
+        "422": "닫힌 어휘(modality) 위반 · 날짜 형식 오류 · 범위 검증(limit 1~200 · 반복 파라미터 50개 상한) · [2026-09-21] q·refine 300자 초과 · [2026-10-21] 모르는 크기 구간(size_bucket)",
         "503": "OpenSearch 연결 실패 · 임베딩 서버 연결 실패(검색어가 있는 요청)"
       },
       "gubun": "현행 정본",
@@ -2000,7 +1999,7 @@
           "max": null,
           "min": null,
           "required": false,
-          "type": "string"
+          "type": "string[]"
         },
         "sort": {
           "default": "relevance",
@@ -2254,6 +2253,7 @@
           "tag",
           "modality",
           "file_ext",
+          "size_bucket",
           "created_from",
           "created_to"
         ]
@@ -2314,6 +2314,14 @@
           "min": null,
           "required": false,
           "type": "string"
+        },
+        "size_bucket": {
+          "default": null,
+          "loc": "Query",
+          "max": null,
+          "min": null,
+          "required": false,
+          "type": "string[]"
         },
         "subtopic": {
           "default": null,

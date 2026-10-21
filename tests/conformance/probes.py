@@ -195,8 +195,7 @@ ERROR_PROBES: dict[str, list[tuple[str, str, dict, dict | None, dict]]] = {
                     ("modality 닫힌 어휘 위반", "found", {"modality": "bogus"}, None, {}),
                     ("limit 범위 밖", "found", {"limit": "9999"}, None, {}),
                     ("날짜 형식 오류", "found", {"created_from": "notadate"}, None, {}),
-                    # 크기 구간은 자리만 있다 — 주면 501(조용히 무시하지 않는다는 계약).
-                    ("크기 구간(미구현)", "found", {"size_bucket": "under1"}, None, {}),
+                    # 크기 구간은 2026-10-21 부터 거른다(코어 spec 111) — 모르는 구간만 422.
                     ("모르는 크기 구간", "found", {"size_bucket": "bogus"}, None, {})],
     # /mm-meta — 깨진 커서는 400, 집합 판정 불가는 503(IDD IF-ENTITY-01). 503 은 설정 대역이 고른
     #   되돌림 백엔드(``fake_settings`` 의 ``search_backend="db"``)에서 검색어를 주면 난다.
