@@ -190,6 +190,15 @@ class TestExtraFacets(unittest.TestCase):
                      refine=None, axes=list(AXES), now=NOW)
         self.assertEqual(["search", "msearch"], client.calls)
 
+    def test_글자_없는_검색어는_의미_질의를_하지_않는다(self) -> None:
+        """코어 spec 110 — 집합 절이 뜻 갈래를 쓰지 않는 질의라 벡터 이웃 질의는 헛 호출이다."""
+        for query in ("\\", "...", "🔥"):
+            with self.subTest(query=query):
+                client = _FakeClient()
+                extra_facets(client, "assets", query=query, query_vector=[0.1], filters=None,
+                             refine=None, axes=["file_ext"], now=NOW)
+                self.assertEqual(["msearch"], client.calls)
+
     def test_부분_실패를_0건으로_감추지_않는다(self) -> None:
         """msearch 는 실패한 질의를 예외가 아니라 응답 안 error 로 준다 — 빈 칩이 정상처럼 보이면 안 된다."""
         class _Broken(_FakeClient):

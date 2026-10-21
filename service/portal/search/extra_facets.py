@@ -17,6 +17,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from src.domain.text_norm import has_letter_or_digit
 from src.search.file_search import (
     ABOUT_BRANCH_DEFAULT,
     WORD_OPERATOR_DEFAULT,
@@ -171,9 +172,10 @@ def build_total_body(
 def semantic_ids_for(client: Any, index: str, *, query: str, query_vector: list[float]) -> list[str]:
     """검색어가 뜻으로 걸어 온 자산 id 들 — 코어 순위 질의와 같은 재료로 구한다.
 
-    검색어가 없으면(훑기) 빈 목록이다.
+    검색어가 없으면(훑기) 빈 목록이다. 글자(문자 · 숫자)가 없는 질의(``\\`` · ``...`` · 이모지만)도 빈 목록이다 —
+    코어 집합 절이 그런 질의에는 뜻 갈래를 쓰지 않으므로(코어 spec 110) 벡터 이웃 질의를 보내 봐야 버린다.
     """
-    if not (query or "").strip() or not query_vector:
+    if not (query or "").strip() or not query_vector or not has_letter_or_digit(query):
         return []
     found = client.search(index=index, body=build_semantic_body(query_vector))
     ids = [str((h.get("_source") or {}).get("asset_id") or "")
