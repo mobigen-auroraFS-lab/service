@@ -6,8 +6,9 @@
 한계: Content-Length 가 없고, 이어받기가 안 되며, 응답을 시작한 뒤 읽기가 실패하면 연결이 끊긴다.
 대안(브라우저에서 zip · 서버 비동기 zip + 저장소)은 TODO.md 에 있다.
 
-환경변수: PORTAL_ZIP_LEVEL(1~9 · 기본 6) · PORTAL_ZIP_READ_WINDOW(큰 파일 조각 동시 읽기 · 기본 끔) · PORTAL_ZIP_FILES_AHEAD(다음 파일 미리 읽기 · 기본 끔).
-뒤의 둘은 저장소 읽기 지연이 클 때만 의미가 있다.
+환경변수: PORTAL_ZIP_LEVEL(1~9 · 기본 6) · PORTAL_ZIP_READ_WINDOW(큰 파일 조각 동시 읽기 · 기본 끔) · PORTAL_ZIP_FILES_AHEAD(다음 파일 미리 읽기 · 기본 끔)
+· PORTAL_BUNDLE_PLAN_WORKERS(시작 전 파일 확인을 동시에 몇 개 · 기본 16 · 1 이면 차례로).
+뒤의 셋은 저장소 읽기 지연이 클 때만 의미가 있다.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ import threading
 import zipfile
 import zlib
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -59,6 +61,11 @@ DEFAULT_LEVEL = 6
 
 MANIFEST_NAME = "_manifest.json"
 
+# 시작 전 파일 확인(존재 · 크기)을 동시에 몇 개 할지. 🔴 [2026-10-21] 조건 없는 개체 묶음(약 1.3만 파일)은 대상 조회가 0.4초인데
+#   파일을 하나씩 확인해 HEAD 만 152초가 걸렸다(웹 점검 #4 · #48 · 사내 k8s). 확인은 서로 기대지 않아 동시에 해도 결과(순서 포함)가 같다.
+PLAN_WORKERS_ENV = "PORTAL_BUNDLE_PLAN_WORKERS"
+PLAN_WORKERS_DEFAULT = 16
+
 # 2GiB 이상이면 항목을 ZIP64 로 쓴다 — 크기를 모르는 채 쓰는 스트림이라 미리 알려 줘야 한다.
 _ZIP64_HINT = 2**31 - 1
 
@@ -93,15 +100,35 @@ def _safe_entry_name(name: str) -> str:
     return cleaned or "file"
 
 
+def _plan_workers() -> int:
+    """파일 확인 동시 수(1~64) — 없거나 잘못되면 기본값, 1 이면 차례로."""
+    return _env_int(PLAN_WORKERS_ENV, PLAN_WORKERS_DEFAULT, 1, 64)
+
+
 def plan_bundle(targets: list[dict[str, Any]]) -> BundlePlan:
-    """담을 파일의 존재 · 크기를 응답 시작 전에 확인한다. 경로가 없거나 일반 파일이 아니거나 읽을 수 없으면 ``unreadable`` 로 뺀다."""
+    """담을 파일의 존재 · 크기를 응답 시작 전에 확인한다. 경로가 없거나 일반 파일이 아니거나 읽을 수 없으면 ``unreadable`` 로 뺀다.
+
+    확인은 동시에 하되(``PORTAL_BUNDLE_PLAN_WORKERS``) 결과는 대상 순서 그대로 모은다 — 차례로 확인할 때와 계획이 같다.
+    """
+    reader = origin.get_reader()
+
+    def probe(t: dict[str, Any]) -> tuple[int, OSError | None]:
+        try:
+            return reader.stat(t.get("fs_path"))[0], None
+        except OSError as exc:
+            return 0, exc
+
+    workers = min(_plan_workers(), len(targets))
+    if workers > 1:
+        with ThreadPoolExecutor(workers, thread_name_prefix="bundle-plan") as ex:
+            probed = list(ex.map(probe, targets))       # map 은 입력 순서대로 돌려준다
+    else:
+        probed = [probe(t) for t in targets]
     plan = BundlePlan()
-    for t in targets:
+    for t, (size, exc) in zip(targets, probed, strict=True):
         fs_path = t.get("fs_path")
         name = t.get("file_name") or os.path.basename(str(fs_path or "")) or "file"
-        try:
-            size, _ = origin.get_reader().stat(fs_path)
-        except OSError as exc:
+        if exc is not None:
             # 🔴 서버 경로는 응답(ZIP 포함)에 싣지 않는다 — 운영자가 볼 로그에만 남긴다.
             _LOG.warning("묶음에서 원본을 열 수 없어 건너뜀: asset_id=%s fs_path=%s — %s", t.get("asset_id"), fs_path, type(exc).__name__)
             plan.unreadable.append({"asset_id": t.get("asset_id"), "file_name": name})

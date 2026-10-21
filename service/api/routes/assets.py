@@ -21,7 +21,13 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from service.api import params
-from service.api.bundle_response import bundle_headers, make_plan, zip_head_response, zip_response
+from service.api.bundle_response import (
+    BundleSlot,
+    bundle_headers,
+    make_plan,
+    zip_head_response,
+    zip_response,
+)
 from service.portal.asset.download import (
     if_range_matches,
     make_etag,
@@ -287,14 +293,15 @@ _LINK_DESC = "묶음 링크(`POST /bundle-links` 로 받은 것). 헤더 대신 
 
 def _relation_bundle(asset_id: str, *, head: bool) -> Response:
     params.uuid_or_404(asset_id, detail="묶음 seed 를 찾을 수 없거나 노출 대상이 아님")
-    targets = DbManager.read(lambda repo: repo.asset.bundle_targets(seed_asset_id=asset_id))
-    if targets is None:
-        raise HTTPException(status_code=404, detail="묶음 seed 를 찾을 수 없거나 노출 대상이 아님")
-    plan = make_plan(targets)       # 응답을 시작하기 전에 존재 · 크기를 확인한다(파일 읽기는 DB 트랜잭션 밖)
-    disposition = _content_disposition(f"bundle_{asset_id}.zip")
-    if head:
-        return zip_head_response(content_disposition=disposition, headers=bundle_headers(plan))
-    return zip_response(plan, content_disposition=disposition, headers=bundle_headers(plan))
+    with BundleSlot() as slot:      # 대상 조회 · 파일 확인부터 동시 묶음 자리 안에서 한다(HEAD 포함)
+        targets = DbManager.read(lambda repo: repo.asset.bundle_targets(seed_asset_id=asset_id))
+        if targets is None:
+            raise HTTPException(status_code=404, detail="묶음 seed 를 찾을 수 없거나 노출 대상이 아님")
+        plan = make_plan(targets)       # 응답을 시작하기 전에 존재 · 크기를 확인한다(파일 읽기는 DB 트랜잭션 밖)
+        disposition = _content_disposition(f"bundle_{asset_id}.zip")
+        if head:
+            return zip_head_response(content_disposition=disposition, headers=bundle_headers(plan))
+        return zip_response(plan, content_disposition=disposition, headers=bundle_headers(plan), slot=slot)
 
 
 @bundle_router.get("/assets/{asset_id}/bundle")
@@ -308,22 +315,23 @@ def bundle(asset_id: str, link: Annotated[str | None, Query(description=_LINK_DE
 
 @bundle_router.head("/assets/{asset_id}/bundle", include_in_schema=False)
 def bundle_head(asset_id: str) -> Response:
-    """본문 없이 같은 머리 — 링크를 열기 전에 404 · 담길 수를 확인한다(동시 묶음 자리 · 접근 기록 없음)."""
+    """본문 없이 같은 머리 — 링크를 열기 전에 404 · 담길 수를 확인한다(접근 기록 없음 · 확인하는 동안 동시 묶음 자리를 잡는다 — 꽉 차면 503)."""
     return _relation_bundle(asset_id, head=True)
 
 
 def _topic_bundle(topic: str, subtopic: str | None, exclude_video: bool, *, head: bool) -> Response:
-    rows = DbManager.read(lambda repo: repo.asset.topic_bundle_targets(topic=topic, subtopic=subtopic, exclude_video=exclude_video))
-    if not rows:
-        raise HTTPException(status_code=404, detail="이 분류에 해당하는 자료가 없습니다")
-    targets = [r for r in rows if r["fs_path"]]
-    if not targets:
-        raise HTTPException(status_code=409, detail="내려받을 파일 경로가 없다")
-    plan = make_plan(targets)
-    disposition = _content_disposition("_".join(["분류", topic, *([subtopic] if subtopic else [])]) + ".zip")      # subtopic 이 빈 값(하위주제 없음)이면 이름에 넣지 않는다
-    if head:
-        return zip_head_response(content_disposition=disposition, headers=bundle_headers(plan))
-    return zip_response(plan, content_disposition=disposition, headers=bundle_headers(plan))
+    with BundleSlot() as slot:      # 큰 분류는 수천 건이라 확인 단계가 길다 — 그 단계부터 동시 묶음 자리 안에서 한다
+        rows = DbManager.read(lambda repo: repo.asset.topic_bundle_targets(topic=topic, subtopic=subtopic, exclude_video=exclude_video))
+        if not rows:
+            raise HTTPException(status_code=404, detail="이 분류에 해당하는 자료가 없습니다")
+        targets = [r for r in rows if r["fs_path"]]
+        if not targets:
+            raise HTTPException(status_code=409, detail="내려받을 파일 경로가 없다")
+        plan = make_plan(targets)
+        disposition = _content_disposition("_".join(["분류", topic, *([subtopic] if subtopic else [])]) + ".zip")      # subtopic 이 빈 값(하위주제 없음)이면 이름에 넣지 않는다
+        if head:
+            return zip_head_response(content_disposition=disposition, headers=bundle_headers(plan))
+        return zip_response(plan, content_disposition=disposition, headers=bundle_headers(plan), slot=slot)
 
 
 @bundle_router.get("/topics/{topic}/bundle")
@@ -343,7 +351,7 @@ def topic_bundle(
 
 @bundle_router.head("/topics/{topic}/bundle", include_in_schema=False)
 def topic_bundle_head(topic: str, subtopic: str | None = None, exclude_video: bool = False) -> Response:
-    """본문 없이 같은 머리 — 링크를 열기 전에 404 · 409 · 담길 수를 확인한다(동시 묶음 자리 · 접근 기록 없음)."""
+    """본문 없이 같은 머리 — 링크를 열기 전에 404 · 409 · 담길 수를 확인한다(접근 기록 없음 · 확인하는 동안 동시 묶음 자리를 잡는다 — 꽉 차면 503)."""
     return _topic_bundle(topic, subtopic, exclude_video, head=True)
 
 
@@ -360,30 +368,32 @@ def _selection_zip(raw_ids: list[str], user_id: str) -> StreamingResponse:
     if not asset_ids:
         raise HTTPException(status_code=400, detail="asset_ids 가 비어 있습니다 — 내려받을 자산을 고르십시오")
 
-    picked = DbManager.read(lambda repo: repo.selection.targets(asset_ids))
-    targets = picked["targets"]
-    if not targets:
-        raise HTTPException(status_code=409, detail="내려받을 수 있는 자산이 없습니다 — 모두 노출 대상이 아닙니다")
-    plan = make_plan(targets)
+    with BundleSlot() as slot:      # 대상 조회 · 파일 확인부터 동시 묶음 자리 안에서 한다
+        picked = DbManager.read(lambda repo: repo.selection.targets(asset_ids))
+        targets = picked["targets"]
+        if not targets:
+            raise HTTPException(status_code=409, detail="내려받을 수 있는 자산이 없습니다 — 모두 노출 대상이 아닙니다")
+        plan = make_plan(targets)
 
-    packed_ids = [t["asset_id"] for t in plan.packed]
+        packed_ids = [t["asset_id"] for t in plan.packed]
 
-    def _audit(repo: Any) -> None:
-        """담길 자산마다 한 행 — 개별 다운로드와 같은 낱개로 남겨야 이력이 맞물린다."""
-        record_access_many(repo.conn, action="bundle", user_id=user_id,
-                           asset_ids=packed_ids, detail={"selection": len(packed_ids)})
+        def _audit(repo: Any) -> None:
+            """담길 자산마다 한 행 — 개별 다운로드와 같은 낱개로 남겨야 이력이 맞물린다."""
+            record_access_many(repo.conn, action="bundle", user_id=user_id,
+                               asset_ids=packed_ids, detail={"selection": len(packed_ids)})
 
-    try:
-        DbManager.write(_audit)
-    except Exception:  # noqa: BLE001 — 감사 실패가 내려받기를 막지 않는다(최선 노력)
-        _LOG.warning("선택 묶음 감사 기록 실패(무시): %d건", len(packed_ids))
+        try:
+            DbManager.write(_audit)
+        except Exception:  # noqa: BLE001 — 감사 실패가 내려받기를 막지 않는다(최선 노력)
+            _LOG.warning("선택 묶음 감사 기록 실패(무시): %d건", len(packed_ids))
 
-    return zip_response(
-        plan, content_disposition=_content_disposition(f"selection_{len(targets)}.zip"),
-        # 🔴 zip 은 스트리밍이라 실패가 본문 도중에 드러난다 — 몇 건이 담기고 몇 건이 빠지는지 헤더로 먼저 알려,
-        #    화면이 받은 zip 이 온전한지 스스로 맞춰 볼 수 있게 한다. 빠진 수 = 노출 대상이 아니라 뺀 것 + 원본이 없는 것.
-        headers=bundle_headers(plan, missing=len(picked["missing"]) + len(plan.unreadable)),
-    )
+        return zip_response(
+            plan, content_disposition=_content_disposition(f"selection_{len(targets)}.zip"),
+            # 🔴 zip 은 스트리밍이라 실패가 본문 도중에 드러난다 — 몇 건이 담기고 몇 건이 빠지는지 헤더로 먼저 알려,
+            #    화면이 받은 zip 이 온전한지 스스로 맞춰 볼 수 있게 한다. 빠진 수 = 노출 대상이 아니라 뺀 것 + 원본이 없는 것.
+            headers=bundle_headers(plan, missing=len(picked["missing"]) + len(plan.unreadable)),
+            slot=slot,
+        )
 
 
 @router.post("/assets/bundle")

@@ -323,3 +323,76 @@ class TestBundleGate(unittest.TestCase):
                 self.assertEqual(want, bundle_max_concurrent(), raw)
         with mock.patch.dict(os.environ, {"PORTAL_BUNDLE_MAX_CONCURRENT": "x"}):
             self.assertTrue(2 <= bundle_max_concurrent() <= 8)
+
+
+class TestSlotCoversPlanning(_Base):
+    """웹 점검 #4 · #48 — 전체 묶음은 확인 단계(대상 조회 · 파일 확인)만 수 분이 걸린다. 자리를 그 단계부터 잡아야 동시 제한이 듣는다."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        from service.api.bundle_response import GATE
+        self.gate = GATE
+        self.reads = 0
+
+    def _read(self, targets):
+        test = self
+
+        class _Asset:
+            def bundle_targets(self, *, seed_asset_id):
+                test.reads += 1
+                test.active_during_read = test.gate.active
+                return targets
+
+        class _Repo:
+            asset = _Asset()
+        return mock.patch.object(routes_assets.DbManager, "read", side_effect=lambda fn: fn(_Repo()))
+
+    def test_대상_조회와_확인은_자리를_잡은_채_한다(self) -> None:
+        t = [{"asset_id": A1, "fs_path": self.make("a.txt", b"A"), "file_name": "a.txt"}]
+        with self._read(t):
+            r = self.client.head(f"/assets/{A1}/bundle")
+        self.assertEqual(200, r.status_code)
+        self.assertEqual(1, self.active_during_read)
+        self.assertEqual(0, self.gate.active, "HEAD 는 확인이 끝나면 자리를 놓는다")
+
+    def test_자리가_없으면_HEAD_도_대상을_읽기_전에_503(self) -> None:
+        with mock.patch.dict(os.environ, {"PORTAL_BUNDLE_MAX_CONCURRENT": "1"}), self._read([]):
+            self.gate.active = 1                       # 다른 묶음이 자리를 쥐고 있다
+            for call in (self.client.head, self.client.get):
+                with self.subTest(method=call.__name__):
+                    r = call(f"/assets/{A1}/bundle")
+                    self.assertEqual(503, r.status_code)
+                    self.assertEqual("5", r.headers["retry-after"])
+            self.assertEqual(0, self.reads, "자리가 없으면 DB 도 파일도 건드리지 않는다")
+
+    def test_오류로_끝나도_자리를_놓는다(self) -> None:
+        with self._read(None):
+            r = self.client.get(f"/assets/{A1}/bundle")
+        self.assertEqual(404, r.status_code)
+        self.assertEqual(0, self.gate.active)
+
+    def test_GET_은_받은_자리를_스트림이_끝날_때_놓는다(self) -> None:
+        t = [{"asset_id": A1, "fs_path": self.make("a.txt", b"A" * 10), "file_name": "a.txt"}]
+        with self._read(t):
+            r = self.client.get(f"/assets/{A1}/bundle")
+        self.assertEqual(200, r.status_code)
+        self.assertEqual(["a.txt"], self.zip_of(r).namelist())
+        self.assertEqual(0, self.gate.active)
+
+
+class TestPlanInParallel(_Base):
+    """파일 확인을 동시에 해도 계획(담을 것 · 빠질 것 · 순서 · 합계)은 차례로 할 때와 같다."""
+
+    def test_동시_확인과_차례_확인의_계획이_같다(self) -> None:
+        from service.portal.asset.bundle_stream import PLAN_WORKERS_ENV, plan_bundle
+        targets = []
+        for i in range(40):
+            path = self.make(f"f{i}.txt", b"x" * i) if i % 7 else str(self.dir / f"없음{i}")
+            targets.append({"asset_id": f"a{i}", "fs_path": path, "file_name": f"f{i}.txt"})
+        plans = {}
+        for workers in ("1", "16"):
+            with mock.patch.dict(os.environ, {PLAN_WORKERS_ENV: workers}):
+                plans[workers] = plan_bundle(targets)
+        self.assertEqual(plans["1"], plans["16"])
+        self.assertEqual([f"a{i}" for i in range(40) if i % 7], [t["asset_id"] for t in plans["16"].packed])
+        self.assertEqual(6, len(plans["16"].unreadable))

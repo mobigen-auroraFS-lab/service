@@ -13,7 +13,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 
 from service.api import params
-from service.api.bundle_response import bundle_headers, make_plan, zip_head_response, zip_response
+from service.api.bundle_response import (
+    BundleSlot,
+    bundle_headers,
+    make_plan,
+    zip_head_response,
+    zip_response,
+)
 from service.portal import mm_meta
 from service.portal.auth import get_bundle_principal, require_principal
 from service.portal.common.db_manager import DbManager
@@ -249,25 +255,27 @@ def mm_meta_card(
 # ── 묶음(zip) — 임시 파일 없이 만들면서 흘려 보낸다(``service/portal/asset/bundle_stream.py``) ──────────────
 def _entities_bundle(entity_type: str | None, areas: str | None, labels: str | None, exclude_video: bool, *, head: bool) -> Response:
     picked = _parse_names(areas) or _parse_names(labels)
-    rows: list[dict[str, Any]] = DbManager.read(
-        lambda repo: repo.entity.zip_rows(
-            entity_type=entity_type, areas=picked,
-            min_bundle_size=_MIN_BUNDLE_SIZE, exclude_video=exclude_video,
+    # 조건 없는 전체 묶음은 확인 단계만 수 분이 걸린다(웹 점검 #4 · #48) — 그 단계부터 동시 묶음 자리 안에서 한다(HEAD 포함).
+    with BundleSlot() as slot:
+        rows: list[dict[str, Any]] = DbManager.read(
+            lambda repo: repo.entity.zip_rows(
+                entity_type=entity_type, areas=picked,
+                min_bundle_size=_MIN_BUNDLE_SIZE, exclude_video=exclude_video,
+            )
         )
-    )
-    if not rows:
-        raise HTTPException(status_code=404, detail="이 조건에 해당하는 자료가 없습니다")
-    targets = [
-        {"asset_id": r["asset_id"], "fs_path": r["fs_path"], "file_name": r["file_name"]}
-        for r in rows if r["fs_path"]
-    ]
-    if not targets:
-        raise HTTPException(status_code=409, detail="내려받을 파일 경로가 없다")
-    plan = make_plan(targets)
-    disposition = f'attachment; filename="{mm_meta.ascii_zip_name([entity_type or "all", *picked], fallback="meta", count=len(plan.packed))}"'
-    if head:
-        return zip_head_response(content_disposition=disposition, headers=bundle_headers(plan))
-    return zip_response(plan, content_disposition=disposition, headers=bundle_headers(plan))
+        if not rows:
+            raise HTTPException(status_code=404, detail="이 조건에 해당하는 자료가 없습니다")
+        targets = [
+            {"asset_id": r["asset_id"], "fs_path": r["fs_path"], "file_name": r["file_name"]}
+            for r in rows if r["fs_path"]
+        ]
+        if not targets:
+            raise HTTPException(status_code=409, detail="내려받을 파일 경로가 없다")
+        plan = make_plan(targets)
+        disposition = f'attachment; filename="{mm_meta.ascii_zip_name([entity_type or "all", *picked], fallback="meta", count=len(plan.packed))}"'
+        if head:
+            return zip_head_response(content_disposition=disposition, headers=bundle_headers(plan))
+        return zip_response(plan, content_disposition=disposition, headers=bundle_headers(plan), slot=slot)
 
 
 @bundle_router.get("/mm-meta/bundle")
@@ -294,23 +302,24 @@ def download_entities_bundle(
 def entities_bundle_head(
     entity_type: str | None = None, areas: str | None = None, labels: str | None = None, exclude_video: bool = False,
 ) -> Response:
-    """본문 없이 같은 머리 — 링크를 열기 전에 404 · 409 · 담길 수를 확인한다(동시 묶음 자리 · 접근 기록 없음)."""
+    """본문 없이 같은 머리 — 링크를 열기 전에 404 · 409 · 담길 수를 확인한다(접근 기록 없음 · 확인하는 동안 동시 묶음 자리를 잡는다 — 꽉 차면 503)."""
     return _entities_bundle(entity_type, areas, labels, exclude_video, head=True)
 
 
 def _card_bundle(entity_type: str, entity_uid: str, *, head: bool) -> Response:
-    result = DbManager.read(
-        lambda repo: repo.entity.card_zip_targets(entity_type=entity_type, entity_uid=entity_uid))
-    if result is None:
-        raise HTTPException(status_code=404, detail="해당 멀티모달 메타가 없다")
-    targets, name = result  # type: ignore[misc]
-    if not targets:
-        raise HTTPException(status_code=409, detail="내려받을 파일이 없다(구성 자산 없음 또는 경로 미상)")
-    plan = make_plan(targets)
-    disposition = f'attachment; filename="{mm_meta.ascii_zip_name([f"mm_meta_{entity_type}", name], fallback="mm_meta", count=len(plan.packed))}"'
-    if head:
-        return zip_head_response(content_disposition=disposition, headers=bundle_headers(plan))
-    return zip_response(plan, content_disposition=disposition, headers=bundle_headers(plan))
+    with BundleSlot() as slot:      # 대상 조회 · 파일 확인부터 동시 묶음 자리 안에서 한다(HEAD 포함)
+        result = DbManager.read(
+            lambda repo: repo.entity.card_zip_targets(entity_type=entity_type, entity_uid=entity_uid))
+        if result is None:
+            raise HTTPException(status_code=404, detail="해당 멀티모달 메타가 없다")
+        targets, name = result  # type: ignore[misc]
+        if not targets:
+            raise HTTPException(status_code=409, detail="내려받을 파일이 없다(구성 자산 없음 또는 경로 미상)")
+        plan = make_plan(targets)
+        disposition = f'attachment; filename="{mm_meta.ascii_zip_name([f"mm_meta_{entity_type}", name], fallback="mm_meta", count=len(plan.packed))}"'
+        if head:
+            return zip_head_response(content_disposition=disposition, headers=bundle_headers(plan))
+        return zip_response(plan, content_disposition=disposition, headers=bundle_headers(plan), slot=slot)
 
 
 @bundle_router.get("/mm-meta/{entity_type}/{entity_uid}/bundle")
@@ -321,5 +330,5 @@ def download_card_bundle(entity_type: str, entity_uid: str, link: str | None = Q
 
 @bundle_router.head("/mm-meta/{entity_type}/{entity_uid}/bundle", include_in_schema=False)
 def card_bundle_head(entity_type: str, entity_uid: str) -> Response:
-    """본문 없이 같은 머리 — 링크를 열기 전에 404 · 409 · 담길 수를 확인한다(동시 묶음 자리 · 접근 기록 없음)."""
+    """본문 없이 같은 머리 — 링크를 열기 전에 404 · 409 · 담길 수를 확인한다(접근 기록 없음 · 확인하는 동안 동시 묶음 자리를 잡는다 — 꽉 차면 503)."""
     return _card_bundle(entity_type, entity_uid, head=True)
