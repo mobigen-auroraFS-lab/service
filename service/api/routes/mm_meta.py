@@ -119,6 +119,7 @@ def list_mm_meta(
 
     Returns:
         ``{items, total, scope_total, next_cursor}``(+ ``refine`` 을 준 요청에만 ``refine``). ``total``(좁히기 이후) · ``scope_total``(이전)은 돌려준 개수가 아니라 조건에 맞는 전부(모수)다.
+        항목의 ``confirmed_count`` 는 연결된 자료 수(확인 전 포함)이고 화면 표기는 「연결된 N건」이다(정렬 · 커서 키라 이름은 그대로).
         ``next_cursor`` 가 ``None`` 이면 마지막 쪽이다. 검색 경로(``q``/``refine`` 중 하나라도 준 요청)의 항목에는 ``by_text`` · ``by_semantic`` · ``match_reason`` 이 더 실린다
         (뜻으로 걸린 개체는 카드에 검색어가 없어 근거가 필요하다 — 불린이 실질이고 문구는 표시용). 검색이 없는 목록에는 이 키가 없다.
 
@@ -209,13 +210,13 @@ def list_mm_meta(
 
 @router.get("/mm-meta/facets")
 def mm_meta_facets(
-    entity_type: str | None = Query(None, description="지금 고른 종류 — 갈래 건수를 이 안으로 좁힌다"),
+    entity_type: str | None = Query(None, description="지금 고른 종류 — 갈래 · 자료 유형 건수를 이 안으로 좁힌다(종류 칩은 종류만 바꾼 수)"),
     areas: str | None = Query(None, description="지금 고른 갈래들(쉼표) — 갈래 건수를 더 좁힌다"),
     modalities: str | None = Query(
         None,
         description=(
-            "지금 고른 자료 유형들(text · image · video · audio 쉼표) — 자료 유형 칩 건수가 \"이 칩을 더 누르면 몇 개\"가 되도록 더 좁힌다."
-            " ⚠️ 갈래 칩 건수에는 아직 적용하지 않는다(코어 제약). 알 수 없는 값은 422"
+            "지금 고른 자료 유형들(text · image · video · audio 쉼표) — 세 축의 칩 건수를 모두 이 안으로 좁힌다(칩 숫자 = 그 칩을 눌렀을 때 나올 수)."
+            " 알 수 없는 값은 422"
         ),
     ),
 ) -> dict[str, Any]:
@@ -234,7 +235,10 @@ def mm_meta_card(
     entity_type: str,
     entity_uid: str,
 ) -> dict[str, Any]:
-    """개체 카드 — 모달리티별 구성 자산과 자료 성격(크로스모달 응집이 존재 이유라 모달리티별 그룹으로 돌려준다). 개체가 없으면 404, 빈 개체는 200(``total`` 0)."""
+    """개체 카드 — 모달리티별 구성 자산과 자료 성격(크로스모달 응집이 존재 이유라 모달리티별 그룹으로 돌려준다). 개체가 없으면 404, 빈 개체는 200(``total`` 0).
+
+    ``confirmed_count`` 는 ``total`` 과 같은 값(연결된 자료 수 · 확인 전 포함)이다. 자산마다 ``status`` 가 소속 확인 여부(``active`` 확인 · ``proposed`` 확인 전)다.
+    """
     card = DbManager.read(
         lambda repo: repo.entity.card(entity_type=entity_type, entity_uid=entity_uid))
     if card is None:

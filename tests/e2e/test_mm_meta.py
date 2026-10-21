@@ -61,6 +61,12 @@ class TestMmMetaE2E(unittest.TestCase):
         self.assertEqual(resp.status_code, 200, resp.text)
         return resp.json()["items"]
 
+    def _total(self, **params) -> int:
+        """그 조건으로 눌렀을 때 나올 개체 수(응답 ``total`` · 모수). 칩 숫자가 목록 상한(500)을 넘어도 비교가 된다."""
+        resp = self.client.get("/mm-meta", params={**params, "limit": 1})
+        self.assertEqual(resp.status_code, 200, resp.text)
+        return int(resp.json()["total"])
+
     def _facets(self, **params) -> dict:
         resp = self.client.get("/mm-meta/facets", params=params)
         self.assertEqual(resp.status_code, 200, resp.text)
@@ -78,8 +84,7 @@ class TestMmMetaE2E(unittest.TestCase):
             self.skipTest("노출 개체가 있는 종류가 없다 — dev DB 에 개체가 없다")
         for t in types:
             with self.subTest(type=t["name"]):
-                self.assertLess(t["entities"], _LIST_MAX, "칩 건수가 limit 상한 이상이면 비교가 무효다")
-                self.assertEqual(len(self._list(entity_type=t["name"])), t["entities"])
+                self.assertEqual(self._total(entity_type=t["name"]), t["entities"])
 
     def test_갈래_칩_건수가_그_갈래_목록_건수와_같다(self) -> None:
         areas = [a for a in self._facets()["areas"] if a["entities"] > 0]
@@ -87,7 +92,7 @@ class TestMmMetaE2E(unittest.TestCase):
             self.skipTest("노출 개체가 있는 갈래가 없다")
         for a in areas[:6]:  # 상위 몇 개만 — 갈래마다 목록을 부르면 느리다
             with self.subTest(area=a["name"]):
-                self.assertEqual(len(self._list(areas=a["name"])), a["entities"])
+                self.assertEqual(self._total(areas=a["name"]), a["entities"])
 
     def test_갈래를_더_고르면_건수가_줄어들거나_같다(self) -> None:
         """갈래는 AND 라 더 누를수록 좁아진다 — 칩 건수가 "누르면 나올 수"인 근거."""
@@ -99,18 +104,23 @@ class TestMmMetaE2E(unittest.TestCase):
         for a in areas[1:6]:
             with self.subTest(area=a["name"]):
                 self.assertLessEqual(after.get(a["name"], 0), a["entities"])
-                self.assertEqual(len(self._list(areas=f"{first},{a['name']}")),
-                                 after.get(a["name"], 0))
+                self.assertEqual(self._total(areas=f"{first},{a['name']}"), after.get(a["name"], 0))
 
-    def test_종류_칩은_갈래를_골라도_변하지_않는다(self) -> None:
-        """종류는 **갈아타는 축**이라 조건을 적용하지 않는다 — 안 그러면 갈아탈 칩이 사라진다."""
+    def test_종류_칩_숫자는_그_종류로_바꿔_누른_결과_수다(self) -> None:
+        """코어 spec 108 — 종류 칩은 종류 조건만 빼고 고른 갈래를 적용해 센다(갈아탈 칩은 남고 숫자 = 누른 결과 수).
+
+        종전 규칙(「종류 칩은 갈래를 골라도 변하지 않는다」)은 108 머지로 바뀌었다.
+        """
         areas = [a for a in self._facets()["areas"] if a["entities"] > 0]
         if not areas:
             self.skipTest("노출 개체가 있는 갈래가 없다")
-        base = {t["name"]: t["entities"] for t in self._facets()["types"]}
-        scoped = {t["name"]: t["entities"]
-                  for t in self._facets(areas=areas[0]["name"], entity_type="장소")["types"]}
-        self.assertEqual(base, scoped)
+        area = areas[0]["name"]
+        types = [t for t in self._facets(areas=area, entity_type="장소")["types"] if t["entities"] > 0]
+        if not types:
+            self.skipTest("그 갈래에 노출 개체가 있는 종류가 없다")
+        for t in types[:6]:
+            with self.subTest(type=t["name"]):
+                self.assertEqual(self._total(areas=area, entity_type=t["name"]), t["entities"])
 
     # ── ② 노출 임계 ───────────────────────────────────────────────────────────
     def test_목록에_임계_미만_개체가_없다(self) -> None:
