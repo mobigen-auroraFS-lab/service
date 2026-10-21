@@ -132,15 +132,34 @@ def _field_message(err: dict[str, Any]) -> str:
     return str(err.get("msg") or kind or "올바르지 않은 값입니다")
 
 
-def _field_path(loc: object) -> str:
-    """pydantic 의 ``loc`` 을 ``query.size`` · ``body.edge_ids[0]`` 처럼 읽히게 잇는다."""
-    text = ""
-    for part in loc if isinstance(loc, (list, tuple)) else ():
-        if isinstance(part, int):
-            text += f"[{part}]"
-        else:
-            text = f"{text}.{part}" if text else str(part)
-    return text or "요청"
+# 화면에 띄울 칸 이름 — 사용자가 직접 입력하는 칸만 적는다. 그 밖의 칸(쪽 크기 · 정렬 등)은 화면이 만드는 값이라
+# 이름 없이 문장만 싣는다. 어느 칸인지는 ``errors[].loc`` 에 그대로 있다(개발자용).
+_FIELD_LABELS = {"q": "검색어", "refine": "결과 내 검색어"}
+# 칸 이름이 있을 때 쓸 사용자 말 — 「300자 이하로 입력해 주세요」처럼 할 일로 적는다.
+_USER_PHRASE = {
+    "string_too_long": ("max_length", "{}자 이하로 입력해 주세요"),
+    "string_too_short": ("min_length", "{}자 이상 입력해 주세요"),
+}
+
+
+def _topic_particle(word: str) -> str:
+    """받침이 있으면 「은」, 없으면 「는」(한글 음절이 아니면 「는」)."""
+    last = word[-1:] or "가"
+    code = ord(last) - 0xAC00
+    return "은" if 0 <= code < 11172 and code % 28 else "는"
+
+
+def _user_detail(err: dict[str, Any]) -> str:
+    """검증 실패 한 건을 화면에 띄울 문장으로 — 칸 경로(``query.q``) 같은 영문 이름을 싣지 않는다(웹 점검 #36 · #11)."""
+    loc = err.get("loc") or ()
+    name = str(loc[-1]) if isinstance(loc, (list, tuple)) and loc else ""
+    label = _FIELD_LABELS.get(name)
+    if label is None:
+        return f"요청 값이 올바르지 않습니다 — {err['msg']}"
+    phrase = _USER_PHRASE.get(str(err.get("type", "")))
+    bound = (err.get("ctx") or {}).get(phrase[0]) if phrase else None
+    text = phrase[1].format(bound) if phrase and bound is not None else err["msg"]
+    return f"{label}{_topic_particle(label)} {text}"
 
 
 async def validation_exception_handler(request: Request, exc: Exception) -> Response:
@@ -148,14 +167,15 @@ async def validation_exception_handler(request: Request, exc: Exception) -> Resp
     받은 값(``input``)은 되돌려 보내지 않는다(큰 본문이 반사되거나 남이 보낸 값이 화면에 그려지지 않게).
     """
     assert isinstance(exc, RequestValidationError)  # noqa: S101 — 등록 타입 보증(방어)
+    raw = list(exc.errors())
     errors = [
         {"loc": list(e.get("loc", ())), "msg": _field_message(e), "type": str(e.get("type", ""))}
-        for e in exc.errors()
+        for e in raw
     ]
     if not errors:  # 방어: 빈 검증 오류(정상 경로에서는 나오지 않는다)
         return envelope(422, "요청 값이 올바르지 않습니다")
-    head = errors[0]
-    detail = f"요청 값이 올바르지 않습니다 — {_field_path(head['loc'])}: {head['msg']}"
+    # ``detail`` 은 화면에 그대로 뜬다 — 사용자 말로 쓰고 칸 경로는 싣지 않는다(``errors[].loc`` 에 있다).
+    detail = _user_detail({**errors[0], "ctx": raw[0].get("ctx")})
     if len(errors) > 1:
         detail += f" (그 밖 {len(errors) - 1}건)"
     return envelope(422, detail, errors=errors)

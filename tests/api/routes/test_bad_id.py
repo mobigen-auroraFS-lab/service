@@ -34,7 +34,7 @@ ADMIN_OPEN = any(p.startswith("/admin") for p in app.openapi()["paths"])
 
 # (설명, method, path, body, 기대 상태, 기대 응답 본문 일부)
 CASES = [
-    ("자산 상세", "GET", f"/assets/{BAD}", None, 404, "자산을 찾을 수 없거나"),
+    ("자산 상세", "GET", f"/assets/{BAD}", None, 404, "찾는 파일이 없습니다"),
 ]
 _ADMIN_CASES = [
     ("관리자 자산 상세", "GET", f"/admin/assets/{BAD}", None, 404, "자산을 찾을 수 없거나"),

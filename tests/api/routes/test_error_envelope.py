@@ -75,7 +75,20 @@ class TestEnvelopeShape(unittest.TestCase):
         self._assert_envelope(r, want_status=422, with_errors=True)
         self.assertEqual(["query", "size"], r.json()["errors"][0]["loc"])
         self.assertIn("1 이상", r.json()["errors"][0]["msg"])
-        self.assertIn("query.size", r.json()["detail"])
+        # detail 은 화면에 그대로 뜬다 — 칸 경로(영문)는 errors[].loc 에만 둔다(웹 점검 #36).
+        self.assertNotIn("query.size", r.json()["detail"])
+        self.assertIn("1 이상", r.json()["detail"])
+
+    def test_검색어_길이_초과는_사용자_말로_알린다(self) -> None:
+        """웹 점검 #11 — 「요청 값이 올바르지 않습니다 — query.q: 300자 이하여야 합니다」가 알림에 그대로 떴다."""
+        for path in ("/file-search", "/mm-meta"):
+            with self.subTest(path=path):
+                r = self.client.get(path, params={"q": "가" * 301})
+                self._assert_envelope(r, want_status=422, with_errors=True)
+                self.assertEqual("검색어는 300자 이하로 입력해 주세요", r.json()["detail"])
+                self.assertEqual(["query", "q"], r.json()["errors"][0]["loc"])
+        r = self.client.get("/file-search", params={"refine": "가" * 301})
+        self.assertEqual("결과 내 검색어는 300자 이하로 입력해 주세요", r.json()["detail"])
 
     def test_validation_does_not_echo_input(self) -> None:
         """🔴 받은 값을 되돌려 보내지 않는다 — 큰 본문·남의 값이 반사되면 안 된다."""

@@ -154,7 +154,7 @@ class TestDownload(_Base):
         with self.assertLogs("meta_extract.portal_api", "WARNING") as cm:
             r = self._get(_target("/no/such/dir/file.bin"))
         self.assertEqual(410, r.status_code)
-        self.assertEqual({"detail": "원본 파일이 존재하지 않거나 접근할 수 없음"}, r.json())
+        self.assertEqual({"detail": "원본 파일을 찾을 수 없습니다. 관리자에게 알려 주세요."}, r.json())
         self.assertNotIn("/no/such", r.text)
         self.assertIn("/no/such/dir/file.bin", cm.records[0].getMessage())       # 운영자는 로그에서 본다
 
@@ -165,7 +165,7 @@ class TestDownload(_Base):
     def test_노출_대상이_아니면_404(self) -> None:
         r = self._get(None)
         self.assertEqual(404, r.status_code)
-        self.assertEqual("다운로드 대상을 찾을 수 없거나 노출 대상이 아님", r.json()["detail"])
+        self.assertEqual("찾는 파일이 없습니다.", r.json()["detail"])
 
     def test_UUID_가_아니면_DB_를_부르지_않고_404(self) -> None:
         with mock.patch.object(routes_assets.DbManager, "read") as read:

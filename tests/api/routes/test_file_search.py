@@ -456,20 +456,18 @@ class TestFileSearchCursor(unittest.TestCase):
         self.assertEqual(r.status_code, 400)
 
     @patch("service.api.routes.file_search.browse_files")
-    def test_커서_오류_문구에_파이썬_진단이_새지_않는다(self, mock_browse) -> None:
-        """코어 문구의 ``: `` 뒤(예외 원문 · 입력 repr)는 떼고 할 일을 붙인다(2026-09-28)."""
+    def test_커서_오류는_사용자_말_한_문장이다(self, mock_browse) -> None:
+        """웹 점검 #36 — 코어 문구(반말 · next_cursor · 파이썬 진단)를 그대로 싣지 않는다. 할 일이 하나라 문장도 하나다."""
+        from service.api.params import CURSOR_DETAIL
         from src.search.cursor import CursorError
-        mock_browse.side_effect = CursorError(
-            "커서를 읽을 수 없다: 'utf-8' codec can't decode byte 0xff in position 0")
-        r = self.client.get("/file-search", params={"cursor": "!!!", "sort": "created_desc"})
-        self.assertEqual(r.status_code, 400)
-        detail = r.json()["detail"]
-        self.assertNotIn("codec", detail)
-        self.assertTrue(detail.startswith("커서를 읽을 수 없다 — "), detail)
-        # ``: `` 가 없는 문구는 그대로 간다.
-        mock_browse.side_effect = CursorError("커서가 가리키는 조회 조건이 이번 요청과 다르다 — 처음부터 다시 받아야 한다")
-        r = self.client.get("/file-search", params={"cursor": "!!!", "sort": "created_desc"})
-        self.assertEqual("커서가 가리키는 조회 조건이 이번 요청과 다르다 — 처음부터 다시 받아야 한다", r.json()["detail"])
+        for msg in ("커서를 읽을 수 없다: 'utf-8' codec can't decode byte 0xff in position 0",
+                    "커서가 가리키는 조회 조건이 이번 요청과 다르다 — 처음부터 다시 받아야 한다"):
+            with self.subTest(msg=msg):
+                mock_browse.side_effect = CursorError(msg)
+                r = self.client.get("/file-search", params={"cursor": "!!!", "sort": "created_desc"})
+                self.assertEqual(r.status_code, 400)
+                self.assertEqual(CURSOR_DETAIL, r.json()["detail"])
+                self.assertNotIn("cursor", r.json()["detail"])
 
     @patch("service.api.routes.file_search.browse_files")
     def test_칩을_빼면_코어에_셀_축을_비워_넘긴다(self, mock_browse) -> None:

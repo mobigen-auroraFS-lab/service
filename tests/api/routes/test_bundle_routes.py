@@ -82,7 +82,7 @@ class TestRelationBundle(_Base):
 
     def test_기준_자산이_노출_대상이_아니면_404(self) -> None:
         r = self._get(None)
-        self.assertEqual((404, "묶음 seed 를 찾을 수 없거나 노출 대상이 아님"), (r.status_code, r.json()["detail"]))
+        self.assertEqual((404, "찾는 파일이 없습니다."), (r.status_code, r.json()["detail"]))
 
     def test_UUID가_아니면_404(self) -> None:
         self.assertEqual(404, self.client.get("/assets/not-a-uuid/bundle").status_code)

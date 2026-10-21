@@ -32,6 +32,9 @@ router = APIRouter(tags=["entity"], dependencies=[Depends(require_principal)])
 
 # 묶음(zip) 내려받기 — 헤더 **또는** 묶음 링크(``?link=``)로 인증한다(``get_bundle_principal`` · 링크는 그 요청 대상에만 통한다).
 bundle_router = APIRouter(tags=["entity"], dependencies=[Depends(get_bundle_principal)])
+# 화면에 그대로 뜨는 문구라 사용자 말로 쓴다(웹 점검 #36).
+_ENTITY_404 = "찾는 개체가 없습니다."
+_NOTHING_TO_ZIP = "내려받을 수 있는 파일이 없습니다."
 _LINK_DESC = "묶음 링크(`POST /bundle-links` 로 받은 것). 헤더 대신 이 링크로 인증한다 — 그 요청 대상(경로 + 조건)에만 통하고 곧 만료된다"
 
 # 질의 길이 상한 — 검색 엔진이 낱말마다 절(clause)을 만들고 **1024개**에서 거절한다
@@ -248,7 +251,7 @@ def mm_meta_card(
     card = DbManager.read(
         lambda repo: repo.entity.card(entity_type=entity_type, entity_uid=entity_uid))
     if card is None:
-        raise HTTPException(status_code=404, detail="해당 멀티모달 메타가 없다")
+        raise HTTPException(status_code=404, detail=_ENTITY_404)
     return card  # type: ignore[return-value]
 
 
@@ -270,7 +273,7 @@ def _entities_bundle(entity_type: str | None, areas: str | None, labels: str | N
             for r in rows if r["fs_path"]
         ]
         if not targets:
-            raise HTTPException(status_code=409, detail="내려받을 파일 경로가 없다")
+            raise HTTPException(status_code=409, detail=_NOTHING_TO_ZIP)
         plan = make_plan(targets)
         disposition = f'attachment; filename="{mm_meta.ascii_zip_name([entity_type or "all", *picked], fallback="meta", count=len(plan.packed))}"'
         if head:
@@ -311,10 +314,10 @@ def _card_bundle(entity_type: str, entity_uid: str, *, head: bool) -> Response:
         result = DbManager.read(
             lambda repo: repo.entity.card_zip_targets(entity_type=entity_type, entity_uid=entity_uid))
         if result is None:
-            raise HTTPException(status_code=404, detail="해당 멀티모달 메타가 없다")
+            raise HTTPException(status_code=404, detail=_ENTITY_404)
         targets, name = result  # type: ignore[misc]
         if not targets:
-            raise HTTPException(status_code=409, detail="내려받을 파일이 없다(구성 자산 없음 또는 경로 미상)")
+            raise HTTPException(status_code=409, detail=_NOTHING_TO_ZIP)
         plan = make_plan(targets)
         disposition = f'attachment; filename="{mm_meta.ascii_zip_name([f"mm_meta_{entity_type}", name], fallback="mm_meta", count=len(plan.packed))}"'
         if head:

@@ -57,8 +57,11 @@ bundle_router = APIRouter(tags=["assets"], dependencies=[Depends(get_bundle_prin
 
 _LOG = logging.getLogger("meta_extract.portal_api")
 
-_DOWNLOAD_404 = "다운로드 대상을 찾을 수 없거나 노출 대상이 아님"
-_FILE_GONE_410 = "원본 파일이 존재하지 않거나 접근할 수 없음"
+# 화면에 그대로 뜨는 문구라 사용자 말로 쓴다(웹 점검 #36). 없는 것과 못 보는 것을 가르지 않는다(같은 문구).
+_NOT_FOUND = "찾는 파일이 없습니다."
+_DOWNLOAD_404 = _NOT_FOUND
+_FILE_GONE_410 = "원본 파일을 찾을 수 없습니다. 관리자에게 알려 주세요."
+_NOTHING_TO_ZIP = "내려받을 수 있는 파일이 없습니다."
 
 
 @router.get("/assets/unclassified")
@@ -88,7 +91,7 @@ def asset_detail(
     노출을 통과한 자산에는 주제 정보(``topics``·``same_topic_groups``)를 같은 읽기
     트랜잭션에서 함께 싣는다(신규 LLM 0). 게이트 미통과(None)면 주제 seam 미호출.
     """
-    params.uuid_or_404(asset_id, detail="자산을 찾을 수 없거나 노출 대상이 아님")
+    params.uuid_or_404(asset_id, detail=_NOT_FOUND)
 
     # [임시] 권한 없이도 데이터를 보이게 한다(협의 결과, 2026-10-20). **3년차에 권한 복구 예정** — 권한별 가리기 원본은 지우지 말고
     # 아래 주석으로 남겨 둔다. 복구할 때 주석을 되살리고 임시 줄(clearance=None)을 지운다.
@@ -98,7 +101,7 @@ def asset_detail(
     detail = DbManager.read(
         lambda repo: repo.asset.detail(asset_id=asset_id, clearance=None))
     if detail is None:
-        raise HTTPException(status_code=404, detail="자산을 찾을 수 없거나 노출 대상이 아님")
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
     return detail
 
 
@@ -292,11 +295,11 @@ _LINK_DESC = "묶음 링크(`POST /bundle-links` 로 받은 것). 헤더 대신 
 
 
 def _relation_bundle(asset_id: str, *, head: bool) -> Response:
-    params.uuid_or_404(asset_id, detail="묶음 seed 를 찾을 수 없거나 노출 대상이 아님")
+    params.uuid_or_404(asset_id, detail=_NOT_FOUND)
     with BundleSlot() as slot:      # 대상 조회 · 파일 확인부터 동시 묶음 자리 안에서 한다(HEAD 포함)
         targets = DbManager.read(lambda repo: repo.asset.bundle_targets(seed_asset_id=asset_id))
         if targets is None:
-            raise HTTPException(status_code=404, detail="묶음 seed 를 찾을 수 없거나 노출 대상이 아님")
+            raise HTTPException(status_code=404, detail=_NOT_FOUND)
         plan = make_plan(targets)       # 응답을 시작하기 전에 존재 · 크기를 확인한다(파일 읽기는 DB 트랜잭션 밖)
         disposition = _content_disposition(f"bundle_{asset_id}.zip")
         if head:
@@ -326,7 +329,7 @@ def _topic_bundle(topic: str, subtopic: str | None, exclude_video: bool, *, head
             raise HTTPException(status_code=404, detail="이 분류에 해당하는 자료가 없습니다")
         targets = [r for r in rows if r["fs_path"]]
         if not targets:
-            raise HTTPException(status_code=409, detail="내려받을 파일 경로가 없다")
+            raise HTTPException(status_code=409, detail=_NOTHING_TO_ZIP)
         plan = make_plan(targets)
         disposition = _content_disposition("_".join(["분류", topic, *([subtopic] if subtopic else [])]) + ".zip")      # subtopic 이 빈 값(하위주제 없음)이면 이름에 넣지 않는다
         if head:
