@@ -56,7 +56,8 @@ def tags(
     subtopic: list[str] = Query(default=[], description="하위주제로 좁히기(반복 가능 · 여럿이면 또는)"),
     q: str | None = Query(None, max_length=QUERY_MAX_LEN,
                           description="태그 이름 부분 일치(대소문자 무시)"),
-    limit: int = Query(_TAG_LIMIT_DEFAULT, ge=1, le=_TAG_LIMIT_MAX),
+    limit: int = Query(_TAG_LIMIT_DEFAULT, ge=1, le=_TAG_LIMIT_MAX,
+                       description="돌려줄 개수(건수 상위). 나머지는 total 로 알 수 있고 q 로 찾는다"),
 ) -> dict[str, Any]:
     """고를 수 있는 태그(키워드)를 건수와 함께 돌려준다.
 
@@ -67,8 +68,10 @@ def tags(
     세는 대상이 다르다 — 이쪽은 등록된 자산 전체이고, 칩은 지금 검색 결과다.
 
     Returns:
-        ``{rows: [{tag, count}], total}`` — 건수 내림차순, 같으면 이름 오름차순.
+        ``{rows: [{tag, count}], total}`` — 건수 내림차순, 같으면 이름 오름차순. ``total`` 은 ``limit`` 으로 **자르기 전**
+        같은 조건의 태그 종류 수다(2026-10-21 · 종전에는 받은 행 수였다). ``total`` 이 행 수보다 크면 나머지 태그는
+        ``q``(부분 일치)로 찾는다.
     """
-    rows = DbManager.read(
-        lambda repo: repo.catalog.tags(topics=topic, subtopics=subtopic, q=q, limit=limit))
-    return {"rows": rows, "total": len(rows)}
+    rows, total = DbManager.read(
+        lambda repo: repo.catalog.tags_with_total(topics=topic, subtopics=subtopic, q=q, limit=limit))
+    return {"rows": rows, "total": total}

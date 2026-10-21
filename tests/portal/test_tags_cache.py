@@ -18,7 +18,7 @@ class TestTagsCache(unittest.TestCase):
 
         def fake_rows(_sql, _params):
             self.calls += 1
-            return [{"tag": f"태그{self.calls}", "count": 3}]
+            return [{"tag": f"태그{self.calls}", "count": 3, "kinds": 40}]
 
         patcher = mock.patch.object(CatalogRepository, "rows", side_effect=fake_rows)
         patcher.start()
@@ -50,6 +50,15 @@ class TestTagsCache(unittest.TestCase):
             self._tags()
             self._tags()
         self.assertEqual(2, self.calls)
+
+    def test_종류_수도_캐시에서_같이_준다(self) -> None:
+        base = {"topics": [], "subtopics": [], "q": None, "limit": 1}
+        with mock.patch.dict("os.environ", {catalog_repo.TAGS_CACHE_ENV: "300"}):
+            first = self.repo.tags_with_total(**base)
+            again = self.repo.tags_with_total(**base)
+        self.assertEqual(1, self.calls)
+        self.assertEqual(([{"tag": "태그1", "count": 3}], 40), again)
+        self.assertEqual(first, again)
 
     def test_0_이면_끈다(self) -> None:
         with mock.patch.dict("os.environ", {catalog_repo.TAGS_CACHE_ENV: "0"}):

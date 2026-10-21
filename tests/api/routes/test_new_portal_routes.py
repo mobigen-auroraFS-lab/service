@@ -49,10 +49,27 @@ class TestCatalogRoutes(unittest.TestCase):
         self.assertEqual(200, r.status_code)
         self.assertEqual("같은 분야", r.json()["rows"][0]["kind_name_ko"])
 
+    def test_태그_total_은_자르기_전_종류_수다(self) -> None:
+        """웹 점검 #38 — 받은 행 수(500)를 total 로 주면 「전체 500개」로 보이고 501번째부터는 고를 수 없다."""
+        from service.portal.repositories.catalog_repo import CatalogRepository
+
+        repo = CatalogRepository.__new__(CatalogRepository)
+        found = [{"tag": "한옥", "count": 9, "kinds": 1234}, {"tag": "한복", "count": 2, "kinds": 1234}]
+        seen: list[str] = []
+        with mock.patch.dict("os.environ", {"PORTAL_TAGS_CACHE_SECONDS": "0"}), \
+             mock.patch.object(CatalogRepository, "rows", side_effect=lambda sql, _p: seen.append(sql) or found):
+            rows, total = repo.tags_with_total(topics=[], subtopics=[], q=None, limit=2)
+        self.assertEqual((2, 1234), (len(rows), total))
+        self.assertEqual([{"tag": "한옥", "count": 9}, {"tag": "한복", "count": 2}], rows)
+        self.assertIn("COUNT(*) OVER ()", seen[0])                # 묶은 뒤 · LIMIT 앞에서 센다
+        with mock.patch.dict("os.environ", {"PORTAL_TAGS_CACHE_SECONDS": "0"}), \
+             mock.patch.object(CatalogRepository, "rows", return_value=[]):
+            self.assertEqual(([], 0), repo.tags_with_total(topics=[], subtopics=[], q="없음", limit=2))
+
     def test_태그는_주제로_좁혀_받는다(self) -> None:
         from service.portal.repositories.catalog_repo import CatalogRepository
-        with mock.patch.object(CatalogRepository, "tags",
-                               return_value=[{"tag": "한옥", "count": 3}]) as tags, \
+        with mock.patch.object(CatalogRepository, "tags_with_total",
+                               return_value=([{"tag": "한옥", "count": 3}], 1)) as tags, \
              mock.patch.object(db, "run_in_db", side_effect=_read_only):
             r = self.client.get("/tags?topic=역사·문화유산&subtopic=유적·유물&limit=5")
         self.assertEqual(200, r.status_code)

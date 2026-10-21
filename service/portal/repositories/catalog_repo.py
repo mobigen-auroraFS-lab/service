@@ -25,7 +25,7 @@ from service.portal.common.repository import Repository
 TAGS_CACHE_ENV = "PORTAL_TAGS_CACHE_SECONDS"
 TAGS_CACHE_DEFAULT = 300
 _TAGS_CACHE_MAX = 256          # 들고 있을 조건 수 — 넘으면 가장 오래된 것부터 버린다
-_TAGS_CACHE: dict[tuple, tuple[float, list[dict[str, Any]]]] = {}
+_TAGS_CACHE: dict[tuple, tuple[float, list[dict[str, Any]], int]] = {}
 _TAGS_LOCK = threading.Lock()
 
 
@@ -62,7 +62,8 @@ WITH kw AS (
   {topic_join}
   WHERE a.status = 'registered'{topic_where}{like_where}
 )
-SELECT mode() WITHIN GROUP (ORDER BY kw) AS tag, COUNT(DISTINCT asset_id) AS count
+SELECT mode() WITHIN GROUP (ORDER BY kw) AS tag, COUNT(DISTINCT asset_id) AS count,
+       COUNT(*) OVER () AS kinds
 FROM kw
 WHERE key <> ''
 GROUP BY key COLLATE "C"
@@ -75,6 +76,8 @@ LIMIT %s
 #    같다/다르다 판정은 콜레이션과 무관하게 바이트 비교(결정적 콜레이션)라 **묶음이 바뀌지 않는다.** 대표 표기(``mode()`` 의 동점 규칙)와
 #    최종 이름순 정렬은 기본 콜레이션 그대로다 — ⚠️ ``kw`` 나 최종 ``tag`` 정렬까지 ``"C"`` 로 바꾸면 동점 표기 · 이름순이 달라질 수 있다.
 #    **열쇠에만** 붙인다. 근거: 조건 26가지(전체 · 주제 · 하위주제 · 검색어) 결과 대조 동일(작업 지시서 2026-10-01 작업 C).
+# 🔴 [2026-10-21] ``kinds`` = **자르기 전** 태그 종류 수(묶은 뒤 · ``LIMIT`` 앞에서 세는 창 함수) — 응답 ``total`` 이다.
+#    종전 ``total`` 은 자른 뒤 행 수라 「전체 500개」로 보였는데 501번째부터는 목록에 없었다(웹 점검 #38).
 
 _TOPIC_JOIN = "JOIN asset_topic t ON t.asset_id = a.asset_id"
 
@@ -110,7 +113,16 @@ class CatalogRepository(Repository):
 
     def tags(self, *, topics: list[str], subtopics: list[str], q: str | None,
              limit: int) -> list[dict[str, Any]]:
-        """태그(키워드) 목록을 건수와 함께 돌려준다.
+        """태그(키워드) 목록을 건수와 함께 돌려준다(``tags_with_total`` 의 행만 — 추천 검색어 · 예열이 쓴다).
+
+        Returns:
+            ``[{tag, count}]`` — ``tags_with_total`` 참조.
+        """
+        return self.tags_with_total(topics=topics, subtopics=subtopics, q=q, limit=limit)[0]
+
+    def tags_with_total(self, *, topics: list[str], subtopics: list[str], q: str | None,
+                        limit: int) -> tuple[list[dict[str, Any]], int]:
+        """태그(키워드) 목록을 건수와 함께, **자르기 전** 태그 종류 수와 함께 돌려준다.
 
         Args:
             topics: 주제로 좁힐 값들(여럿이면 「또는」). 빈 목록이면 안 좁힌다.
@@ -119,7 +131,8 @@ class CatalogRepository(Repository):
             limit: 최대 개수(건수 내림차순 → 이름 오름차순).
 
         Returns:
-            ``[{tag, count}]`` — 건수는 **자산 수**다(한 자산이 같은 태그를 여러 번 가져도 1).
+            ``([{tag, count}], 종류 수)`` — 건수는 **자산 수**다(한 자산이 같은 태그를 여러 번 가져도 1). 종류 수는
+            ``limit`` 으로 자르기 전 같은 조건의 태그 수라 행 수보다 클 수 있다(그 밖의 태그는 ``q`` 로 찾는다).
             같은 조건이면 캐시 수명(기본 300초) 동안 **같은 답**을 준다(적재 직후 건수가 늦을 수 있다).
         """
         ttl = tags_cache_seconds()
@@ -129,18 +142,18 @@ class CatalogRepository(Repository):
             with _TAGS_LOCK:
                 hit = _TAGS_CACHE.get(key)
             if hit and now - hit[0] < ttl:
-                return [dict(r) for r in hit[1]]      # 복사해 준다 — 호출부가 고쳐도 캐시가 안 바뀐다
-        rows = self._tags_uncached(topics=topics, subtopics=subtopics, q=q, limit=limit)
+                return [dict(r) for r in hit[1]], hit[2]   # 복사해 준다 — 호출부가 고쳐도 캐시가 안 바뀐다
+        rows, total = self._tags_uncached(topics=topics, subtopics=subtopics, q=q, limit=limit)
         if ttl:
             with _TAGS_LOCK:
                 if len(_TAGS_CACHE) >= _TAGS_CACHE_MAX:
                     _TAGS_CACHE.pop(min(_TAGS_CACHE, key=lambda k: _TAGS_CACHE[k][0]))
-                _TAGS_CACHE[key] = (time.monotonic(), [dict(r) for r in rows])
-        return rows
+                _TAGS_CACHE[key] = (time.monotonic(), [dict(r) for r in rows], total)
+        return rows, total
 
     def _tags_uncached(self, *, topics: list[str], subtopics: list[str], q: str | None,
-                       limit: int) -> list[dict[str, Any]]:
-        """캐시 없이 DB 에서 센다(``tags`` 참조)."""
+                       limit: int) -> tuple[list[dict[str, Any]], int]:
+        """캐시 없이 DB 에서 센다(``tags_with_total`` 참조). 행이 없으면 종류 수도 0 이다."""
         params: list[Any] = []
         topic_where = ""
         if topics:
@@ -157,7 +170,9 @@ class CatalogRepository(Repository):
         sql = _TAGS_BASE.format(
             topic_join=_TOPIC_JOIN if (topics or subtopics) else "",
             topic_where=topic_where, like_where=like_where)
-        return [{"tag": r["tag"], "count": int(r["count"])} for r in self.rows(sql, tuple(params))]
+        found = self.rows(sql, tuple(params))
+        rows = [{"tag": r["tag"], "count": int(r["count"])} for r in found]
+        return rows, (int(found[0]["kinds"]) if found else 0)
 
     def suggest(self, *, q: str, limit: int) -> list[dict[str, Any]]:
         """검색창 추천 — 주제·하위주제·태그에서 부분 일치하는 값을 건수 많은 순으로.
