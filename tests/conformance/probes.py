@@ -116,7 +116,8 @@ def found() -> list[Fixture]:
         fixture(_SELECTION_SQL, [{"asset_id": ASSET_ID, "fs_path": str(img)}]),
         fixture(_TOPIC_BUNDLE_SQL, [{"asset_id": ASSET_ID, "fs_path": str(img)}]),
         fixture(_TARGET_SQL, _target_row(img)),
-        fixture(_TAGS_SQL, [{"tag": "한옥", "count": 3}]),
+        # ``kinds`` = 자르기 전 태그 종류 수(창 함수 · /tags 의 total) — 행마다 같은 값이다.
+        fixture(_TAGS_SQL, [{"tag": "한옥", "count": 3, "kinds": 1}]),
         fixture(_SUGGEST_SQL, [{"value": "역사·문화유산", "kind": "topic", "count": 5}]),
         fixture(_ENTITY_FACETS_SQL, _entity_facet_rows()),
         fixture(_DETAIL_SQL, [{"asset_id": ASSET_ID, "modality": "image",
