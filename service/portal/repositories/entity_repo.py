@@ -11,10 +11,12 @@ from service.portal.common.repository import Repository
 class EntityRepository(Repository):
     """개체 조회 · 묶음 대상."""
 
-    def page(self, **kw: Any) -> list[dict[str, Any]]:
-        return mm_meta.fetch_list(self._conn, **kw)
+    def page_with_total(self, **kw: Any) -> tuple[list[dict[str, Any]], int]:
+        """한 쪽과 같은 조건의 모수(좁히기 이후) — 코어 한 번."""
+        return mm_meta.fetch_page(self._conn, **kw)
 
     def total(self, **kw: Any) -> int:
+        """노출 개체 모수만(좁히기 이전 모수를 셀 때)."""
         return mm_meta.fetch_total(self._conn, **kw)
 
     def facets(self, **kw: Any) -> dict[str, Any]:

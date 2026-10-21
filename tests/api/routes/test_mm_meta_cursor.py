@@ -168,6 +168,17 @@ def _cfg() -> SimpleNamespace:
     )
 
 
+
+def _page_from(list_fn: Any, total_fn: Any) -> Any:
+    """``fetch_page`` 대역 — 목록 대역과 모수 대역을 코어 spec 113 처럼 한 호출로 묶는다.
+
+    모수는 쪽과 **같은 조건**(종류 · 갈래 · 임계 · 허용 목록)으로 세고 책갈피 · 앞세우기와는 무관하다.
+    """
+    def page(conn: object, **kw: Any) -> tuple[list[dict[str, Any]], int]:
+        total_kw = {k: kw[k] for k in ("entity_type", "areas", "min_bundle_size", "uid_allow") if k in kw}
+        return list_fn(conn, **kw), total_fn(conn, **total_kw)
+    return page
+
 class _RouteCase(unittest.TestCase):
     """대역을 세운 라우트 호출 기반 케이스(DB 없음)."""
 
@@ -209,7 +220,7 @@ class _RouteCase(unittest.TestCase):
             ("service.api.db.run_in_db", lambda fn: fn(object())),
             ("service.api.routes.mm_meta.mm_meta.fetch_total", _fake_fetch_total),
             ("service.portal.search.projection.fetch_access_tiers", lambda *_a, **_k: {}),
-            ("service.api.routes.mm_meta.mm_meta.fetch_list", _fake_fetch_list),
+            ("service.api.routes.mm_meta.mm_meta.fetch_page", _page_from(_fake_fetch_list, _fake_fetch_total)),
             ("service.portal.mm_meta.match_entity_keys", _fake_match),
             ("service.portal.mm_meta.embed_query_for_media_search", lambda *_a, **_k: [0.0]),
             ("service.portal.mm_meta.active_embed_channel", lambda: "st_api"),

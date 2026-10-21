@@ -254,7 +254,7 @@ class TestRouteCarriesReason(unittest.TestCase):
         for target, repl in (
             ("service.api.db.run_in_db", lambda fn: fn(object())),
             ("service.portal.search.projection.fetch_access_tiers", lambda *_a, **_k: {}),
-            ("service.portal.mm_meta.list_entities", _fake_list),
+            ("service.portal.mm_meta.list_entities_with_total", lambda _conn, **kw: (_fake_list(_conn, **kw), 3)),
             ("service.portal.mm_meta.count_entities", lambda _conn, **_kw: 3),
             ("service.portal.mm_meta.match_entity_keys", _fake_match),
             ("service.portal.mm_meta.embed_query_for_media_search", lambda *_a, **_k: [0.0]),

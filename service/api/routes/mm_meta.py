@@ -174,18 +174,15 @@ def list_mm_meta(
         mod_allow = repo.entity.modality_allow(picked_mods)
         uid_allow = mm_meta.intersect_allow(scope.uid_allow, mod_allow)
         scope_allow = mm_meta.intersect_allow(scope.scope_allow, mod_allow)
-        page = repo.entity.page(
+        # 쪽과 좁히기 이후 모수는 코어 한 번에 받는다(코어 spec 113 — 노출 개체 집합을 한 번만 만든다).
+        page, after = repo.entity.page_with_total(
             entity_type=entity_type, areas=picked_areas,
             min_bundle_size=_MIN_BUNDLE_SIZE, limit=limit,
             after_tier=after_tier, after_count=after_count,
             after_uid=after_uid, after_type=after_type,
             uid_allow=uid_allow, uid_first=uid_first, uid_semantic=uid_semantic,
         )
-        after = repo.entity.total(
-            entity_type=entity_type, areas=picked_areas,
-            min_bundle_size=_MIN_BUNDLE_SIZE, uid_allow=uid_allow,
-        )
-        # 좁히기가 없으면 두 모수가 **같은 값**이다 — 같은 수를 두 번 묻지 않는다.
+        # 좁히기가 없으면 두 모수가 **같은 값**이다 — 같은 수를 두 번 묻지 않는다. 있으면 허용 목록이 달라 따로 센다.
         before = after if not scope.refined else repo.entity.total(
             entity_type=entity_type, areas=picked_areas,
             min_bundle_size=_MIN_BUNDLE_SIZE, uid_allow=scope_allow,

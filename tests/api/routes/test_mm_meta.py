@@ -77,7 +77,7 @@ class TestWiring(unittest.TestCase):
         self.assertIs(mm_meta.match_entity_keys, core_match_entity_keys)
         self.assertIs(mm_meta.aggregate_facets, core_aggregate_facets)
         self.assertIs(mm_meta.label_names_of_assets, core_label_names)
-        self.assertIs(mm_meta.list_entities, gq.list_entities)
+        self.assertIs(mm_meta.list_entities_with_total, gq.list_entities_with_total)
         self.assertIs(mm_meta.count_entities, gq.count_entities)
         self.assertIs(mm_meta.count_entity_facets, gq.count_entity_facets)
         self.assertIs(mm_meta.mm_meta_bundle, gq.mm_meta_bundle)
@@ -408,13 +408,13 @@ class TestRouteReadScope(unittest.TestCase):
     """
 
     def _call(self, **params):
-        """라우트를 부르고 ``fetch_list`` 가 받은 인자를 돌려준다.
+        """라우트를 부르고 ``fetch_page`` 가 받은 인자를 돌려준다.
 
         Args:
             **params: 라우트 파라미터(빠진 것은 기본값으로 채운다).
 
         Returns:
-            ``(fetch_list 가 받은 kwargs, 응답 본문)``.
+            ``(fetch_page 가 받은 kwargs, 응답 본문)``.
         """
         from service.api.routes import mm_meta as mod
         seen: dict[str, object] = {}
@@ -434,7 +434,7 @@ class TestRouteReadScope(unittest.TestCase):
         with (
             # DB 진입은 저장소 입구(DbManager)가 감싼 seam 하나뿐이다 — 거기만 대역으로 바꾼다.
             patch.object(api_db, "run_in_db", lambda fn: fn(object())),
-            patch.object(mod.mm_meta, "fetch_list", fake_fetch),
+            patch.object(mod.mm_meta, "fetch_page", lambda _conn, **kw: (fake_fetch(_conn, **kw), 1)),
             patch.object(mod.mm_meta, "fetch_total", lambda _conn, **kw: 1),
             patch.object(mod.mm_meta, "search_and_refine",
                          lambda **kw: mm_meta.EntityScope(
@@ -508,11 +508,13 @@ class TestModalityFilter(unittest.TestCase):
         from service.api.routes import mm_meta as mod
         seen: dict[str, object] = {}
 
-        def fake_fetch(_conn, **kw):
-            seen["page"] = kw.get("uid_allow")
-            return []
-
         totals: list = []
+
+        def fake_page(_conn, **kw):
+            # 쪽과 좁히기 이후 모수는 한 호출이다(코어 spec 113) — 모수에 건 허용 목록도 여기서 기록한다.
+            seen["page"] = kw.get("uid_allow")
+            totals.append(kw.get("uid_allow"))
+            return [], 0
 
         def fake_total(_conn, **kw):
             totals.append(kw.get("uid_allow"))
@@ -523,7 +525,7 @@ class TestModalityFilter(unittest.TestCase):
         with (
             patch.object(api_db, "run_in_db", lambda fn: fn(object())),
             patch.object(mod.mm_meta, "entity_modality_map", return_value=self.HAVE),
-            patch.object(mod.mm_meta, "fetch_list", fake_fetch),
+            patch.object(mod.mm_meta, "fetch_page", fake_page),
             patch.object(mod.mm_meta, "fetch_total", fake_total),
             patch.object(mod.mm_meta, "search_and_refine",
                          lambda **kw: mm_meta.EntityScope(

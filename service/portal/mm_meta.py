@@ -34,7 +34,7 @@ from src.relations.graph_query import (
     assets_of_entities,
     count_entities,
     count_entity_facets,
-    list_entities,
+    list_entities_with_total,
     mm_meta_bundle,
 )
 from src.relations.schema import MM_MEMBER_KIND_CODE
@@ -207,7 +207,7 @@ def shape_list_item(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def fetch_list(
+def fetch_page(
     conn: Connection[Any],
     *,
     entity_type: str | None,
@@ -221,15 +221,17 @@ def fetch_list(
     uid_allow: set[tuple[str, str]] | None = None,
     uid_first: set[tuple[str, str]] | None = None,
     uid_semantic: set[tuple[str, str]] | None = None,
-) -> list[dict[str, Any]]:
-    """노출 개체 목록을 읽어 화면 항목으로 정형한다(책갈피부터 이어 읽기 · 검색 집합 안에서만).
+) -> tuple[list[dict[str, Any]], int]:
+    """노출 개체 한 쪽과 같은 조건의 모수를 함께 읽는다 — ``(화면 항목, 모수)``(책갈피부터 이어 읽기 · 검색 집합 안에서만).
 
+    코어 ``list_entities_with_total`` **한 번**이다(2026-10-21 · 코어 spec 113). 종전에는 ``list_entities`` 와 ``count_entities`` 를
+    따로 불러 같은 노출 개체 집합(소속 간선 조인 → 개체별 묶기 → 임계)을 두 번 만들었다. 쪽 행 · 순서와 모수는 그때와 같다.
     ``after_tier`` · ``after_count`` · ``after_uid`` · ``after_type`` 은 직전 쪽 마지막 개체의 정렬 자리이며 함께 주거나 함께 생략한다(일부만 주면 코어가 ValueError).
-    ``uid_allow`` 는 검색이 정한 개체 화이트리스트다 — ``None`` 은 필터 없음(전체), 빈 집합은 0건이다(둘을 섞으면 "검색했는데 전체가 나온다").
-    ``uid_semantic`` · ``uid_first`` 는 앞세울 개체 집합(순서만 바꾸고 거르지 않는다; 이름 일치가 뜻 일치보다 앞선다).
+    ``uid_allow`` 는 검색이 정한 개체 화이트리스트다 — ``None`` 은 필터 없음(전체), 빈 집합은 0건이다(둘을 섞으면 "검색했는데 전체가 나온다"). 쪽과 모수에 함께 걸린다.
+    ``uid_semantic`` · ``uid_first`` 는 앞세울 개체 집합(순서만 바꾸고 거르지 않는다; 이름 일치가 뜻 일치보다 앞선다) — 모수에는 영향이 없다.
     정렬: 우선 티어 내림차순 → 구성 자산 수 내림차순 → 표기 키 오름차순.
     """
-    rows = list_entities(
+    rows, total = list_entities_with_total(
         conn,
         entity_type=entity_type,
         area_names=list(areas) if areas else None,
@@ -244,7 +246,7 @@ def fetch_list(
         uid_first=uid_first,
         uid_semantic=uid_semantic,
     )
-    return [shape_list_item(r) for r in rows]
+    return [shape_list_item(r) for r in rows], total
 
 
 def fetch_total(
@@ -255,10 +257,11 @@ def fetch_total(
     min_bundle_size: int,
     uid_allow: set[tuple[str, str]] | None = None,
 ) -> int:
-    """지금 걸린 조건으로 노출 개체가 모두 몇 개인지 센다 — 화면 "N건 중 M건"의 N. 목록이 돌려준 개수(쪽 크기)가 아니라 모수다.
+    """지금 걸린 조건으로 노출 개체가 모두 몇 개인지 센다 — 목록이 돌려준 개수(쪽 크기)가 아니라 모수다.
 
-    조건은 목록과 같게 줘야 한다(다르면 모수가 어긋난다). ``uid_allow`` 는 ``None`` 이 필터 없음, 빈 집합이 0건이며, 좁히기 이전을 셀 때는 ``EntityScope.scope_allow``,
-    이후를 셀 때는 ``EntityScope.uid_allow`` 를 준다.
+    좁히기 **이후** 모수는 ``fetch_page`` 가 쪽과 함께 준다. 이 함수는 좁히기 **이전** 모수(``scope_total`` · ``EntityScope.scope_allow``)를
+    셀 때 쓴다 — 허용 목록이 달라 집합이 다르므로 쪽 질의에 얹을 수 없다. 조건(종류 · 갈래 · 임계)은 목록과 같게 준다.
+    ``uid_allow`` 는 ``None`` 이 필터 없음, 빈 집합이 0건이다.
     """
     return count_entities(
         conn,

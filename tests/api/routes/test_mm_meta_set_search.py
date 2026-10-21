@@ -231,23 +231,27 @@ class _SetCase(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         self.engine = _Engine()
-        self.count_calls: list[dict[str, Any]] = []
+        self.count_calls: list[dict[str, Any]] = []        # 모수를 센 조건(쪽과 함께 센 것 + 따로 센 것)
+        self.direct_count_calls: list[dict[str, Any]] = []  # 코어 ``count_entities`` 를 따로 부른 것만
         self.list_calls: list[dict[str, Any]] = []
 
         def _fake_count(_conn: object, **kw: Any) -> int:
             """코어 ``count_entities`` 대역 — 목록과 **같은 규칙**으로 모수를 센다."""
+            self.direct_count_calls.append(kw)
             self.count_calls.append(kw)
             return len(_rows_of(kw.get("uid_allow")))
 
-        def _spying_list(conn: object, **kw: Any) -> list[dict[str, Any]]:
-            """목록 대역 + 호출 인자 기록."""
+        def _spying_list(conn: object, **kw: Any) -> tuple[list[dict[str, Any]], int]:
+            """코어 ``list_entities_with_total`` 대역 — 쪽과 같은 조건의 모수를 함께 준다(spec 113)."""
             self.list_calls.append(kw)
-            return _fake_list_entities(conn, **kw)
+            total_kw = {k: kw.get(k) for k in ("entity_type", "area_names", "min_bundle_size", "uid_allow")}
+            self.count_calls.append(total_kw)
+            return _fake_list_entities(conn, **kw), len(_rows_of(kw.get("uid_allow")))
 
         for target, repl in (
             ("service.api.db.run_in_db", lambda fn: fn(object())),
             ("service.portal.search.projection.fetch_access_tiers", lambda *_a, **_k: {}),
-            ("service.portal.mm_meta.list_entities", _spying_list),
+            ("service.portal.mm_meta.list_entities_with_total", _spying_list),
             ("service.portal.mm_meta.count_entities", _fake_count),
             ("service.portal.mm_meta.match_entity_keys", self.engine),
             ("service.portal.mm_meta.embed_query_for_media_search", lambda *_a, **_k: [0.0]),
@@ -418,6 +422,15 @@ class TestCounts(_SetCase):
         self.engine.answers["전통"] = {_key(1)}
         self._get(q="김치", refine="전통", limit=3)
         self.assertEqual(len(self.count_calls), 2)
+
+    def test_한_요청에_코어_목록_질의는_한_번이다(self) -> None:
+        """코어 spec 113 — 쪽과 좁히기 이후 모수를 한 질의로 받는다. 따로 세는 것은 좁히기 이전 모수뿐이다."""
+        self.engine.answers = {"김치": {_key(1)}, "전통": {_key(1)}}
+        self._get(q="김치", limit=3)
+        self.assertEqual((len(self.list_calls), len(self.direct_count_calls)), (1, 0))
+        self.list_calls.clear()
+        self._get(q="김치", refine="전통", limit=3)
+        self.assertEqual((len(self.list_calls), len(self.direct_count_calls)), (1, 1))
 
 
 class TestCursorWithQuery(_SetCase):
