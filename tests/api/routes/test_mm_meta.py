@@ -100,25 +100,14 @@ class TestWiring(unittest.TestCase):
 class TestListShaping(unittest.TestCase):
     """목록 항목 — 화면 정책이 여기 있다."""
 
-    def test_keywords_are_short_first_and_capped(self) -> None:
-        row = _row(keywords=[f"kw{i}" * (i + 1) for i in range(10)])
-        item = mm_meta.shape_list_item(row)
-        self.assertEqual(len(item["keywords"]), mm_meta.KEYWORD_TOP_N)
-        lengths = [len(k) for k in item["keywords"]]
-        self.assertEqual(lengths, sorted(lengths))  # 짧은 것부터
-
-    def test_representative_keyword_comes_first(self) -> None:
-        item = mm_meta.shape_list_item(_row())
-        self.assertEqual(item["keywords"][0], "제주도")  # 긴 표현보다 대표 표기가 앞
-
     def test_node_id_is_not_exposed(self) -> None:
         self.assertNotIn("node_id", mm_meta.shape_list_item(_row()))
 
     def test_response_keys_are_fixed(self) -> None:
+        """화면이 쓰는 칸만 — source · total_count · keywords · topics · forms 는 W35(웹 회신 「안 씀」)로 뺐다."""
         self.assertEqual(
             set(mm_meta.shape_list_item(_row())),
-            {"entity_type", "entity_uid", "name", "source", "description", "confirmed_count",
-             "total_count", "modalities", "keywords", "topics", "forms", "areas"},
+            {"entity_type", "entity_uid", "name", "description", "confirmed_count", "modalities", "areas"},
         )
 
     def test_shaping_does_not_mutate_core_row(self) -> None:

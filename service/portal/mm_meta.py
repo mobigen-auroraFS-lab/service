@@ -45,9 +45,6 @@ from src.search.query_embed import embed_query_for_media_search
 
 # ── 화면 정책 상수 ────────────────────────────────────────────────────────────
 
-# 카드에 보일 근거 키워드 수. 개체 하나에 근거가 수십 개 붙을 수 있어 전부 보이면 카드가 글자로 찬다.
-KEYWORD_TOP_N = 6
-
 # 형식 축으로 보일 스킬 — 하나로 고정한 것이 기본이다(여러 스킬 라벨을 한 목록에 섞으면 어느 축인지 구분되지 않는다). 환경변수로 배포 없이 갈아탈 수 있다.
 DEFAULT_FORM_SKILL_CODES: tuple[str, ...] = ("content_form",)
 FORM_SKILLS_ENV = "PORTAL_MM_META_FORM_SKILLS"
@@ -191,20 +188,17 @@ def shape_list_item(row: Mapping[str, Any]) -> dict[str, Any]:
 
     ``confirmed_count`` 는 **연결된 자료 수(확인 전 포함)**다 — 소속 상태 확인 전(``proposed``) · 확인(``active``)을 모두 센다. 화면 표기는
     「연결된 N건」이다(2026-10-21 · 웹 점검 #9 — 「확인된 N건」으로 적으면 아래 행의 「확인 전」 배지와 반대로 말한다). 칸 이름은 정렬 ·
-    커서 키라 그대로 둔다. ``total_count`` 는 필터와 무관한 전량이라 둘이 다를 때만 함께 보인다.
+    커서 키라 그대로 둔다.
+    🔴 [2026-10-26 · W35 · 요청 13] 화면이 쓰지 않는 ``source`` · ``total_count`` · ``keywords`` · ``topics`` · ``forms`` 는 싣지 않는다
+    (목록 한 쪽 응답의 약 절반이었다 — 웹 회신 「안 씀」 표). 개체 검색 · 좁히기 판정은 색인이 하므로 목록 행에 필요 없다.
     """
     return {
         "entity_type": row["entity_type"],
         "entity_uid": row["entity_uid"],
         "name": row["name"],
-        "source": row["source"],
         "description": row["description"],
         "confirmed_count": row["confirmed_count"],
-        "total_count": row["total_count"],
         "modalities": list(row["modalities"]),
-        "keywords": sorted(row["keywords"], key=lambda x: (len(x), x))[:KEYWORD_TOP_N],
-        "topics": list(row["topics"]),
-        "forms": list(row["forms"]),
         "areas": list(row["areas"]),
     }
 
@@ -537,8 +531,13 @@ def fetch_card(
 
     labels = label_names_of_assets(conn, asset_ids, skill_codes=list(form_skill_codes()))
     for group in card.get("modalities") or []:
-        for item in group.get("assets") or []:
-            item["forms"] = labels.get(str(item.get("asset_id") or ""), [])
+        # 자산에는 화면이 쓰는 칸만 남긴다(W35 · 요청 13) — ``edge_id`` · ``reason`` · ``modality``(묶음의 modality 로 충분)는 뺀다.
+        group["assets"] = [
+            {"asset_id": item.get("asset_id"), "file_name": item.get("file_name"), "status": item.get("status"),
+             "forms": labels.get(str(item.get("asset_id") or ""), [])}
+            for item in group.get("assets") or []
+        ]
+    card.pop("source", None)     # 화면이 쓰지 않는다(W35)
     card["form_counts"] = _form_counts(labels)
     return card
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from service.portal.asset.detail import fetch_asset_detail
+from service.portal.asset.detail import fetch_asset_detail, screen_detail
 from service.portal.asset.download import collect_bundle_assets, resolve_download_target
 from service.portal.common.repository import Repository
 from src.config.filename_util import display_file_name
@@ -45,7 +45,8 @@ class AssetRepository(Repository):
             return None
         detail["topics"] = fetch_asset_topic(self._conn, asset_id=asset_id)
         detail["same_topic_groups"] = find_same_topic_groups(self._conn, asset_id=asset_id)
-        return detail
+        # 화면이 쓰는 칸만 내보낸다(W35 · 요청 13) — 관리자 상세는 원본 그대로(``admin_repo``).
+        return screen_detail(detail)
 
     def download_target(self, *, asset_id: str) -> dict[str, Any] | None:
         """내려받을 원본의 경로 · 이름 · 종류. 없는 자산과 노출 대상이 아닌 자산은 같게 ``None``(404)."""

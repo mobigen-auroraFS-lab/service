@@ -975,17 +975,13 @@
         "200": [
           "asset_id",
           "modality",
-          "domain_label",
-          "status",
           "file_name",
           "file_ext",
           "file_size",
           "created_at",
-          "updated_at",
           "core_meta",
           "ext_meta",
           "tags",
-          "embedding_channels",
           "relations",
           "topics",
           "same_topic_groups"
@@ -1339,17 +1335,13 @@
         "200": [
           "asset_id",
           "modality",
-          "domain_label",
-          "status",
           "file_name",
           "file_ext",
           "file_size",
           "created_at",
-          "updated_at",
           "core_meta",
           "ext_meta",
           "tags",
-          "embedding_channels",
           "relations",
           "topics",
           "same_topic_groups"
@@ -1362,8 +1354,6 @@
           "asset_id": "string(UUID)",
           "core_meta": "object",
           "created_at": "string(datetime)",
-          "domain_label": "string",
-          "embedding_channels": "[{channel, chunk_count}]",
           "ext_meta": "object",
           "file_ext": "string",
           "file_name": "string",
@@ -1371,31 +1361,11 @@
           "modality": "string",
           "relations": "[{...}]",
           "same_topic_groups": "[{...}]",
-          "status": "string",
           "tags": "string[]",
-          "topics": "[{...}]",
-          "updated_at": "string(datetime)"
+          "topics": "[{...}]"
         }
       },
-      "resp_nested": {
-        "200": [
-          {
-            "field": "relations.edges",
-            "keys": [
-              "edge_id",
-              "kind_code",
-              "confidence",
-              "direction",
-              "is_symmetric",
-              "topic",
-              "reason",
-              "tier",
-              "folded_kind_codes"
-            ],
-            "kind": "element"
-          }
-        ]
-      },
+      "resp_nested": {},
       "resp_opt": {},
       "same_as": "",
       "url": "/assets/{asset_id}"

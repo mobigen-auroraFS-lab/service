@@ -469,3 +469,39 @@ class TestNeighborTierPromotion(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestScreenDetail(unittest.TestCase):
+    """W35 — 사용자 화면 상세는 화면이 쓰는 칸만 남긴다(웹 회신 「안 씀」 표 · 2026-10-23)."""
+
+    FULL = {
+        "asset_id": "A1", "modality": "video", "domain_label": "general", "status": "registered",
+        "file_name": "a.mp4", "file_ext": "mp4", "file_size": 10, "created_at": "2026-09-10", "updated_at": "2026-09-11",
+        "core_meta": {"width": 640, "file_format": "mp4"},
+        "ext_meta": {"summary": "요약", "keyframes": [{"t": 1}] * 50, "keywords": ["a"], "about": "x"},
+        "tags": ["a"], "embedding_channels": [{"channel": "st", "chunk_count": 3}],
+        "relations": [{"asset_id": "B", "file_name": "b", "modality": "image", "kind_codes": ["k"], "tier": "weak",
+                       "max_confidence": 0.9, "edges": [{"edge_id": "e"}]}],
+        "topics": [{"topic_ko": "t", "subtopic_ko": None, "topic_en": "t", "subtopic_en": None, "weight": 1}],
+        "same_topic_groups": [{"topic_ko": "t", "asset_count": 3, "subtopics": [
+            {"subtopic_ko": None, "asset_count": 3, "assets": [{"asset_id": "C", "file_name": "c", "modality": "text",
+                                                                 "already_linked": True}]}]}],
+    }
+
+    def test_화면이_쓰는_칸만_남긴다(self) -> None:
+        from service.portal.asset.detail import screen_detail
+        out = screen_detail(dict(self.FULL))
+        self.assertEqual(set(out), {"asset_id", "modality", "file_name", "file_ext", "file_size", "created_at",
+                                    "core_meta", "ext_meta", "tags", "relations", "topics", "same_topic_groups"})
+        self.assertEqual({"summary": "요약"}, out["ext_meta"])                  # keyframes 등은 뺀다
+        self.assertEqual({"width": 640, "file_format": "mp4"}, out["core_meta"])  # 원본 메타는 그대로
+        self.assertEqual([{"asset_id": "B", "file_name": "b", "modality": "image", "kind_codes": ["k"], "tier": "weak"}],
+                         out["relations"])
+        self.assertEqual([{"topic_ko": "t", "subtopic_ko": None}], out["topics"])
+        self.assertEqual({"asset_id": "C", "file_name": "c", "modality": "text"},
+                         out["same_topic_groups"][0]["subtopics"][0]["assets"][0])
+
+    def test_요약이_가려졌으면_빈_ext_meta(self) -> None:
+        from service.portal.asset.detail import screen_detail
+        self.assertEqual({}, screen_detail({**self.FULL, "ext_meta": {"keyframes": []}})["ext_meta"])
+        self.assertEqual({}, screen_detail({**self.FULL, "ext_meta": None})["ext_meta"])

@@ -107,14 +107,13 @@ class TestAssetDetailTopics(unittest.TestCase):
         resp = self.client.get(f"/assets/{A1}")
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
-        self.assertEqual(body["topics"], mock_project.return_value)
-        self.assertEqual(body["same_topic_groups"], mock_groups.return_value)
-        # 그룹→하위주제 구조·already_linked 표식 보존
+        # 화면 상세(W35)는 화면이 쓰는 칸만 — 주제는 한글 이름 둘, 같은 주제 자산은 id · 이름 · 유형.
+        self.assertEqual(body["topics"], [{"topic_ko": "요리", "subtopic_ko": "제빵"}])
         self.assertEqual(body["same_topic_groups"][0]["topic_ko"], "요리")
+        self.assertEqual(body["same_topic_groups"][0]["asset_count"], 2)
         sub0 = body["same_topic_groups"][0]["subtopics"][0]
-        self.assertEqual(sub0["subtopic_ko"], "제빵")
-        self.assertTrue(sub0["assets"][0]["already_linked"])
-        self.assertFalse(sub0["assets"][1]["already_linked"])
+        self.assertEqual((sub0["subtopic_ko"], sub0["asset_count"]), ("제빵", 2))
+        self.assertEqual(sub0["assets"][0], {"asset_id": "a2", "file_name": "a2.png", "modality": "image"})
         # seam 은 대상 자산으로 조회
         self.assertEqual(mock_project.call_args.kwargs["asset_id"], A1)
         self.assertEqual(mock_groups.call_args.kwargs["asset_id"], A1)

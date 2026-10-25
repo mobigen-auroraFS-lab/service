@@ -183,6 +183,42 @@ def _tags_of(ext_meta: Any) -> list[str]:
     return [str(k) for k in keywords if k]
 
 
+# ── 화면용 상세(W35 · 요청 13) ────────────────────────────────────────────────────
+# 사용자 화면이 실제로 읽는 칸만 남긴다(웹 회신 2026-10-23 「안 씀」 표). 영상 상세는 ``ext_meta.keyframes`` 가 응답의
+# 최대 86% 였다. ``core_meta`` 는 파일 메타 원본이고 작아 그대로 둔다. 관리자 상세(``admin_repo``)는 원본 그대로다.
+_SCREEN_TOP = ("asset_id", "modality", "file_name", "file_ext", "file_size", "created_at",
+               "core_meta", "ext_meta", "tags", "relations", "topics", "same_topic_groups")
+_SCREEN_RELATION = ("asset_id", "file_name", "modality", "kind_codes", "tier")
+_SCREEN_TOPIC = ("topic_ko", "subtopic_ko")
+_SCREEN_GROUP_ASSET = ("asset_id", "file_name", "modality")
+
+
+def _pick(row: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
+    return {k: row[k] for k in keys if k in row}
+
+
+def screen_detail(detail: dict[str, Any]) -> dict[str, Any]:
+    """상세를 사용자 화면이 쓰는 칸만으로 줄인다(순수 · 원본을 바꾸지 않는다).
+
+    ``ext_meta`` 는 ``summary`` 만 남긴다(권한으로 가려졌으면 빈 객체 — 키 존재가 새지 않게). 키워드는 ``tags`` 로 이미 나간다.
+    빠지는 칸: ``domain_label`` · ``status`` · ``updated_at`` · ``embedding_channels`` · 관계의 ``max_confidence`` · ``edges`` ·
+    주제의 ``topic_en`` · ``subtopic_en`` · ``weight`` · 같은 주제 자산의 ``already_linked``.
+    """
+    out = _pick(detail, _SCREEN_TOP)
+    ext = detail.get("ext_meta")
+    out["ext_meta"] = {"summary": ext["summary"]} if isinstance(ext, dict) and "summary" in ext else {}
+    out["relations"] = [_pick(r, _SCREEN_RELATION) for r in detail.get("relations") or []]
+    out["topics"] = [_pick(t, _SCREEN_TOPIC) for t in detail.get("topics") or []]
+    out["same_topic_groups"] = [
+        {"topic_ko": g.get("topic_ko"), "asset_count": g.get("asset_count"),
+         "subtopics": [{"subtopic_ko": s.get("subtopic_ko"), "asset_count": s.get("asset_count"),
+                        "assets": [_pick(a, _SCREEN_GROUP_ASSET) for a in s.get("assets") or []]}
+                       for s in g.get("subtopics") or []]}
+        for g in detail.get("same_topic_groups") or []
+    ]
+    return out
+
+
 def related_assets(conn: Connection[Any], asset_id: str, *, min_conf_similarity: float | None = None) -> list[dict[str, Any]]:
     """이 자산과 이어진 이웃을 **화면(상세)이 보이는 기준 그대로** 이웃 자산 단위로 돌려준다 — 상세의 관련 자료와 「연관 데이터 묶음」이 같은 집합이다.
 

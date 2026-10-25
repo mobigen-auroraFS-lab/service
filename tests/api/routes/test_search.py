@@ -400,7 +400,10 @@ class TestAssetDetail(unittest.TestCase):
         resp = self.client.get(f"/assets/{A1}")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["asset_id"], "a1")
-        self.assertEqual(resp.json()["embedding_channels"][0]["chunk_count"], 3)
+        # 화면 상세(W35)에는 임베딩 진단 · 도메인 · 상태 칸이 없고, ext_meta 는 summary 만 남는다.
+        self.assertNotIn("embedding_channels", resp.json())
+        self.assertNotIn("domain_label", resp.json())
+        self.assertEqual({"summary": "요약"}, resp.json()["ext_meta"])
 
     @patch("service.portal.repositories.asset_repo.fetch_asset_detail")
     def test_detail_none_returns_404(self, mock_detail) -> None:
