@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+import unicodedata
 from typing import Any
 
 from service.portal.common.repository import Repository
@@ -99,6 +100,11 @@ LIMIT %s
 """
 
 
+def tag_key(text: str) -> str:
+    """태그를 묶는 열쇠와 같은 규칙(NFKC → 공백 제거 → 소문자)으로 글자를 맞춘다 — SQL 의 ``key`` 와 같은 값이 나온다."""
+    return "".join(unicodedata.normalize("NFKC", text).split()).lower()
+
+
 def like_pattern(text: str) -> str:
     """부분 일치용 LIKE 무늬 — 사용자가 넣은 ``%``·``_``·``\\`` 는 글자로 다룬다.
 
@@ -136,6 +142,7 @@ class CatalogRepository(Repository):
             같은 조건이면 캐시 수명(기본 300초) 동안 **같은 답**을 준다(적재 직후 건수가 늦을 수 있다).
         """
         ttl = tags_cache_seconds()
+        q = tag_key(q) if q else None      # 표기만 다른 검색어(「불교 문화재」 · 「불교문화재」)는 같은 답이다
         key = (tuple(sorted(topics)), tuple(sorted(subtopics)), q or "", int(limit))
         if ttl:
             now = time.monotonic()
@@ -164,8 +171,11 @@ class CatalogRepository(Repository):
             params.append(list(subtopics))
         like_where = ""
         if q:
-            like_where = "\n  AND k.kw ILIKE %s"
-            params.append(like_pattern(q))
+            # 🔴 [2026-10-26] 검색어를 원문(``kw``)이 아니라 **묶는 열쇠**에 건다. 원문에 걸면 「불교문화재」로 찾을 때
+            #    「불교 문화재」 표기 자산이 빠져 숫자가 332 로 나오는데, 눌러서 거르면(열쇠 기준) 689 가 나왔다(웹 점검 후속).
+            #    열쇠가 같은 표기는 모두 함께 남으므로 숫자 · 대표 표기가 검색어 없을 때와 같다.
+            like_where = "\n  AND lower(regexp_replace(normalize(k.kw, NFKC), '\\s', '', 'g')) LIKE %s"
+            params.append(like_pattern(tag_key(q)))
         params.append(int(limit))
         sql = _TAGS_BASE.format(
             topic_join=_TOPIC_JOIN if (topics or subtopics) else "",

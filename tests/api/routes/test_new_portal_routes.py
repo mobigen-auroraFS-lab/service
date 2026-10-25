@@ -114,7 +114,21 @@ class TestSuggestAndFacetExtra(unittest.TestCase):
         self.assertIn('GROUP BY key COLLATE "C"', sql)          # 한글 정렬 비용(2026-10-01) — 열쇠에만
         self.assertIn("mode() WITHIN GROUP (ORDER BY kw)", sql)  # 대표 표기 동점 규칙은 기본 콜레이션 그대로
         self.assertIn("JOIN asset_topic t", sql)               # 주제로 좁히는 길은 그대로
-        self.assertIn("k.kw ILIKE %s", sql)
+        self.assertIn("LIKE %s", sql)                          # 검색어도 열쇠에 건다(원문 kw ILIKE 가 아니다 · 2026-10-26)
+        self.assertNotIn("k.kw ILIKE", sql)
+
+    def test_태그_검색어는_표기가_달라도_같은_태그_같은_숫자다(self) -> None:
+        """「불교문화재」로 찾든 「불교 문화재」로 찾든 같은 열쇠로 걸린다 — 원문에 걸면 띄어쓰기가 다른 표기 자산이 빠져
+        창에는 332 인데 눌러 거르면 689 가 나왔다(웹 점검 후속 2026-10-26)."""
+        from service.portal.repositories.catalog_repo import CatalogRepository
+
+        repo = CatalogRepository.__new__(CatalogRepository)
+        seen: list[tuple] = []
+        with mock.patch.dict("os.environ", {"PORTAL_TAGS_CACHE_SECONDS": "0"}), \
+             mock.patch.object(CatalogRepository, "rows", side_effect=lambda sql, params: seen.append(params) or []):
+            for q in ("불교문화재", "불교 문화재", " 불교  문화재 ", "ＢＵＤ 문화재"):
+                repo.tags(topics=[], subtopics=[], q=q, limit=5)
+        self.assertEqual(["%불교문화재%"] * 3 + ["%bud문화재%"], [p[0] for p in seen])
 
     def test_추천은_출처를_합쳐_건수순으로_자른다(self) -> None:
         """주제가 상한만큼 걸려도 건수가 더 많은 태그가 빠지면 안 된다(2026-09-23 결함 수정)."""
